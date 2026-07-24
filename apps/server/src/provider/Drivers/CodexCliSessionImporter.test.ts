@@ -15,6 +15,7 @@ import {
   isCurrentCodexCliImport,
   isImportableCodexInteractiveThread,
   isLiveCodexBinding,
+  shouldInterruptStaleCodexCliSession,
 } from "./CodexCliSessionImporter.ts";
 
 function makeThread(): CodexSchema.V2ThreadReadResponse["thread"] {
@@ -168,6 +169,36 @@ describe("CodexCliSessionImporter transcript conversion", () => {
     expect(isLiveCodexBinding({ ...baseBinding, status: "stopped" })).toBe(false);
     expect(isLiveCodexBinding({ ...baseBinding, status: "error" })).toBe(false);
     expect(isLiveCodexBinding(undefined)).toBe(false);
+  });
+
+  it("interrupts stale projected work once the live provider binding is gone", () => {
+    const baseBinding = {
+      threadId: ThreadId.make("019codex-thread"),
+      provider: ProviderDriverKind.make("codex"),
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      runtimeMode: "full-access" as const,
+    };
+
+    expect(shouldInterruptStaleCodexCliSession(undefined, { status: "running" })).toBe(true);
+    expect(
+      shouldInterruptStaleCodexCliSession(
+        { ...baseBinding, status: "stopped" },
+        { status: "starting" },
+      ),
+    ).toBe(true);
+    expect(
+      shouldInterruptStaleCodexCliSession(
+        { ...baseBinding, status: "running" },
+        { status: "running" },
+      ),
+    ).toBe(false);
+    expect(
+      shouldInterruptStaleCodexCliSession(
+        { ...baseBinding, status: "stopped" },
+        { status: "ready" },
+      ),
+    ).toBe(false);
+    expect(shouldInterruptStaleCodexCliSession(undefined, null)).toBe(false);
   });
 
   it("recognizes an unchanged CLI thread from its persisted upstream timestamp", () => {

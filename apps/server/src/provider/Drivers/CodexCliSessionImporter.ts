@@ -20,7 +20,6 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
-import * as Scope from "effect/Scope";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import * as CodexClient from "effect-codex-app-server/client";
 import * as CodexErrors from "effect-codex-app-server/errors";
@@ -256,6 +255,16 @@ export function isLiveCodexBinding(binding: ProviderRuntimeBinding | undefined):
   return binding?.status === "starting" || binding?.status === "running";
 }
 
+export function shouldInterruptStaleCodexCliSession(
+  binding: ProviderRuntimeBinding | undefined,
+  session: { readonly status: string } | null | undefined,
+): boolean {
+  return (
+    !isLiveCodexBinding(binding) &&
+    (session?.status === "starting" || session?.status === "running")
+  );
+}
+
 export function isCurrentCodexCliImport(
   binding: ProviderRuntimeBinding | undefined,
   listedThread: CodexListedThread,
@@ -448,7 +457,36 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
       }
 
       const existingThread = yield* projectionSnapshotQuery.getThreadShellById(threadId);
-      if (Option.isSome(existingThread) && isCurrentCodexCliImport(existingBinding, listedThread)) {
+      const projectedThread = Option.getOrUndefined(existingThread);
+      if (shouldInterruptStaleCodexCliSession(existingBinding, projectedThread?.session)) {
+        const staleSession = projectedThread?.session;
+        if (staleSession !== null && staleSession !== undefined) {
+          const interruptedAt = DateTime.formatIso(yield* DateTime.now);
+          yield* orchestrationEngine.dispatch({
+            type: "thread.session.set",
+            commandId: stableCommandId(
+              "session-interrupted",
+              threadId,
+              staleSession.activeTurnId ?? staleSession.updatedAt,
+            ),
+            threadId,
+            session: {
+              ...staleSession,
+              status: "interrupted",
+              activeTurnId: null,
+              updatedAt: interruptedAt,
+            },
+            createdAt: interruptedAt,
+          });
+          yield* Effect.logInfo("codex.cli-import.interrupted-stale-session", {
+            threadId,
+            previousStatus: staleSession.status,
+            previousActiveTurnId: staleSession.activeTurnId,
+          });
+        }
+      }
+
+      if (projectedThread !== undefined && isCurrentCodexCliImport(existingBinding, listedThread)) {
         return false;
       }
 
