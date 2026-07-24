@@ -89,7 +89,7 @@ jobs:
 
           ./scripts/update-nix-pnpm-hash.sh
           git add nix/t3code-unwrapped.nix flake.lock
-          git commit --amend --no-edit
+          git commit --amend --no-edit --no-verify
 
       - name: Install workspace dependencies
         if: steps.detect.outputs.changed == 'true'
