@@ -446,6 +446,7 @@ exit 1
 export const REMOTE_LAUNCH_SCRIPT = `set -eu
 @@T3_NODE_ENV_SCRIPT@@
 STATE_KEY="$1"
+RUNNER_ID=@@T3_RUNNER_ID@@
 STATE_DIR="$HOME/.t3/ssh-launch/$STATE_KEY"
 DEFAULT_SERVER_HOME="$HOME/.t3"
 DEFAULT_RUNTIME_FILE="$DEFAULT_SERVER_HOME/userdata/server-runtime.json"
@@ -507,11 +508,26 @@ try {
     process.exit(1);
   }
   process.kill(pid, 0);
-  process.stdout.write(\`\${pid} \${port}\`);
+  const stateKey =
+    runtime.sshLaunch && typeof runtime.sshLaunch.stateKey === "string"
+      ? runtime.sshLaunch.stateKey
+      : "";
+  const runnerId =
+    runtime.sshLaunch && typeof runtime.sshLaunch.runnerId === "string"
+      ? runtime.sshLaunch.runnerId
+      : "";
+  process.stdout.write([pid, port, stateKey, runnerId].join("|"));
 } catch {
   process.exit(1);
 }
 NODE
+}
+stop_pid() {
+  PID_TO_STOP="$1"
+  if [ -n "$PID_TO_STOP" ] && kill -0 "$PID_TO_STOP" 2>/dev/null; then
+    kill "$PID_TO_STOP" 2>/dev/null || true
+    wait_for_pid_exit "$PID_TO_STOP"
+  fi
 }
 REMOTE_PID="$(cat "$PID_FILE" 2>/dev/null || true)"
 REMOTE_PORT="$(cat "$PORT_FILE" 2>/dev/null || true)"
@@ -519,25 +535,39 @@ REMOTE_MANAGED="$(cat "$MANAGED_FILE" 2>/dev/null || true)"
 DEFAULT_RUNTIME_INFO="$(resolve_default_runtime_port 2>/dev/null || true)"
 DEFAULT_RUNTIME_PID=""
 DEFAULT_REMOTE_PORT=""
+DEFAULT_RUNTIME_STATE_KEY=""
+DEFAULT_RUNTIME_RUNNER_ID=""
 if [ -n "$DEFAULT_RUNTIME_INFO" ]; then
-  DEFAULT_RUNTIME_PID="\${DEFAULT_RUNTIME_INFO%% *}"
-  DEFAULT_REMOTE_PORT="\${DEFAULT_RUNTIME_INFO#* }"
+  DEFAULT_RUNTIME_PID="\${DEFAULT_RUNTIME_INFO%%|*}"
+  DEFAULT_RUNTIME_REST="\${DEFAULT_RUNTIME_INFO#*|}"
+  DEFAULT_REMOTE_PORT="\${DEFAULT_RUNTIME_REST%%|*}"
+  DEFAULT_RUNTIME_REST="\${DEFAULT_RUNTIME_REST#*|}"
+  DEFAULT_RUNTIME_STATE_KEY="\${DEFAULT_RUNTIME_REST%%|*}"
+  DEFAULT_RUNTIME_RUNNER_ID="\${DEFAULT_RUNTIME_REST#*|}"
 fi
 if [ -n "$DEFAULT_REMOTE_PORT" ]; then
   REMOTE_PORT="$DEFAULT_REMOTE_PORT"
   if wait_ready "@@T3_REUSE_READY_TIMEOUT_MS@@"; then
-    if [ "$REMOTE_MANAGED" = "managed" ]; then
-      PID_TO_STOP="\${REMOTE_PID:-$DEFAULT_RUNTIME_PID}"
-      if [ -n "$PID_TO_STOP" ] && kill -0 "$PID_TO_STOP" 2>/dev/null; then
-        kill "$PID_TO_STOP" 2>/dev/null || true
-        wait_for_pid_exit "$PID_TO_STOP"
+    if [ "$DEFAULT_RUNTIME_STATE_KEY" = "$STATE_KEY" ]; then
+      REMOTE_PID="$DEFAULT_RUNTIME_PID"
+      REMOTE_MANAGED="managed"
+      printf '%s\\n' "$REMOTE_PID" >"$PID_FILE"
+      printf '%s\\n' "$REMOTE_PORT" >"$PORT_FILE"
+      printf 'managed\\n' >"$MANAGED_FILE"
+      if [ "$DEFAULT_RUNTIME_RUNNER_ID" != "$RUNNER_ID" ]; then
+        stop_pid "$REMOTE_PID"
+        REMOTE_PID=""
+        REMOTE_PORT=""
+        REMOTE_MANAGED=""
+      fi
+    elif [ -z "$DEFAULT_RUNTIME_STATE_KEY" ] && [ "$REMOTE_MANAGED" = "managed" ]; then
+      stop_pid "$DEFAULT_RUNTIME_PID"
+      if [ "$REMOTE_PID" != "$DEFAULT_RUNTIME_PID" ]; then
+        stop_pid "$REMOTE_PID"
       fi
       REMOTE_PID=""
-      REMOTE_PORT="$DEFAULT_REMOTE_PORT"
-      REMOTE_MANAGED="external"
-      rm -f "$PID_FILE"
-      printf '%s\\n' "$REMOTE_PORT" >"$PORT_FILE"
-      printf 'external\\n' >"$MANAGED_FILE"
+      REMOTE_PORT=""
+      REMOTE_MANAGED=""
     else
       printf '%s\\n' "$REMOTE_PORT" >"$PORT_FILE"
       printf 'external\\n' >"$MANAGED_FILE"
@@ -558,14 +588,12 @@ if [ "$REMOTE_MANAGED" = "external" ]; then
   fi
 elif [ -n "$REMOTE_PID" ] && [ -n "$REMOTE_PORT" ] && kill -0 "$REMOTE_PID" 2>/dev/null; then
   if [ "$RUNNER_CHANGED" -eq 1 ]; then
-    kill "$REMOTE_PID" 2>/dev/null || true
-    wait_for_pid_exit "$REMOTE_PID"
+    stop_pid "$REMOTE_PID"
     REMOTE_PID=""
     REMOTE_PORT=""
     REMOTE_MANAGED=""
   elif ! wait_ready "@@T3_REUSE_READY_TIMEOUT_MS@@"; then
-    kill "$REMOTE_PID" 2>/dev/null || true
-    wait_for_pid_exit "$REMOTE_PID"
+    stop_pid "$REMOTE_PID"
     REMOTE_PID=""
     REMOTE_PORT=""
     REMOTE_MANAGED=""
@@ -581,7 +609,7 @@ if [ -z "$REMOTE_PORT" ]; then
     printf 'Failed to find an available port on the remote host. Ensure node is available on PATH.\\n' >&2
     exit 1
   fi
-  nohup env T3CODE_NO_BROWSER=1 "$RUNNER_FILE" serve --host 127.0.0.1 --port "$REMOTE_PORT" --base-dir "$DEFAULT_SERVER_HOME" >>"$LOG_FILE" 2>&1 < /dev/null &
+  nohup env T3CODE_NO_BROWSER=1 T3CODE_SSH_STATE_KEY="$STATE_KEY" T3CODE_SSH_RUNNER_ID="$RUNNER_ID" "$RUNNER_FILE" serve --host 127.0.0.1 --port "$REMOTE_PORT" --base-dir "$DEFAULT_SERVER_HOME" >>"$LOG_FILE" 2>&1 < /dev/null &
   REMOTE_PID="$!"
   printf '%s\\n' "$REMOTE_PID" >"$PID_FILE"
   printf '%s\\n' "$REMOTE_PORT" >"$PORT_FILE"
@@ -593,6 +621,18 @@ if [ -z "$REMOTE_PORT" ]; then
     wait_for_pid_exit "$REMOTE_PID"
     rm -f "$PID_FILE" "$PORT_FILE" "$MANAGED_FILE"
     exit 1
+  fi
+  DEFAULT_RUNTIME_INFO="$(resolve_default_runtime_port 2>/dev/null || true)"
+  if [ -n "$DEFAULT_RUNTIME_INFO" ]; then
+    DEFAULT_RUNTIME_PID="\${DEFAULT_RUNTIME_INFO%%|*}"
+    DEFAULT_RUNTIME_REST="\${DEFAULT_RUNTIME_INFO#*|}"
+    DEFAULT_RUNTIME_REST="\${DEFAULT_RUNTIME_REST#*|}"
+    DEFAULT_RUNTIME_STATE_KEY="\${DEFAULT_RUNTIME_REST%%|*}"
+    DEFAULT_RUNTIME_RUNNER_ID="\${DEFAULT_RUNTIME_REST#*|}"
+    if [ "$DEFAULT_RUNTIME_STATE_KEY" = "$STATE_KEY" ] && [ "$DEFAULT_RUNTIME_RUNNER_ID" = "$RUNNER_ID" ]; then
+      REMOTE_PID="$DEFAULT_RUNTIME_PID"
+      printf '%s\\n' "$REMOTE_PID" >"$PID_FILE"
+    fi
   fi
 fi
 printf '{"remotePort":%s,"serverKind":"%s"}\\n' "$REMOTE_PORT" "\${REMOTE_MANAGED:-managed}"
@@ -752,9 +792,12 @@ export function buildRemoteLaunchScript(input?: RemoteT3RunnerOptions): string {
   const readyTimeoutMs = input?.localPackageArchivePath?.trim()
     ? REMOTE_PACKAGE_READY_TIMEOUT_MS
     : REMOTE_READY_TIMEOUT_MS;
+  const runnerScript = stripTrailingNewlines(buildRemoteT3RunnerScript(input));
+  const runnerId = NodeCrypto.createHash("sha256").update(runnerScript).digest("hex");
   return applyScriptPlaceholders(REMOTE_LAUNCH_SCRIPT, {
     T3_NODE_ENV_SCRIPT: buildRemoteNodeEnvScript(input),
-    T3_RUNNER_SCRIPT: stripTrailingNewlines(buildRemoteT3RunnerScript(input)),
+    T3_RUNNER_SCRIPT: runnerScript,
+    T3_RUNNER_ID: shellSingleQuote(runnerId),
     T3_PICK_PORT_SCRIPT: stripTrailingNewlines(REMOTE_PICK_PORT_SCRIPT),
     T3_WAIT_READY_SCRIPT: stripTrailingNewlines(REMOTE_WAIT_READY_SCRIPT),
     T3_DEFAULT_REMOTE_PORT: String(DEFAULT_REMOTE_PORT),

@@ -15,6 +15,12 @@ export const PersistedServerRuntimeState = Schema.Struct({
   port: Schema.Int,
   origin: Schema.String,
   startedAt: Schema.String,
+  sshLaunch: Schema.optional(
+    Schema.Struct({
+      stateKey: Schema.String,
+      runnerId: Schema.String,
+    }),
+  ),
 });
 export type PersistedServerRuntimeState = typeof PersistedServerRuntimeState.Type;
 
@@ -44,18 +50,31 @@ const runtimeOriginForConfig = (
   return `http://${hostname}:${port}`;
 };
 
+export const sshLaunchIdentityFromEnvironment = (
+  environment: Readonly<Record<string, string | undefined>>,
+): PersistedServerRuntimeState["sshLaunch"] => {
+  const stateKey = environment.T3CODE_SSH_STATE_KEY?.trim() ?? "";
+  const runnerId = environment.T3CODE_SSH_RUNNER_ID?.trim() ?? "";
+  return stateKey && runnerId ? { stateKey, runnerId } : undefined;
+};
+
 export const makePersistedServerRuntimeState = (input: {
   readonly config: Pick<ServerConfig.ServerConfig["Service"], "host">;
   readonly port: number;
 }): Effect.Effect<PersistedServerRuntimeState> =>
-  Effect.map(DateTime.now, (now) => ({
-    version: 1,
-    pid: process.pid,
-    ...(input.config.host ? { host: input.config.host } : {}),
-    port: input.port,
-    origin: runtimeOriginForConfig(input.config, input.port),
-    startedAt: DateTime.formatIso(now),
-  }));
+  Effect.map(DateTime.now, (now) => {
+    const sshLaunch = sshLaunchIdentityFromEnvironment(process.env);
+
+    return {
+      version: 1,
+      pid: process.pid,
+      ...(input.config.host ? { host: input.config.host } : {}),
+      port: input.port,
+      origin: runtimeOriginForConfig(input.config, input.port),
+      startedAt: DateTime.formatIso(now),
+      ...(sshLaunch ? { sshLaunch } : {}),
+    };
+  });
 
 export const persistServerRuntimeState = (input: {
   readonly path: string;

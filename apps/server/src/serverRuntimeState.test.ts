@@ -43,6 +43,24 @@ describe("serverRuntimeState", () => {
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 
+  it("requires both SSH launcher identity fields", () => {
+    assert.deepEqual(
+      ServerRuntimeState.sshLaunchIdentityFromEnvironment({
+        T3CODE_SSH_STATE_KEY: " host-state ",
+        T3CODE_SSH_RUNNER_ID: " runner-digest ",
+      }),
+      {
+        stateKey: "host-state",
+        runnerId: "runner-digest",
+      },
+    );
+    assert.isUndefined(
+      ServerRuntimeState.sshLaunchIdentityFromEnvironment({
+        T3CODE_SSH_STATE_KEY: "host-state",
+      }),
+    );
+  });
+
   it.effect("treats a missing runtime state file as absent", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;

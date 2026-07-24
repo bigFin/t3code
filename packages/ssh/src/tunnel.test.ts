@@ -208,6 +208,7 @@ describe("ssh tunnel scripts", () => {
       '[ -n "$REMOTE_PID" ] && [ -n "$REMOTE_PORT" ] && kill -0 "$REMOTE_PID" 2>/dev/null',
     );
     assert.include(buildRemoteLaunchScript(), "RUNNER_CHANGED=1");
+    assert.match(buildRemoteLaunchScript(), /RUNNER_ID='[0-9a-f]{64}'/u);
     assert.include(buildRemoteLaunchScript(), "ensure_remote_node_path()");
     assert.include(buildRemoteLaunchScript(), "if ! ensure_remote_node_path; then");
     assert.include(
@@ -218,9 +219,13 @@ describe("ssh tunnel scripts", () => {
       buildRemoteLaunchScript({ nodeEngineRange: TEST_NODE_ENGINE_RANGE }),
       "does not satisfy required range ",
     );
-    assert.include(buildRemoteLaunchScript(), 'kill "$REMOTE_PID" 2>/dev/null || true');
+    assert.include(buildRemoteLaunchScript(), 'stop_pid "$REMOTE_PID"');
     assert.include(buildRemoteLaunchScript(), "wait_ready");
     assert.include(buildRemoteLaunchScript(), '"$RUNNER_FILE" serve --host 127.0.0.1');
+    assert.include(
+      buildRemoteLaunchScript(),
+      'T3CODE_SSH_STATE_KEY="$STATE_KEY" T3CODE_SSH_RUNNER_ID="$RUNNER_ID"',
+    );
     assert.include(buildRemoteLaunchScript(), '--base-dir "$DEFAULT_SERVER_HOME"');
     assert.notInclude(buildRemoteLaunchScript(), "server-home");
     assert.include(buildRemoteLaunchScript(), "Remote T3 server did not become ready");
@@ -251,13 +256,22 @@ describe("ssh tunnel scripts", () => {
       buildRemoteLaunchScript(),
       "if (!Number.isInteger(pid) || pid <= 0 || !Number.isInteger(port))",
     );
-    assert.include(buildRemoteLaunchScript(), 'PID_TO_STOP="${REMOTE_PID:-$DEFAULT_RUNTIME_PID}"');
+    assert.include(buildRemoteLaunchScript(), "runtime.sshLaunch.stateKey");
+    assert.include(buildRemoteLaunchScript(), "runtime.sshLaunch.runnerId");
+    assert.include(
+      buildRemoteLaunchScript(),
+      'if [ "$DEFAULT_RUNTIME_STATE_KEY" = "$STATE_KEY" ]; then',
+    );
+    assert.include(
+      buildRemoteLaunchScript(),
+      'if [ "$DEFAULT_RUNTIME_RUNNER_ID" != "$RUNNER_ID" ]; then',
+    );
+    assert.include(buildRemoteLaunchScript(), 'stop_pid "$DEFAULT_RUNTIME_PID"');
     assert.include(buildRemoteLaunchScript(), 'REMOTE_PORT="$DEFAULT_REMOTE_PORT"');
-    assert.include(buildRemoteLaunchScript(), 'rm -f "$PID_FILE"');
     assert.include(buildRemoteLaunchScript(), "printf 'external\\n' >\"$MANAGED_FILE\"");
     assert.include(buildRemoteLaunchScript(), 'if [ -z "$REMOTE_PORT" ]; then');
     assert.isBelow(
-      buildRemoteLaunchScript().indexOf('if [ "$REMOTE_MANAGED" = "managed" ]'),
+      buildRemoteLaunchScript().indexOf('if [ "$DEFAULT_RUNTIME_STATE_KEY" = "$STATE_KEY" ]; then'),
       buildRemoteLaunchScript().indexOf("printf 'external\\n' >\"$MANAGED_FILE\""),
     );
     assert.isBelow(
