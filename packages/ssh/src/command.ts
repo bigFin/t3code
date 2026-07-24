@@ -38,7 +38,7 @@ export interface SshCommandResult {
 export interface RunSshCommandOptions extends SshAuthOptions {
   readonly preHostArgs?: ReadonlyArray<string>;
   readonly remoteCommandArgs?: ReadonlyArray<string>;
-  readonly stdin?: string;
+  readonly stdin?: string | Uint8Array;
   readonly timeoutMs?: number;
 }
 
@@ -166,8 +166,10 @@ function sshTargetLogFields(target: DesktopSshEnvironmentTarget) {
   };
 }
 
-function stdinStream(input: string | undefined) {
-  return input === undefined ? Stream.empty : Stream.make(encoder.encode(input));
+function stdinStream(input: string | Uint8Array | undefined) {
+  return input === undefined
+    ? Stream.empty
+    : Stream.make(typeof input === "string" ? encoder.encode(input) : input);
 }
 
 const runSshCommandInScope = Effect.fn("ssh/command.runSshCommand.inScope")(function* (

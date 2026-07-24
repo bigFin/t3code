@@ -42,7 +42,7 @@ interface PackageJson {
   engines: Record<string, string>;
   files: string[];
   dependencies: Record<string, string>;
-  overrides: Record<string, string>;
+  overrides?: Record<string, string>;
 }
 
 const PackageJsonPrettyJson = fromJsonStringPretty(Schema.Unknown);
@@ -204,6 +204,39 @@ const createVpPmPublishArgs = (config: PublishCommandConfig): ReadonlyArray<stri
   return args;
 };
 
+const preparePackageJsonString = Effect.fn("serverCli.preparePackageJsonString")(function* (
+  version: string,
+  options?: { readonly includeOverrides?: boolean },
+) {
+  const workspaceConfig = yield* readWorkspaceConfig();
+  const workspaceCatalog = workspaceConfig.catalog ?? {};
+  const workspaceOverrides = workspaceConfig.overrides ?? {};
+  const pkg: PackageJson = {
+    name: serverPackageJson.name,
+    repository: serverPackageJson.repository,
+    bin: serverPackageJson.bin,
+    type: serverPackageJson.type,
+    version,
+    engines: serverPackageJson.engines,
+    files: serverPackageJson.files,
+    dependencies: resolveCatalogDependencies(
+      serverPackageJson.dependencies,
+      workspaceCatalog,
+      "apps/server",
+    ),
+    ...(options?.includeOverrides === false
+      ? {}
+      : {
+          overrides: resolveCatalogDependencies(
+            workspaceOverrides,
+            workspaceCatalog,
+            "apps/server",
+          ),
+        }),
+  };
+  return yield* encodePackageJson(pkg);
+});
+
 const publishCmd = Command.make(
   "publish",
   {
@@ -234,31 +267,9 @@ const publishCmd = Command.make(
         // Acquire: resolve publish metadata and read every original before mutation.
         Effect.gen(function* () {
           const version = Option.getOrElse(config.appVersion, () => serverPackageJson.version);
-          const workspaceConfig = yield* readWorkspaceConfig();
-          const workspaceCatalog = workspaceConfig.catalog ?? {};
-          const workspaceOverrides = workspaceConfig.overrides ?? {};
-          const pkg: PackageJson = {
-            name: serverPackageJson.name,
-            repository: serverPackageJson.repository,
-            bin: serverPackageJson.bin,
-            type: serverPackageJson.type,
-            version,
-            engines: serverPackageJson.engines,
-            files: serverPackageJson.files,
-            dependencies: resolveCatalogDependencies(
-              serverPackageJson.dependencies,
-              workspaceCatalog,
-              "apps/server",
-            ),
-            overrides: resolveCatalogDependencies(
-              workspaceOverrides,
-              workspaceCatalog,
-              "apps/server",
-            ),
-          };
 
           return {
-            packageJsonString: yield* encodePackageJson(pkg),
+            packageJsonString: yield* preparePackageJsonString(version),
             originalPackageJson: yield* fs.readFile(packageJsonPath),
             icons: yield* preparePublishIcons(repoRoot, serverDir, version),
           };
@@ -299,13 +310,83 @@ const publishCmd = Command.make(
     }),
 ).pipe(Command.withDescription("Publish the server package to npm."));
 
+const packCmd = Command.make(
+  "pack",
+  {
+    out: Flag.string("out"),
+    appVersion: Flag.string("app-version").pipe(Flag.optional),
+    verbose: Flag.boolean("verbose").pipe(Flag.withDefault(false)),
+  },
+  (config) =>
+    Effect.gen(function* () {
+      const path = yield* Path.Path;
+      const fs = yield* FileSystem.FileSystem;
+      const repoRoot = yield* RepoRoot;
+      const serverDir = path.join(repoRoot, "apps/server");
+      const packageJsonPath = path.join(serverDir, "package.json");
+      const outputPath = path.resolve(repoRoot, config.out);
+
+      for (const relPath of ["dist/bin.mjs", "dist/client/index.html"]) {
+        const abs = path.join(serverDir, relPath);
+        if (!(yield* fs.exists(abs))) {
+          return yield* new ServerCliBuildAssetMissingError({ assetPath: abs });
+        }
+      }
+
+      yield* Effect.acquireUseRelease(
+        Effect.gen(function* () {
+          const version = Option.getOrElse(config.appVersion, () => serverPackageJson.version);
+          return {
+            version,
+            packageJsonString: yield* preparePackageJsonString(version, {
+              includeOverrides: false,
+            }),
+            originalPackageJson: yield* fs.readFile(packageJsonPath),
+          };
+        }),
+        (resource) =>
+          Effect.gen(function* () {
+            yield* fs.makeDirectory(path.dirname(outputPath), { recursive: true });
+            yield* fs.writeFileString(packageJsonPath, `${resource.packageJsonString}\n`);
+
+            const args = [
+              "pack",
+              "--ignore-scripts",
+              "--loglevel=error",
+              "--pack-destination",
+              path.dirname(outputPath),
+            ];
+            const spawnCommand = yield* resolveSpawnCommand("npm", args);
+            yield* Effect.log(`[cli] Running: npm ${args.join(" ")}`);
+            yield* runCommand(
+              ChildProcess.make(spawnCommand.command, spawnCommand.args, {
+                cwd: serverDir,
+                stdout: config.verbose ? "inherit" : "ignore",
+                stderr: "inherit",
+                shell: spawnCommand.shell,
+              }),
+            );
+            const packedPath = path.join(
+              path.dirname(outputPath),
+              `${serverPackageJson.name}-${resource.version}.tgz`,
+            );
+            if (packedPath !== outputPath) {
+              yield* fs.remove(outputPath, { force: true });
+              yield* fs.rename(packedPath, outputPath);
+            }
+          }),
+        (resource) => fs.writeFile(packageJsonPath, resource.originalPackageJson),
+      );
+    }),
+).pipe(Command.withDescription("Pack the built server as an installable npm archive."));
+
 // ---------------------------------------------------------------------------
 // root command
 // ---------------------------------------------------------------------------
 
 const cli = Command.make("cli").pipe(
   Command.withDescription("T3 server build & publish CLI."),
-  Command.withSubcommands([buildCmd, publishCmd]),
+  Command.withSubcommands([buildCmd, packCmd, publishCmd]),
 );
 
 Command.run(cli, { version: "0.0.0" }).pipe(

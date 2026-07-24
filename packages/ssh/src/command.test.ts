@@ -4,11 +4,12 @@ import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as PlatformError from "effect/PlatformError";
 import * as Result from "effect/Result";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
-import { ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 import {
   baseSshArgs,
@@ -20,6 +21,10 @@ import {
 import { SshCommandError } from "./errors.ts";
 
 const encoder = new TextEncoder();
+
+const isByteStream = (
+  input: ChildProcess.CommandInput,
+): input is Stream.Stream<Uint8Array, PlatformError.PlatformError> => Stream.isStream(input);
 
 const makeFailedProcess = (input: { readonly stdout: string; readonly stderr?: string }) => {
   const stdoutStream = Stream.make(encoder.encode(input.stdout));
@@ -172,6 +177,49 @@ describe("ssh command", () => {
         assert.equal(result.failure.stdout, "Pairing token creation failed\n");
         assert.equal(result.failure.stderr, "");
       }
+    }).pipe(Effect.provide(processLayer));
+  });
+
+  it.effect("passes binary stdin to ssh without text encoding", () => {
+    const expected = Uint8Array.from([0, 255, 1, 128, 10, 13]);
+    const received: number[] = [];
+    const spawner = ChildProcessSpawner.make((command) =>
+      Effect.gen(function* () {
+        if (command._tag === "StandardCommand") {
+          const stdin = command.options.stdin;
+          if (
+            typeof stdin === "object" &&
+            stdin !== null &&
+            "stream" in stdin &&
+            isByteStream(stdin.stream)
+          ) {
+            yield* Stream.runForEach(stdin.stream, (chunk) =>
+              Effect.sync(() => {
+                received.push(...chunk);
+              }),
+            );
+          }
+        }
+        return makeFailedProcess({ stdout: "" });
+      }),
+    );
+    const spawnerLayer = Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner);
+    const processLayer = Layer.mergeAll(NodeServices.layer, spawnerLayer);
+
+    return Effect.gen(function* () {
+      yield* Effect.result(
+        runSshCommand(
+          {
+            alias: "devbox",
+            hostname: "devbox.example.com",
+            username: "julius",
+            port: 2222,
+          },
+          { stdin: expected },
+        ),
+      );
+
+      assert.deepEqual(received, Array.from(expected));
     }).pipe(Effect.provide(processLayer));
   });
 

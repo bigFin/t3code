@@ -87,7 +87,9 @@ const resolveDesktopSshCliRunner = (
       nodeEngineRange: serverPackageJson.engines.node,
     };
   }
+  const localPackageArchivePath = Option.getOrUndefined(environment.remoteT3PackageArchivePath);
   return {
+    ...(localPackageArchivePath === undefined ? {} : { localPackageArchivePath }),
     packageSpec: resolveRemoteT3CliPackageSpec({
       appVersion: environment.appVersion,
       updateChannel: settings.updateChannel,

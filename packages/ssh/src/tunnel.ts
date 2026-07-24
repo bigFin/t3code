@@ -1,3 +1,5 @@
+import * as NodeCrypto from "node:crypto";
+
 import type {
   DesktopSshEnvironmentBootstrap,
   DesktopSshEnvironmentTarget,
@@ -55,10 +57,12 @@ const SSH_READY_TIMEOUT_MS = 20_000;
 const SSH_READY_PROBE_TIMEOUT_MS = 1_000;
 const TUNNEL_SHUTDOWN_TIMEOUT_MS = 2_000;
 const REMOTE_READY_TIMEOUT_MS = 15_000;
+const REMOTE_PACKAGE_READY_TIMEOUT_MS = 120_000;
 const REMOTE_REUSE_READY_TIMEOUT_MS = 2_000;
 
 export interface RemoteT3RunnerOptions {
   readonly packageSpec?: string;
+  readonly localPackageArchivePath?: string | null;
   readonly nodeScriptPath?: string | null;
   readonly nodeEngineRange?: string | null;
 }
@@ -116,6 +120,9 @@ function sshTargetLogFields(target: DesktopSshEnvironmentTarget) {
 }
 
 function sshRunnerLogFields(runner: RemoteT3RunnerOptions | undefined) {
+  if (runner?.localPackageArchivePath?.trim()) {
+    return { runner: "package-archive" };
+  }
   if (runner?.nodeScriptPath?.trim()) {
     return { runner: "node-script", nodeScriptPath: runner.nodeScriptPath.trim() };
   }
@@ -337,16 +344,16 @@ NODE
 }
 
 ensure_remote_node_path() {
-  if command -v node >/dev/null 2>&1 && remote_node_satisfies_engine >/dev/null 2>&1; then
-    return 0
-  fi
-
   prepend_path_if_dir "$HOME/.local/bin"
   prepend_path_if_dir "$HOME/bin"
   prepend_path_if_dir "/opt/homebrew/bin"
   prepend_path_if_dir "/usr/local/bin"
   prepend_path_if_dir "/usr/bin"
   prepend_path_if_dir "/bin"
+
+  if command -v node >/dev/null 2>&1 && remote_node_satisfies_engine >/dev/null 2>&1; then
+    return 0
+  fi
 
   if [ -z "\${VOLTA_HOME:-}" ]; then
     VOLTA_HOME="$HOME/.volta"
@@ -415,6 +422,7 @@ set -eu
 @@T3_NODE_ENV_SCRIPT@@
 ensure_remote_node_path || true
 T3_NODE_SCRIPT_PATH=@@T3_NODE_SCRIPT_PATH@@
+T3_PACKAGE_SPEC=@@T3_PACKAGE_SPEC@@
 if [ -n "$T3_NODE_SCRIPT_PATH" ]; then
   if ! command -v node >/dev/null 2>&1; then
     printf 'Remote host is missing node on PATH. Install Node or configure a supported version manager for non-interactive shells.\\n' >&2
@@ -422,16 +430,16 @@ if [ -n "$T3_NODE_SCRIPT_PATH" ]; then
   fi
   exec node "$T3_NODE_SCRIPT_PATH" "$@"
 fi
+if [ -n "$T3_PACKAGE_SPEC" ] && command -v npx >/dev/null 2>&1; then
+  exec npx --yes --package="$T3_PACKAGE_SPEC" -- t3 "$@"
+fi
+if [ -n "$T3_PACKAGE_SPEC" ] && command -v npm >/dev/null 2>&1; then
+  exec npm exec --yes --package="$T3_PACKAGE_SPEC" -- t3 "$@"
+fi
 if command -v t3 >/dev/null 2>&1; then
   exec t3 "$@"
 fi
-if command -v npx >/dev/null 2>&1; then
-  exec npx --yes @@T3_PACKAGE_SPEC@@ "$@"
-fi
-if command -v npm >/dev/null 2>&1; then
-  exec npm exec --yes @@T3_PACKAGE_SPEC@@ -- "$@"
-fi
-printf 'Remote host is missing the t3 CLI and could not install @@T3_PACKAGE_SPEC@@ because node/npm/npx are unavailable on PATH. Install Node or configure a supported version manager for non-interactive shells.\\n' >&2
+printf 'Remote host is missing the t3 CLI and could not install %s because node/npm/npx are unavailable on PATH. Install Node or configure a supported version manager for non-interactive shells.\\n' "$T3_PACKAGE_SPEC" >&2
 exit 1
 `;
 
@@ -642,6 +650,95 @@ export function buildRemoteT3RunnerScript(input?: RemoteT3RunnerOptions): string
   );
 }
 
+const prepareRemoteT3Runner = Effect.fn("ssh/tunnel.prepareRemoteT3Runner")(function* (
+  target: DesktopSshEnvironmentTarget,
+  input: SshAuthOptions | undefined,
+  runner: RemoteT3RunnerOptions | undefined,
+) {
+  const archivePath = runner?.localPackageArchivePath?.trim();
+  if (!archivePath) {
+    return runner;
+  }
+
+  const fs = yield* FileSystem.FileSystem;
+  const archive = yield* fs.readFile(archivePath).pipe(
+    Effect.mapError(
+      (cause) =>
+        new SshCommandError({
+          command: ["ssh"],
+          exitCode: null,
+          stderr: "",
+          message: `Could not read the matching T3 server package at ${archivePath}.`,
+          cause,
+        }),
+    ),
+  );
+  const digest = NodeCrypto.createHash("sha256").update(archive).digest("hex");
+  const relativePath = `.t3/ssh-runtime/packages/t3-${digest}.tgz`;
+  const resolveScript = [
+    "set -eu",
+    `PACKAGE_PATH="$HOME/${relativePath}"`,
+    'if [ -f "$PACKAGE_PATH" ]; then',
+    '  printf "%s\\n" "$PACKAGE_PATH"',
+    "fi",
+  ].join("\n");
+  const existing = yield* runSshCommand(target, {
+    remoteCommandArgs: ["sh", "-c", shellSingleQuote(resolveScript)],
+    ...(input?.authSecret === undefined ? {} : { authSecret: input.authSecret }),
+    ...(input?.batchMode === undefined ? {} : { batchMode: input.batchMode }),
+    ...(input?.interactiveAuth === undefined ? {} : { interactiveAuth: input.interactiveAuth }),
+  });
+  let remoteArchivePath = getLastNonEmptyOutputLine(existing.stdout);
+
+  if (!remoteArchivePath) {
+    const uploadScript = [
+      "set -eu",
+      "umask 077",
+      `PACKAGE_PATH="$HOME/${relativePath}"`,
+      'mkdir -p "$(dirname "$PACKAGE_PATH")"',
+      'PACKAGE_NEXT="$PACKAGE_PATH.next.$$"',
+      "trap 'rm -f \"$PACKAGE_NEXT\"' EXIT",
+      'cat >"$PACKAGE_NEXT"',
+      'mv "$PACKAGE_NEXT" "$PACKAGE_PATH"',
+      "trap - EXIT",
+      'printf "%s\\n" "$PACKAGE_PATH"',
+    ].join("\n");
+    yield* Effect.logInfo("ssh.remoteServer.package.upload.start", {
+      ...sshTargetLogFields(target),
+      digest,
+      sizeBytes: archive.byteLength,
+    });
+    const uploaded = yield* runSshCommand(target, {
+      remoteCommandArgs: ["sh", "-c", shellSingleQuote(uploadScript)],
+      stdin: archive,
+      timeoutMs: 120_000,
+      ...(input?.authSecret === undefined ? {} : { authSecret: input.authSecret }),
+      ...(input?.batchMode === undefined ? {} : { batchMode: input.batchMode }),
+      ...(input?.interactiveAuth === undefined ? {} : { interactiveAuth: input.interactiveAuth }),
+    });
+    remoteArchivePath = getLastNonEmptyOutputLine(uploaded.stdout);
+    yield* Effect.logInfo("ssh.remoteServer.package.upload.succeeded", {
+      ...sshTargetLogFields(target),
+      digest,
+      sizeBytes: archive.byteLength,
+    });
+  }
+
+  if (!remoteArchivePath?.startsWith("/")) {
+    return yield* new SshCommandError({
+      command: ["ssh"],
+      exitCode: null,
+      stderr: "",
+      message: "SSH package upload did not return an absolute remote archive path.",
+    });
+  }
+
+  return {
+    ...runner,
+    packageSpec: remoteArchivePath,
+  } satisfies RemoteT3RunnerOptions;
+});
+
 export function buildRemoteNodeEnvScript(input?: RemoteT3RunnerOptions): string {
   return stripTrailingNewlines(
     applyScriptPlaceholders(REMOTE_NODE_ENV_SCRIPT, {
@@ -652,6 +749,9 @@ export function buildRemoteNodeEnvScript(input?: RemoteT3RunnerOptions): string 
 }
 
 export function buildRemoteLaunchScript(input?: RemoteT3RunnerOptions): string {
+  const readyTimeoutMs = input?.localPackageArchivePath?.trim()
+    ? REMOTE_PACKAGE_READY_TIMEOUT_MS
+    : REMOTE_READY_TIMEOUT_MS;
   return applyScriptPlaceholders(REMOTE_LAUNCH_SCRIPT, {
     T3_NODE_ENV_SCRIPT: buildRemoteNodeEnvScript(input),
     T3_RUNNER_SCRIPT: stripTrailingNewlines(buildRemoteT3RunnerScript(input)),
@@ -659,7 +759,7 @@ export function buildRemoteLaunchScript(input?: RemoteT3RunnerOptions): string {
     T3_WAIT_READY_SCRIPT: stripTrailingNewlines(REMOTE_WAIT_READY_SCRIPT),
     T3_DEFAULT_REMOTE_PORT: String(DEFAULT_REMOTE_PORT),
     T3_REMOTE_PORT_SCAN_WINDOW: String(REMOTE_PORT_SCAN_WINDOW),
-    T3_READY_TIMEOUT_MS: String(REMOTE_READY_TIMEOUT_MS),
+    T3_READY_TIMEOUT_MS: String(readyTimeoutMs),
     T3_REUSE_READY_TIMEOUT_MS: String(REMOTE_REUSE_READY_TIMEOUT_MS),
     T3_READY_PROBE_TIMEOUT_MS: String(SSH_READY_PROBE_TIMEOUT_MS),
   });
@@ -697,14 +797,18 @@ export const launchOrReuseRemoteServer = Effect.fn("ssh/tunnel.launchOrReuseRemo
     SshCommandError | SshInvalidTargetError | SshLaunchError,
     ChildProcessSpawner.ChildProcessSpawner | FileSystem.FileSystem | Path.Path
   > {
+    const preparedRunner = yield* prepareRemoteT3Runner(target, input, runner);
     yield* Effect.logInfo("ssh.remoteServer.launch.start", {
       ...sshTargetLogFields(target),
-      ...sshRunnerLogFields(runner),
+      ...sshRunnerLogFields(preparedRunner),
       stateKey: remoteStateKey(target),
     });
     const result = yield* runSshCommand(target, {
       remoteCommandArgs: ["sh", "-s", "--", remoteStateKey(target)],
-      stdin: buildRemoteLaunchScript(runner),
+      stdin: buildRemoteLaunchScript(preparedRunner),
+      ...(preparedRunner?.localPackageArchivePath?.trim()
+        ? { timeoutMs: REMOTE_PACKAGE_READY_TIMEOUT_MS + 30_000 }
+        : {}),
       ...(input?.authSecret === undefined ? {} : { authSecret: input.authSecret }),
       ...(input?.batchMode === undefined ? {} : { batchMode: input.batchMode }),
       ...(input?.interactiveAuth === undefined ? {} : { interactiveAuth: input.interactiveAuth }),
@@ -755,13 +859,14 @@ export const issueRemotePairingToken = Effect.fn("ssh/tunnel.issueRemotePairingT
   SshCommandError | SshInvalidTargetError | SshPairingError,
   ChildProcessSpawner.ChildProcessSpawner | FileSystem.FileSystem | Path.Path
 > {
+  const preparedRunner = yield* prepareRemoteT3Runner(target, input, runner);
   yield* Effect.logDebug("ssh.remoteServer.pairingToken.start", {
     ...sshTargetLogFields(target),
     stateKey: remoteStateKey(target),
   });
   const result = yield* runSshCommand(target, {
     remoteCommandArgs: ["sh", "-s"],
-    stdin: buildRemotePairingScript(target, runner),
+    stdin: buildRemotePairingScript(target, preparedRunner),
     ...(input?.authSecret === undefined ? {} : { authSecret: input.authSecret }),
     ...(input?.batchMode === undefined ? {} : { batchMode: input.batchMode }),
     ...(input?.interactiveAuth === undefined ? {} : { interactiveAuth: input.interactiveAuth }),
@@ -962,6 +1067,10 @@ const startSshTunnel = Effect.fn("ssh/tunnel.startSshTunnel")(function* (input: 
     }),
     "-o",
     "ExitOnForwardFailure=yes",
+    "-o",
+    "ControlMaster=no",
+    "-o",
+    "ControlPath=none",
     "-o",
     "ServerAliveInterval=15",
     "-o",

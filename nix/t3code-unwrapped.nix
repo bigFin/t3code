@@ -56,7 +56,11 @@ stdenv.mkDerivation {
   '';
 
   pnpmBuildScript = "build:desktop";
-  postBuild = "pnpm vp cache clean";
+  postBuild = ''
+    node apps/server/scripts/cli.ts pack \
+      --out apps/server/t3-server.tgz
+    ./node_modules/.bin/vp cache clean
+  '';
   dontPatchELF = true;
   dontStrip = true;
   noAuditTmpdir = true;
@@ -67,6 +71,8 @@ stdenv.mkDerivation {
     mkdir -p "$out"/libexec/t3code/apps/{desktop,server}
     cp -r --no-preserve=mode node_modules "$out"/libexec/t3code
     cp -r --no-preserve=mode apps/server/{node_modules,dist} "$out"/libexec/t3code/apps/server
+    install -m444 apps/server/t3-server.tgz \
+      "$out"/libexec/t3code/apps/server/t3-server.tgz
     cp -r --no-preserve=mode \
       apps/desktop/{package.json,node_modules,dist-electron} \
       "$out"/libexec/t3code/apps/desktop
@@ -79,7 +85,10 @@ stdenv.mkDerivation {
     makeWrapper ${lib.getExe nodejs_24} "$out"/bin/t3 \
       --add-flags "$out"/libexec/t3code/apps/server/dist/bin.mjs
     makeWrapper ${lib.getExe electron_41} "$out"/bin/t3code-desktop \
+      --add-flags "--password-store=gnome-libsecret" \
       --add-flags "$out"/libexec/t3code/apps/desktop \
+      --set T3CODE_REMOTE_T3_PACKAGE_ARCHIVE \
+        "$out"/libexec/t3code/apps/server/t3-server.tgz \
       --inherit-argv0
 
     mkdir -p "$out"/share/icons/hicolor/scalable/apps
