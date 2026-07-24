@@ -529,6 +529,27 @@ stop_pid() {
     wait_for_pid_exit "$PID_TO_STOP"
   fi
 }
+is_legacy_managed_runtime() {
+  node - "$DEFAULT_RUNTIME_PID" "$LOG_FILE" <<'NODE'
+const fs = require("node:fs");
+const pid = Number.parseInt(process.argv[2] ?? "", 10);
+const logPath = process.argv[3] ?? "";
+if (process.platform !== "linux" || !Number.isInteger(pid) || pid <= 0 || !logPath) {
+  process.exit(1);
+}
+try {
+  const expected = fs.realpathSync(logPath);
+  for (const fd of [1, 2]) {
+    try {
+      if (fs.realpathSync(\`/proc/\${pid}/fd/\${fd}\`) === expected) {
+        process.exit(0);
+      }
+    } catch {}
+  }
+} catch {}
+process.exit(1);
+NODE
+}
 REMOTE_PID="$(cat "$PID_FILE" 2>/dev/null || true)"
 REMOTE_PORT="$(cat "$PORT_FILE" 2>/dev/null || true)"
 REMOTE_MANAGED="$(cat "$MANAGED_FILE" 2>/dev/null || true)"
@@ -545,6 +566,12 @@ if [ -n "$DEFAULT_RUNTIME_INFO" ]; then
   DEFAULT_RUNTIME_STATE_KEY="\${DEFAULT_RUNTIME_REST%%|*}"
   DEFAULT_RUNTIME_RUNNER_ID="\${DEFAULT_RUNTIME_REST#*|}"
 fi
+LEGACY_MANAGED=0
+if [ -z "$DEFAULT_RUNTIME_STATE_KEY" ] && [ -n "$DEFAULT_RUNTIME_PID" ]; then
+  if [ "$REMOTE_MANAGED" = "managed" ] || is_legacy_managed_runtime; then
+    LEGACY_MANAGED=1
+  fi
+fi
 if [ -n "$DEFAULT_REMOTE_PORT" ]; then
   REMOTE_PORT="$DEFAULT_REMOTE_PORT"
   if wait_ready "@@T3_REUSE_READY_TIMEOUT_MS@@"; then
@@ -560,7 +587,7 @@ if [ -n "$DEFAULT_REMOTE_PORT" ]; then
         REMOTE_PORT=""
         REMOTE_MANAGED=""
       fi
-    elif [ -z "$DEFAULT_RUNTIME_STATE_KEY" ] && [ "$REMOTE_MANAGED" = "managed" ]; then
+    elif [ "$LEGACY_MANAGED" -eq 1 ]; then
       stop_pid "$DEFAULT_RUNTIME_PID"
       if [ "$REMOTE_PID" != "$DEFAULT_RUNTIME_PID" ]; then
         stop_pid "$REMOTE_PID"

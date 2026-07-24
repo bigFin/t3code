@@ -258,6 +258,9 @@ describe("ssh tunnel scripts", () => {
     );
     assert.include(buildRemoteLaunchScript(), "runtime.sshLaunch.stateKey");
     assert.include(buildRemoteLaunchScript(), "runtime.sshLaunch.runnerId");
+    assert.include(buildRemoteLaunchScript(), "is_legacy_managed_runtime()");
+    assert.include(buildRemoteLaunchScript(), "fs.realpathSync(`/proc/${pid}/fd/${fd}`)");
+    assert.include(buildRemoteLaunchScript(), 'elif [ "$LEGACY_MANAGED" -eq 1 ]; then');
     assert.include(
       buildRemoteLaunchScript(),
       'if [ "$DEFAULT_RUNTIME_STATE_KEY" = "$STATE_KEY" ]; then',
