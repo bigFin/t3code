@@ -1,9 +1,11 @@
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
+import * as Schema from "effect/Schema";
 
 import * as Electron from "electron";
 
@@ -44,6 +46,7 @@ type DesktopWindowRuntimeServices =
   | DesktopEnvironment.DesktopEnvironment
   | DesktopAssets.DesktopAssets
   | DesktopAppSettings.DesktopAppSettings
+  | FileSystem.FileSystem
   | ElectronMenu.ElectronMenu
   | ElectronShell.ElectronShell
   | ElectronTheme.ElectronTheme
@@ -53,6 +56,14 @@ type DesktopWindowRuntimeServices =
 export type DesktopWindowError =
   | ElectronWindow.ElectronWindowCreateError
   | PreviewManager.PreviewManagerError;
+
+class DesktopCustomStylesheetApplyError extends Schema.TaggedErrorClass<DesktopCustomStylesheetApplyError>()(
+  "DesktopCustomStylesheetApplyError",
+  {
+    path: Schema.String,
+    cause: Schema.Defect(),
+  },
+) {}
 
 export class DesktopWindow extends Context.Service<
   DesktopWindow,
@@ -99,7 +110,13 @@ function getIconOption(
   });
 }
 
-function getInitialWindowBackgroundColor(shouldUseDarkColors: boolean): string {
+function getInitialWindowBackgroundColor(
+  shouldUseDarkColors: boolean,
+  transparentWindow = false,
+): string {
+  if (transparentWindow) {
+    return "#00000000";
+  }
   return shouldUseDarkColors ? "#0a0a0a" : "#ffffff";
 }
 
@@ -206,13 +223,16 @@ function syncWindowAppearance(
   window: Electron.BrowserWindow,
   shouldUseDarkColors: boolean,
   platform: NodeJS.Platform,
+  transparentWindow: boolean,
 ): Effect.Effect<void> {
   return Effect.sync(() => {
     if (window.isDestroyed()) {
       return;
     }
 
-    window.setBackgroundColor(getInitialWindowBackgroundColor(shouldUseDarkColors));
+    window.setBackgroundColor(
+      getInitialWindowBackgroundColor(shouldUseDarkColors, transparentWindow),
+    );
     const { titleBarOverlay } = getWindowTitleBarOptions(shouldUseDarkColors, platform);
     if (typeof titleBarOverlay === "object") {
       window.setTitleBarOverlay(titleBarOverlay);
@@ -239,6 +259,7 @@ function bindFirstRevealTrigger(
 
 export const make = Effect.gen(function* () {
   const environment = yield* DesktopEnvironment.DesktopEnvironment;
+  const fileSystem = yield* FileSystem.FileSystem;
   const assets = yield* DesktopAssets.DesktopAssets;
   const electronMenu = yield* ElectronMenu.ElectronMenu;
   const electronShell = yield* ElectronShell.ElectronShell;
@@ -296,6 +317,19 @@ export const make = Effect.gen(function* () {
     const iconOption = getIconOption(iconPaths, environment.platform);
     const shouldUseDarkColors = yield* electronTheme.shouldUseDarkColors;
     const persistedSettings = yield* desktopSettings.get;
+    const customStylesheet = yield* Option.match(environment.customCssPath, {
+      onNone: () => Effect.succeed(Option.none<{ readonly path: string; readonly css: string }>()),
+      onSome: (stylesheetPath) =>
+        fileSystem.readFileString(stylesheetPath).pipe(
+          Effect.map((css) => Option.some({ path: stylesheetPath, css })),
+          Effect.catch((error) =>
+            logWindowWarning("failed to read custom stylesheet; using built-in appearance", {
+              path: stylesheetPath,
+              message: error.message,
+            }).pipe(Effect.as(Option.none<{ readonly path: string; readonly css: string }>())),
+          ),
+        ),
+    });
     const persistedBounds = persistedSettings.mainWindowBounds;
     const displayBoundsResult = yield* Effect.sync(() => {
       try {
@@ -325,7 +359,11 @@ export const make = Effect.gen(function* () {
       show: false,
       autoHideMenuBar: true,
       ...(environment.platform === "darwin" ? { disableAutoHideCursor: true } : {}),
-      backgroundColor: getInitialWindowBackgroundColor(shouldUseDarkColors),
+      transparent: environment.transparentWindow,
+      backgroundColor: getInitialWindowBackgroundColor(
+        shouldUseDarkColors,
+        environment.transparentWindow,
+      ),
       ...iconOption,
       title: environment.displayName,
       ...getWindowTitleBarOptions(shouldUseDarkColors, environment.platform),
@@ -341,6 +379,30 @@ export const make = Effect.gen(function* () {
     if (environment.platform === "darwin") {
       window.setAutoHideCursor(false);
     }
+    const applyCustomStylesheet = Option.match(customStylesheet, {
+      onNone: () => Effect.void,
+      onSome: ({ path: stylesheetPath, css }) =>
+        Effect.tryPromise({
+          try: () => window.webContents.insertCSS(css),
+          catch: (cause) =>
+            new DesktopCustomStylesheetApplyError({
+              path: stylesheetPath,
+              cause,
+            }),
+        }).pipe(
+          Effect.tap(() =>
+            logWindowInfo("custom stylesheet applied", {
+              path: stylesheetPath,
+            }),
+          ),
+          Effect.catch((error) =>
+            logWindowWarning("failed to apply custom stylesheet; using built-in appearance", {
+              path: stylesheetPath,
+              cause: error.cause,
+            }),
+          ),
+        ),
+    });
     let boundsPersistFiber: Fiber.Fiber<void, never> | undefined;
     let pendingBoundsPersistFiber: Fiber.Fiber<void, never> | undefined;
     let boundsPersistenceEnabled = persistedBounds === null || restoredPersistedBounds;
@@ -576,6 +638,7 @@ export const make = Effect.gen(function* () {
       return retryInMs;
     };
 
+    let revealMainWindow: () => void = () => {};
     window.webContents.on("did-finish-load", () => {
       if (
         environment.isDevelopment &&
@@ -589,6 +652,9 @@ export const make = Effect.gen(function* () {
       clearDevelopmentLoadRetry();
       developmentLoadRetryIndex = 0;
       window.setTitle(environment.displayName);
+      if (Option.isSome(customStylesheet)) {
+        void runPromise(applyCustomStylesheet.pipe(Effect.andThen(Effect.sync(revealMainWindow))));
+      }
     });
     window.webContents.on(
       "did-fail-load",
@@ -625,18 +691,26 @@ export const make = Effect.gen(function* () {
       );
     });
 
-    const revealSubscribers: RevealSubscription[] = [(fire) => window.once("ready-to-show", fire)];
-    if (environment.platform === "linux") {
-      revealSubscribers.push((fire) => window.webContents.once("did-finish-load", fire));
-    }
-    bindFirstRevealTrigger(revealSubscribers, () => {
+    let revealed = false;
+    revealMainWindow = () => {
+      if (revealed) return;
+      revealed = true;
       // Reveal the real window, then close the connecting splash (if any) so the
       // two don't overlap and there's no blank gap between them.
       if (persistedSettings.mainWindowMaximized) {
         window.maximize();
       }
       void runPromise(Effect.andThen(electronWindow.reveal(window), dismissConnectingSplash));
-    });
+    };
+    if (Option.isNone(customStylesheet)) {
+      const revealSubscribers: RevealSubscription[] = [
+        (fire) => window.once("ready-to-show", fire),
+      ];
+      if (environment.platform === "linux") {
+        revealSubscribers.push((fire) => window.webContents.once("did-finish-load", fire));
+      }
+      bindFirstRevealTrigger(revealSubscribers, revealMainWindow);
+    }
 
     loadApplication();
     if (environment.isDevelopment) {
@@ -788,8 +862,14 @@ export const make = Effect.gen(function* () {
     }),
     syncAppearance: Effect.gen(function* () {
       const shouldUseDarkColors = yield* electronTheme.shouldUseDarkColors;
+      const splash = yield* Ref.get(splashWindowRef);
       yield* electronWindow.syncAllAppearance((window) =>
-        syncWindowAppearance(window, shouldUseDarkColors, environment.platform),
+        syncWindowAppearance(
+          window,
+          shouldUseDarkColors,
+          environment.platform,
+          environment.transparentWindow && (Option.isNone(splash) || splash.value !== window),
+        ),
       );
     }).pipe(Effect.withSpan("desktop.window.syncAppearance")),
   });

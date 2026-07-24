@@ -7,6 +7,8 @@
 , gh
 , enableGit ? true
 , git
+, customCssPath ? null
+, transparentWindow ? false
 , t3code-unwrapped
 ,
 }:
@@ -24,12 +26,27 @@ symlinkJoin {
   paths = [ t3code-unwrapped ];
   nativeBuildInputs = [ makeBinaryWrapper ];
 
-  postBuild = lib.optionalString (runtimePackages != [ ]) ''
-    for program in "$out/bin"/*; do
-      wrapProgram "$program" \
-        --prefix PATH : "${lib.makeBinPath runtimePackages}"
-    done
-  '';
+  postBuild = lib.optionalString
+    (runtimePackages != [ ] || customCssPath != null || transparentWindow)
+    ''
+      for program in "$out/bin"/*; do
+        wrapperArgs=()
+        ${lib.optionalString (runtimePackages != [ ]) ''
+          wrapperArgs+=(--prefix PATH : ${lib.escapeShellArg (lib.makeBinPath runtimePackages)})
+        ''}
+        ${lib.optionalString (customCssPath != null || transparentWindow) ''
+          if [ "$(basename "$program")" = t3code-desktop ]; then
+            ${lib.optionalString (customCssPath != null) ''
+              wrapperArgs+=(--set T3CODE_CUSTOM_CSS ${lib.escapeShellArg customCssPath})
+            ''}
+            ${lib.optionalString transparentWindow ''
+              wrapperArgs+=(--set T3CODE_DESKTOP_TRANSPARENT_WINDOW true)
+            ''}
+          fi
+        ''}
+        wrapProgram "$program" "''${wrapperArgs[@]}"
+      done
+    '';
 
   passthru.unwrapped = t3code-unwrapped;
   meta = t3code-unwrapped.meta;

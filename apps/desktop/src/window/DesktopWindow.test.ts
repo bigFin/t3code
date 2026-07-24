@@ -2,6 +2,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Logger from "effect/Logger";
@@ -64,6 +65,7 @@ function makeFakeBrowserWindow() {
   const webContents = {
     copyImageAt: vi.fn(),
     getURL: vi.fn(() => "t3code-dev://app/"),
+    insertCSS: vi.fn(() => Promise.resolve("custom-css-key")),
     isLoadingMainFrame: vi.fn(() => false),
     on: vi.fn((eventName: string, listener: (...args: readonly unknown[]) => void) => {
       webContentsListeners.set(eventName, listener);
@@ -114,9 +116,11 @@ function makeFakeBrowserWindow() {
     loadURL: window.loadURL,
     maximize: window.maximize,
     openDevTools: webContents.openDevTools,
+    insertCSS: webContents.insertCSS,
     reload: webContents.reload,
     send: webContents.send,
     setAutoHideCursor: window.setAutoHideCursor,
+    setBackgroundColor: window.setBackgroundColor,
     webContentsListeners,
     windowListeners,
   };
@@ -186,6 +190,8 @@ function makeTestLayer(input: {
     bounds: DesktopAppSettings.DesktopWindowBounds,
   ) => Effect.Effect<void>;
   readonly openedExternalUrls?: unknown[];
+  readonly environmentEnv?: Readonly<Record<string, string | undefined>>;
+  readonly revealedWindows?: Electron.BrowserWindow[];
 }) {
   let desktopSettings = input.desktopSettings ?? DesktopAppSettings.DEFAULT_DESKTOP_SETTINGS;
   const desktopAppSettingsLayer = Layer.succeed(DesktopAppSettings.DesktopAppSettings, {
@@ -234,7 +240,10 @@ function makeTestLayer(input: {
     focusedMainOrFirst: Ref.get(input.mainWindow),
     setMain: (window) => Ref.set(input.mainWindow, Option.some(window)),
     clearMain: () => Ref.set(input.mainWindow, Option.none()),
-    reveal: () => Effect.void,
+    reveal: (window) =>
+      Effect.sync(() => {
+        input.revealedWindows?.push(window);
+      }),
     sendAll: () => Effect.void,
     destroyAll: Effect.void,
     syncAllAppearance: (sync) => sync(input.window),
@@ -244,7 +253,19 @@ function makeTestLayer(input: {
     Layer.provide(
       Layer.mergeAll(
         desktopAssetsLayer,
-        desktopEnvironmentLayer,
+        DesktopEnvironment.layer(environmentInput).pipe(
+          Layer.provide(
+            Layer.mergeAll(
+              NodeServices.layer,
+              DesktopConfig.layerTest({
+                T3CODE_PORT: "3773",
+                VITE_DEV_SERVER_URL: "http://127.0.0.1:5733",
+                ...input.environmentEnv,
+              }),
+            ),
+          ),
+        ),
+        NodeServices.layer,
         desktopAppSettingsLayer,
         desktopServerExposureLayer,
         DesktopState.layer,
@@ -343,6 +364,7 @@ const makeSplashScenario = (createOutcomes: readonly (Electron.BrowserWindow | n
         Layer.mergeAll(
           desktopAssetsLayer,
           desktopEnvironmentLayer,
+          NodeServices.layer,
           DesktopAppSettings.layerTest(),
           desktopServerExposureLayer,
           electronMenuLayer,
@@ -462,6 +484,69 @@ describe("DesktopWindow", () => {
         assert.equal(createdWindowOptions[0]?.x, 120);
         assert.equal(createdWindowOptions[0]?.y, 80);
       }).pipe(Effect.provide(layer));
+    }),
+  );
+
+  it.effect("applies an opt-in custom stylesheet before revealing a transparent window", () =>
+    Effect.gen(function* () {
+      const stylesheetPath = `/tmp/t3code-custom-css-${process.pid}.css`;
+      const fakeWindow = makeFakeBrowserWindow();
+      const createCount = yield* Ref.make(0);
+      const mainWindow = yield* Ref.make<Option.Option<Electron.BrowserWindow>>(Option.none());
+      const createdWindowOptions: Electron.BrowserWindowConstructorOptions[] = [];
+      const revealedWindows: Electron.BrowserWindow[] = [];
+      const layer = makeTestLayer({
+        window: fakeWindow.window,
+        createCount,
+        mainWindow,
+        createdWindowOptions,
+        revealedWindows,
+        environmentEnv: {
+          T3CODE_CUSTOM_CSS: stylesheetPath,
+          T3CODE_DESKTOP_TRANSPARENT_WINDOW: "true",
+        },
+      });
+
+      yield* Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        yield* fileSystem.writeFileString(
+          stylesheetPath,
+          "html, body { background: transparent !important; }",
+        );
+
+        const desktopWindow = yield* DesktopWindow.DesktopWindow;
+        yield* desktopWindow.handleBackendReady(new URL("http://127.0.0.1:3773"));
+
+        assert.isTrue(createdWindowOptions[0]?.transparent);
+        assert.equal(createdWindowOptions[0]?.backgroundColor, "#00000000");
+        assert.equal(fakeWindow.insertCSS.mock.calls.length, 0);
+        assert.deepEqual(revealedWindows, []);
+
+        const didFinishLoad = fakeWindow.webContentsListeners.get("did-finish-load");
+        if (!didFinishLoad) {
+          return yield* Effect.die("renderer load listener was not registered");
+        }
+        didFinishLoad();
+        yield* Effect.promise(() =>
+          vi.waitFor(() => {
+            assert.deepEqual(fakeWindow.insertCSS.mock.calls, [
+              ["html, body { background: transparent !important; }"],
+            ]);
+            assert.deepEqual(revealedWindows, [fakeWindow.window]);
+          }),
+        );
+
+        yield* desktopWindow.syncAppearance;
+        assert.deepEqual(fakeWindow.setBackgroundColor.mock.calls, [["#00000000"]]);
+      }).pipe(
+        Effect.ensuring(
+          FileSystem.FileSystem.pipe(
+            Effect.flatMap((fileSystem) => fileSystem.remove(stylesheetPath)),
+            Effect.ignore,
+          ),
+        ),
+        Effect.provide(Layer.mergeAll(layer, NodeServices.layer)),
+      );
     }),
   );
 

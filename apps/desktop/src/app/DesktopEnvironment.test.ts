@@ -46,6 +46,8 @@ describe("DesktopEnvironment", () => {
           VITE_DEV_SERVER_URL: "http://localhost:5173",
           T3CODE_DEV_REMOTE_T3_SERVER_ENTRY_PATH: " /remote/server.mjs ",
           T3CODE_REMOTE_T3_PACKAGE_ARCHIVE: " /opt/t3/t3-server.tgz ",
+          T3CODE_CUSTOM_CSS: " ~/.config/t3code/custom.css ",
+          T3CODE_DESKTOP_TRANSPARENT_WINDOW: "true",
           T3CODE_OTLP_TRACES_URL: " http://127.0.0.1:4318/v1/traces ",
           T3CODE_OTLP_EXPORT_INTERVAL_MS: "2500",
         },
@@ -79,6 +81,11 @@ describe("DesktopEnvironment", () => {
         environment.remoteT3PackageArchivePath,
         Option.some("/opt/t3/t3-server.tgz"),
       );
+      assert.deepEqual(
+        environment.customCssPath,
+        Option.some("/Users/alice/.config/t3code/custom.css"),
+      );
+      assert.isTrue(environment.transparentWindow);
       assert.deepEqual(environment.configuredBackendPort, Option.some(4949));
       assert.deepEqual(environment.commitHashOverride, Option.some("0123456789abcdef"));
       assert.deepEqual(environment.otlpTracesUrl, Option.some("http://127.0.0.1:4318/v1/traces"));

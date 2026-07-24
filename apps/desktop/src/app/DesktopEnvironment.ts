@@ -55,6 +55,8 @@ export class DesktopEnvironment extends Context.Service<
     readonly backendCwd: string;
     readonly preloadPath: string;
     readonly appUpdateYmlPath: string;
+    readonly customCssPath: Option.Option<string>;
+    readonly transparentWindow: boolean;
     readonly devServerUrl: Option.Option<URL>;
     readonly devRemoteT3ServerEntryPath: Option.Option<string>;
     readonly remoteT3PackageArchivePath: Option.Option<string>;
@@ -164,6 +166,15 @@ const make = Effect.fn("desktop.environment.make")(function* (
   const userDataDirName = isDevelopment ? "t3code-dev" : "t3code";
   const legacyUserDataDirName = isDevelopment ? "T3 Code (Dev)" : "T3 Code (Alpha)";
   const resourcesPath = input.resourcesPath;
+  const customCssPath = Option.map(config.customCssPath, (configuredPath) => {
+    if (configuredPath === "~") {
+      return homeDirectory;
+    }
+    if (configuredPath.startsWith("~/") || configuredPath.startsWith("~\\")) {
+      return path.join(homeDirectory, configuredPath.slice(2));
+    }
+    return path.resolve(configuredPath);
+  });
 
   return DesktopEnvironment.of({
     path,
@@ -193,6 +204,8 @@ const make = Effect.fn("desktop.environment.make")(function* (
     appUpdateYmlPath: input.isPackaged
       ? path.join(resourcesPath, "app-update.yml")
       : path.join(input.appPath, "dev-app-update.yml"),
+    customCssPath,
+    transparentWindow: config.transparentWindow,
     devServerUrl,
     devRemoteT3ServerEntryPath: config.devRemoteT3ServerEntryPath,
     remoteT3PackageArchivePath: config.remoteT3PackageArchivePath,

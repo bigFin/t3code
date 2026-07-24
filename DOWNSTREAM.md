@@ -34,6 +34,17 @@ The flake supports `x86_64-linux` and `aarch64-linux`.
   added to `PATH`;
 - `overlays.default`: `t3code-bigfin` and `t3code-bigfin-unwrapped`.
 
+The wrapped package also accepts appearance overrides:
+
+- `customCssPath`: an absolute path, relative path, or `~/...` path to a
+  desktop-only stylesheet loaded after the built-in app styles;
+- `transparentWindow`: creates the Electron main window with a transparent
+  backing surface so custom CSS can expose the compositor background.
+
+The equivalent direct-launch environment variables are `T3CODE_CUSTOM_CSS`
+and `T3CODE_DESKTOP_TRANSPARENT_WINDOW=true`. Both are opt-in, so the upstream
+appearance remains the default.
+
 Update the fixed pnpm dependency hash after lockfile changes with:
 
 ```bash
