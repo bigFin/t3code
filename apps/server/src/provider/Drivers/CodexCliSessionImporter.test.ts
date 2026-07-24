@@ -12,6 +12,7 @@ import {
   CODEX_INTERACTIVE_SOURCE_KINDS,
   codexCliMessageImportCommand,
   collectCodexCliImportedMessages,
+  isCodexProviderThreadOwnedByAnotherBinding,
   isCurrentCodexCliImport,
   isImportableCodexInteractiveThread,
   isLiveCodexBinding,
@@ -169,6 +170,51 @@ describe("CodexCliSessionImporter transcript conversion", () => {
     expect(isLiveCodexBinding({ ...baseBinding, status: "stopped" })).toBe(false);
     expect(isLiveCodexBinding({ ...baseBinding, status: "error" })).toBe(false);
     expect(isLiveCodexBinding(undefined)).toBe(false);
+  });
+
+  it("does not import a provider thread already owned by a differently keyed T3 thread", () => {
+    const providerThreadId = "019codex-thread";
+    const baseBinding = {
+      provider: ProviderDriverKind.make("codex"),
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      status: "stopped" as const,
+      runtimeMode: "full-access" as const,
+      lastSeenAt: "2026-07-24T00:00:00.000Z",
+    };
+
+    expect(
+      isCodexProviderThreadOwnedByAnotherBinding(providerThreadId, [
+        {
+          ...baseBinding,
+          threadId: ThreadId.make("t3-owned-thread"),
+          resumeCursor: { threadId: providerThreadId },
+        },
+      ]),
+    ).toBe(true);
+    expect(
+      isCodexProviderThreadOwnedByAnotherBinding(providerThreadId, [
+        {
+          ...baseBinding,
+          threadId: ThreadId.make(providerThreadId),
+          resumeCursor: { threadId: providerThreadId },
+        },
+      ]),
+    ).toBe(false);
+    expect(
+      isCodexProviderThreadOwnedByAnotherBinding(providerThreadId, [
+        {
+          ...baseBinding,
+          threadId: ThreadId.make("other-provider-thread"),
+          provider: ProviderDriverKind.make("claude"),
+          resumeCursor: { threadId: providerThreadId },
+        },
+        {
+          ...baseBinding,
+          threadId: ThreadId.make("malformed-cursor-thread"),
+          resumeCursor: { threadId: 42 },
+        },
+      ]),
+    ).toBe(false);
   });
 
   it("interrupts stale projected work once the live provider binding is gone", () => {

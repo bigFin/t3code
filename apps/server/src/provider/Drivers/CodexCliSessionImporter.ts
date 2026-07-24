@@ -34,6 +34,7 @@ import { mergeProviderInstanceEnvironment } from "../ProviderInstanceEnvironment
 import {
   ProviderSessionDirectory,
   type ProviderRuntimeBinding,
+  type ProviderRuntimeBindingWithMetadata,
 } from "../Services/ProviderSessionDirectory.ts";
 import {
   CodexCliSessionImporter,
@@ -251,6 +252,30 @@ function readImportedCodexUpdatedAt(runtimePayload: unknown): number | undefined
     : undefined;
 }
 
+function readCodexResumeCursorThreadId(resumeCursor: unknown): string | undefined {
+  if (
+    resumeCursor === null ||
+    typeof resumeCursor !== "object" ||
+    Array.isArray(resumeCursor) ||
+    !("threadId" in resumeCursor)
+  ) {
+    return undefined;
+  }
+  return typeof resumeCursor.threadId === "string" ? resumeCursor.threadId : undefined;
+}
+
+export function isCodexProviderThreadOwnedByAnotherBinding(
+  providerThreadId: string,
+  bindings: ReadonlyArray<ProviderRuntimeBindingWithMetadata>,
+): boolean {
+  return bindings.some(
+    (binding) =>
+      binding.provider === CODEX_DRIVER &&
+      binding.threadId !== providerThreadId &&
+      readCodexResumeCursorThreadId(binding.resumeCursor) === providerThreadId,
+  );
+}
+
 export function isLiveCodexBinding(binding: ProviderRuntimeBinding | undefined): boolean {
   return binding?.status === "starting" || binding?.status === "running";
 }
@@ -437,12 +462,20 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
       target: CodexDiscoveryTarget,
       client: CodexClient.CodexAppServerClient["Service"],
       listedThread: CodexListedThread,
+      bindings: ReadonlyArray<ProviderRuntimeBindingWithMetadata>,
     ) {
       if (!isImportableCodexInteractiveThread(listedThread)) {
         return false;
       }
 
       const threadId = ThreadId.make(listedThread.id);
+      if (isCodexProviderThreadOwnedByAnotherBinding(listedThread.id, bindings)) {
+        yield* Effect.logDebug("codex.cli-import.skipped-t3-owned-thread", {
+          providerThreadId: listedThread.id,
+          instanceId: target.instanceId,
+        });
+        return false;
+      }
       const existingBinding = Option.getOrUndefined(yield* directory.getBinding(threadId));
       if (existingBinding !== undefined && existingBinding.provider !== CODEX_DRIVER) {
         yield* Effect.logWarning("codex.cli-import.binding-conflict", {
@@ -582,9 +615,10 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
       return yield* withCodexClient(target, (client) =>
         Effect.gen(function* () {
           const threads = yield* listInteractiveThreads(client);
+          const bindings = yield* directory.listBindings();
           let importedCount = 0;
           for (const thread of threads) {
-            const imported = yield* importThread(target, client, thread).pipe(
+            const imported = yield* importThread(target, client, thread, bindings).pipe(
               Effect.catchCause((cause) =>
                 Effect.logWarning("codex.cli-import.thread-failed", {
                   instanceId: target.instanceId,
