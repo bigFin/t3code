@@ -147,13 +147,18 @@ export class CodexAppServerProcessExitedError extends Schema.TaggedErrorClass<Co
   {
     code: Schema.optional(Schema.Number),
     pid: Schema.optionalKey(Schema.Int),
+    stderrTail: Schema.optionalKey(Schema.String),
     cause: Schema.optional(Schema.Defect()),
   },
 ) {
   override get message() {
-    return this.code === undefined
-      ? "Codex App Server process exited"
-      : `Codex App Server process exited with code ${this.code}`;
+    const summary =
+      this.code === undefined
+        ? "Codex App Server process exited"
+        : `Codex App Server process exited with code ${this.code}`;
+    return this.stderrTail === undefined
+      ? summary
+      : `${summary}\nCodex App Server stderr:\n${this.stderrTail}`;
   }
 }
 

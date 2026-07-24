@@ -10,6 +10,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 
 import * as CodexClient from "./client.ts";
+import * as CodexError from "./errors.ts";
 
 const mockPeerPath = Effect.map(Effect.service(Path.Path), (path) =>
   path.join(import.meta.dirname, "../test/fixtures/codex-app-server-mock-peer.ts"),
@@ -152,6 +153,43 @@ it.layer(NodeServices.layer)("effect-codex-app-server client", (it) => {
       );
 
       assert.equal(initialized.userAgent, "mock-codex-app-server");
+    }),
+  );
+  it.effect("reports a bounded redacted stderr tail when the child exits", () =>
+    Effect.gen(function* () {
+      const secret = "sk-this-is-a-test-secret-value";
+      const handle = yield* makeHandle({
+        CODEX_APP_SERVER_TEST_EXIT_CODE: "7",
+        CODEX_APP_SERVER_TEST_STDERR_TEXT: `${"x".repeat(32 * 1024)}\nBearer token-value\n${secret}\nstartup failed`,
+      });
+      const scope = yield* Scope.make();
+      const context = yield* Layer.buildWithScope(CodexClient.layerChildProcess(handle), scope);
+
+      const error = yield* Effect.gen(function* () {
+        const client = yield* CodexClient.CodexAppServerClient;
+        return yield* Effect.flip(
+          client.request("initialize", {
+            clientInfo: {
+              name: "effect-codex-app-server-test",
+              title: "Effect Codex App Server Test",
+              version: "0.0.0",
+            },
+            capabilities: {
+              experimentalApi: true,
+              optOutNotificationMethods: null,
+            },
+          }),
+        );
+      }).pipe(Effect.provide(context), Effect.ensuring(Scope.close(scope, Exit.void)));
+
+      assert.instanceOf(error, CodexError.CodexAppServerProcessExitedError);
+      assert.equal(error.code, 7);
+      assert.isDefined(error.stderrTail);
+      assert.isAtMost(error.stderrTail?.length ?? 0, 16 * 1024);
+      assert.include(error.stderrTail ?? "", "startup failed");
+      assert.include(error.stderrTail ?? "", "Bearer [redacted]");
+      assert.include(error.stderrTail ?? "", "sk-[redacted]");
+      assert.notInclude(error.stderrTail ?? "", secret);
     }),
   );
 });

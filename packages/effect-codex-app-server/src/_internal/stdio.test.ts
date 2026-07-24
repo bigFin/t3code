@@ -21,6 +21,29 @@ describe("Codex App Server child process termination", () => {
     }),
   );
 
+  it.effect("includes captured stderr diagnostics with the exit error", () =>
+    Effect.gen(function* () {
+      const error = yield* makeTerminationError(
+        {
+          pid: ChildProcessSpawner.ProcessId(53),
+          exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(1)),
+        },
+        Effect.succeed("failed to load configuration"),
+      );
+
+      assert.instanceOf(error, CodexError.CodexAppServerProcessExitedError);
+      assert.equal(error.stderrTail, "failed to load configuration");
+      assert.equal(
+        error.message,
+        [
+          "Codex App Server process exited with code 1",
+          "Codex App Server stderr:",
+          "failed to load configuration",
+        ].join("\n"),
+      );
+    }),
+  );
+
   it.effect("retains the process identifier and exact exit-status cause", () =>
     Effect.gen(function* () {
       const rootCause = new Error("private process diagnostics");

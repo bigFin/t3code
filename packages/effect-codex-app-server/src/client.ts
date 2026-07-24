@@ -1,6 +1,8 @@
 import * as Context from "effect/Context";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Stdio from "effect/Stdio";
@@ -17,6 +19,23 @@ import {
   runHandler,
 } from "./_internal/shared.ts";
 import { makeChildStdio, makeTerminationError } from "./_internal/stdio.ts";
+
+const CHILD_STDERR_TAIL_MAX_CHARS = 16 * 1024;
+
+function appendBoundedTail(current: string, chunk: string): string {
+  const combined = current + chunk;
+  return combined.length <= CHILD_STDERR_TAIL_MAX_CHARS
+    ? combined
+    : combined.slice(-CHILD_STDERR_TAIL_MAX_CHARS);
+}
+
+function sanitizeStderrTail(stderr: string): string | undefined {
+  const sanitized = stderr
+    .replace(/\bsk-[A-Za-z0-9_-]{12,}\b/g, "sk-[redacted]")
+    .replace(/\b(Bearer\s+)[A-Za-z0-9._~+/-]+/gi, "$1[redacted]")
+    .trim();
+  return sanitized.length === 0 ? undefined : sanitized;
+}
 
 export interface CodexAppServerClientOptions {
   readonly logIncoming?: boolean;
@@ -264,6 +283,20 @@ export const layerChildProcess = (
 const makeChildProcessClient = Effect.fn(
   "effect-codex-app-server/CodexAppServerClient.makeChildProcessClient",
 )(function* (handle: ChildProcessSpawner.ChildProcessHandle, options: CodexAppServerClientOptions) {
-  yield* Stream.runDrain(handle.stderr).pipe(Effect.ignore, Effect.forkScoped);
-  return yield* make(makeChildStdio(handle), options, makeTerminationError(handle));
+  const stderrTail = yield* Ref.make("");
+  const stderrDrained = yield* Deferred.make<void>();
+  yield* handle.stderr.pipe(
+    Stream.decodeText(),
+    Stream.runForEach((chunk) =>
+      Ref.update(stderrTail, (current) => appendBoundedTail(current, chunk)),
+    ),
+    Effect.ignore,
+    Effect.ensuring(Deferred.succeed(stderrDrained, undefined).pipe(Effect.ignore)),
+    Effect.forkScoped,
+  );
+  const readStderrTail = Deferred.await(stderrDrained).pipe(
+    Effect.andThen(Ref.get(stderrTail)),
+    Effect.map(sanitizeStderrTail),
+  );
+  return yield* make(makeChildStdio(handle), options, makeTerminationError(handle, readStderrTail));
 });

@@ -51,13 +51,25 @@ type ChildProcessTerminationHandle = Pick<
 
 export const makeTerminationError = (
   handle: ChildProcessTerminationHandle,
+  stderrTail: Effect.Effect<string | undefined> = Effect.succeed(undefined),
 ): Effect.Effect<CodexError.CodexAppServerError> =>
-  Effect.match(handle.exitCode, {
+  Effect.matchEffect(handle.exitCode, {
     onFailure: (cause) =>
-      new CodexError.CodexAppServerTransportError({
-        operation: "read-process-exit-status",
-        pid: handle.pid,
-        cause,
-      }),
-    onSuccess: (code) => new CodexError.CodexAppServerProcessExitedError({ code, pid: handle.pid }),
+      Effect.succeed(
+        new CodexError.CodexAppServerTransportError({
+          operation: "read-process-exit-status",
+          pid: handle.pid,
+          cause,
+        }),
+      ),
+    onSuccess: (code) =>
+      Effect.map(
+        stderrTail,
+        (capturedStderr) =>
+          new CodexError.CodexAppServerProcessExitedError({
+            code,
+            pid: handle.pid,
+            ...(capturedStderr === undefined ? {} : { stderrTail: capturedStderr }),
+          }),
+      ),
   });
