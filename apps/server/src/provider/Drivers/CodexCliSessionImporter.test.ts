@@ -5,6 +5,8 @@ import {
   ThreadId,
   TurnId,
 } from "@t3tools/contracts";
+import * as Effect from "effect/Effect";
+import * as Path from "effect/Path";
 import { describe, expect, it } from "vite-plus/test";
 import type * as CodexSchema from "effect-codex-app-server/schema";
 
@@ -12,12 +14,16 @@ import {
   CODEX_INTERACTIVE_SOURCE_KINDS,
   codexCliMessageImportCommand,
   collectCodexCliImportedMessages,
+  collectCodexCliRolloutMessages,
   isCodexProviderThreadOwnedByAnotherBinding,
+  isCodexRolloutPathWithinSessionsRoot,
   isCurrentCodexCliImport,
   isImportableCodexInteractiveThread,
   isLiveCodexBinding,
   shouldInterruptStaleCodexCliSession,
 } from "./CodexCliSessionImporter.ts";
+
+const path = Effect.runSync(Path.Path.pipe(Effect.provide(Path.layer)));
 
 function makeThread(): CodexSchema.V2ThreadReadResponse["thread"] {
   return {
@@ -127,6 +133,168 @@ describe("CodexCliSessionImporter transcript conversion", () => {
         turns: [],
       }),
     ).toEqual([]);
+  });
+
+  it("recovers user and assistant messages from legacy rollout JSONL", () => {
+    const contents = [
+      JSON.stringify({
+        timestamp: "2026-07-16T15:29:37.585Z",
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "developer",
+          content: [{ type: "input_text", text: "Hidden instructions." }],
+        },
+      }),
+      JSON.stringify({
+        timestamp: "2026-07-16T15:29:37.586Z",
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "# AGENTS.md instructions for /tmp/project" }],
+        },
+      }),
+      JSON.stringify({
+        timestamp: "2026-07-16T15:29:37.589Z",
+        type: "event_msg",
+        payload: {
+          type: "user_message",
+          message: "Inspect the legacy session.",
+          turn_id: "turn-legacy",
+        },
+      }),
+      "{malformed",
+      JSON.stringify({
+        timestamp: "2026-07-16T15:29:38.100Z",
+        type: "response_item",
+        payload: {
+          type: "message",
+          id: "assistant-legacy",
+          role: "assistant",
+          content: [{ type: "output_text", text: "Recovered it." }],
+          internal_chat_message_metadata_passthrough: {
+            turn_id: "turn-legacy",
+          },
+        },
+      }),
+    ].join("\n");
+
+    expect(
+      collectCodexCliRolloutMessages({
+        threadId: "019legacy-thread",
+        contents,
+        createdAt: 1_784_215_777,
+      }),
+    ).toEqual([
+      {
+        messageId: MessageId.make("codex-cli:019legacy-thread:rollout:2"),
+        role: "user",
+        text: "Inspect the legacy session.",
+        turnId: TurnId.make("turn-legacy"),
+        createdAt: "2026-07-16T15:29:37.589Z",
+      },
+      {
+        messageId: MessageId.make("codex-cli:019legacy-thread:rollout:4"),
+        role: "assistant",
+        text: "Recovered it.",
+        turnId: TurnId.make("turn-legacy"),
+        createdAt: "2026-07-16T15:29:38.100Z",
+      },
+    ]);
+  });
+
+  it("falls back to safe raw user response items when user events are absent", () => {
+    const contents = [
+      JSON.stringify({
+        timestamp: "2026-07-16T15:29:37.589Z",
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "Legacy user prompt." }],
+        },
+      }),
+      JSON.stringify({
+        timestamp: "invalid",
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "<turn_aborted>hidden</turn_aborted>" }],
+        },
+      }),
+    ].join("\n");
+
+    expect(
+      collectCodexCliRolloutMessages({
+        threadId: "019legacy-thread",
+        contents,
+        createdAt: 1_784_215_777,
+      }),
+    ).toEqual([
+      {
+        messageId: MessageId.make("codex-cli:019legacy-thread:rollout:0"),
+        role: "user",
+        text: "Legacy user prompt.",
+        turnId: TurnId.make("codex-cli:019legacy-thread:rollout-turn:0"),
+        createdAt: "2026-07-16T15:29:37.589Z",
+      },
+    ]);
+  });
+
+  it("uses stable thread-scoped rollout ids", () => {
+    const input = {
+      contents: JSON.stringify({
+        timestamp: "2026-07-16T15:29:37.589Z",
+        type: "event_msg",
+        payload: {
+          type: "user_message",
+          message: "Stable.",
+        },
+      }),
+      createdAt: 1_784_215_777,
+    };
+    const first = collectCodexCliRolloutMessages({
+      threadId: "019legacy-thread",
+      ...input,
+    });
+    const repeated = collectCodexCliRolloutMessages({
+      threadId: "019legacy-thread",
+      ...input,
+    });
+    const otherThread = collectCodexCliRolloutMessages({
+      threadId: "019other-thread",
+      ...input,
+    });
+
+    expect(repeated).toEqual(first);
+    expect(otherThread[0]?.messageId).not.toBe(first[0]?.messageId);
+    expect(otherThread[0]?.turnId).not.toBe(first[0]?.turnId);
+  });
+
+  it("rejects rollout paths outside the configured sessions root", () => {
+    expect(
+      isCodexRolloutPathWithinSessionsRoot(
+        path,
+        "/home/fin/.codex/sessions",
+        "/home/fin/.codex/sessions/2026/07/16/rollout.jsonl",
+      ),
+    ).toBe(true);
+    expect(
+      isCodexRolloutPathWithinSessionsRoot(
+        path,
+        "/home/fin/.codex/sessions",
+        "/home/fin/.codex/sessions-other/rollout.jsonl",
+      ),
+    ).toBe(false);
+    expect(
+      isCodexRolloutPathWithinSessionsRoot(
+        path,
+        "/home/fin/.codex/sessions",
+        "/home/fin/.codex/auth.json",
+      ),
+    ).toBe(false);
   });
 
   it("uses stable command ids and changes them when projected content changes", () => {
@@ -256,6 +424,7 @@ describe("CodexCliSessionImporter transcript conversion", () => {
       runtimeMode: "full-access" as const,
       runtimePayload: {
         importedFrom: "codex-cli",
+        codexCliImportVersion: 2,
         codexCliUpdatedAt: 1_700_000_002,
       },
     };
@@ -268,6 +437,18 @@ describe("CodexCliSessionImporter transcript conversion", () => {
           runtimePayload: {
             ...binding.runtimePayload,
             codexCliUpdatedAt: 1_700_000_001,
+          },
+        },
+        makeThread(),
+      ),
+    ).toBe(false);
+    expect(
+      isCurrentCodexCliImport(
+        {
+          ...binding,
+          runtimePayload: {
+            importedFrom: "codex-cli",
+            codexCliUpdatedAt: 1_700_000_002,
           },
         },
         makeThread(),

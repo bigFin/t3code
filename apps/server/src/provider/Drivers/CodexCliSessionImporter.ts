@@ -15,6 +15,7 @@ import { resolveSpawnCommand } from "@t3tools/shared/shell";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
@@ -50,6 +51,7 @@ const DEFAULT_SCAN_INTERVAL_MS = 60_000;
 const CODEX_APP_SERVER_FORCE_KILL_AFTER = "2 seconds" as const;
 const THREAD_LIST_PAGE_SIZE = 100;
 const MAX_INTERACTIVE_THREADS_PER_SCAN = 100;
+const CODEX_CLI_IMPORT_VERSION = 2;
 export const CODEX_INTERACTIVE_SOURCE_KINDS = ["cli", "vscode"] as const;
 
 const decodeCodexSettings = Schema.decodeUnknownEffect(CodexSettings);
@@ -73,6 +75,12 @@ export interface CodexCliImportedMessage {
   readonly text: string;
   readonly turnId: TurnId;
   readonly createdAt: string;
+}
+
+type UnknownRecord = Record<string, unknown>;
+
+function isUnknownRecord(value: unknown): value is UnknownRecord {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
 function stableTextHash(value: string): string {
@@ -188,6 +196,155 @@ export function collectCodexCliImportedMessages(
   return messages;
 }
 
+function rolloutMessageText(content: unknown): string {
+  if (!Array.isArray(content)) {
+    return "";
+  }
+
+  return content
+    .flatMap((item) => {
+      if (!isUnknownRecord(item) || typeof item.text !== "string") {
+        return [];
+      }
+      return item.type === "input_text" || item.type === "output_text" || item.type === "text"
+        ? [item.text]
+        : [];
+    })
+    .join("\n");
+}
+
+function isSyntheticRolloutUserMessage(text: string): boolean {
+  const trimmed = text.trimStart();
+  return (
+    trimmed.startsWith("# AGENTS.md instructions for ") ||
+    trimmed.startsWith("<environment_context>") ||
+    trimmed.startsWith("<permissions instructions>") ||
+    trimmed.startsWith("<collaboration_mode>") ||
+    trimmed.startsWith("<skills_instructions>") ||
+    trimmed.startsWith("<apps_instructions>") ||
+    trimmed.startsWith("<plugins_instructions>") ||
+    trimmed.startsWith("<recommended_plugins>") ||
+    trimmed.startsWith("<model_switch>") ||
+    trimmed.startsWith("<turn_aborted>")
+  );
+}
+
+function rolloutTurnId(threadId: string, payload: UnknownRecord, lineIndex: number): TurnId {
+  const metadata = payload.internal_chat_message_metadata_passthrough;
+  if (isUnknownRecord(metadata) && typeof metadata.turn_id === "string") {
+    return TurnId.make(metadata.turn_id);
+  }
+  if (typeof payload.turn_id === "string") {
+    return TurnId.make(payload.turn_id);
+  }
+  return TurnId.make(`codex-cli:${threadId}:rollout-turn:${lineIndex}`);
+}
+
+function rolloutTimestampMillis(
+  timestamp: unknown,
+  fallbackMillis: number,
+  lastCreatedAtMillis: number,
+): number {
+  const parsed = typeof timestamp === "string" ? Date.parse(timestamp) : Number.NaN;
+  return Math.max(lastCreatedAtMillis + 1, Number.isFinite(parsed) ? parsed : fallbackMillis);
+}
+
+/**
+ * Recover renderable messages directly from a Codex rollout when app-server's
+ * legacy history reader returns an empty transcript. User-facing `event_msg`
+ * records are preferred over raw user response items so injected AGENTS,
+ * environment, and harness context does not appear in the conversation.
+ */
+export function collectCodexCliRolloutMessages(input: {
+  readonly threadId: string;
+  readonly contents: string;
+  readonly createdAt: number;
+}): ReadonlyArray<CodexCliImportedMessage> {
+  const records = input.contents.split(/\r?\n/).flatMap((line, lineIndex) => {
+    if (line.trim().length === 0) {
+      return [];
+    }
+    try {
+      const value: unknown = JSON.parse(line);
+      return isUnknownRecord(value) ? [{ lineIndex, value }] : [];
+    } catch {
+      return [];
+    }
+  });
+  const hasUserMessageEvents = records.some(
+    ({ value }) =>
+      value.type === "event_msg" &&
+      isUnknownRecord(value.payload) &&
+      value.payload.type === "user_message" &&
+      typeof value.payload.message === "string" &&
+      value.payload.message.length > 0,
+  );
+  const messages: CodexCliImportedMessage[] = [];
+  const fallbackMillis = unixSecondsToMillis(input.createdAt, 0);
+  let lastCreatedAtMillis = fallbackMillis - 1;
+
+  for (const { lineIndex, value } of records) {
+    const payload = value.payload;
+    if (!isUnknownRecord(payload)) {
+      continue;
+    }
+
+    let role: "user" | "assistant" | undefined;
+    let text = "";
+    if (
+      value.type === "event_msg" &&
+      payload.type === "user_message" &&
+      typeof payload.message === "string"
+    ) {
+      role = "user";
+      text = payload.message;
+    } else if (
+      value.type === "response_item" &&
+      payload.type === "message" &&
+      payload.role === "assistant"
+    ) {
+      role = "assistant";
+      text = rolloutMessageText(payload.content);
+    } else if (
+      !hasUserMessageEvents &&
+      value.type === "response_item" &&
+      payload.type === "message" &&
+      payload.role === "user"
+    ) {
+      role = "user";
+      text = rolloutMessageText(payload.content);
+    }
+
+    if (role === undefined || text.length === 0 || isSyntheticRolloutUserMessage(text)) {
+      continue;
+    }
+
+    lastCreatedAtMillis = rolloutTimestampMillis(
+      value.timestamp,
+      fallbackMillis,
+      lastCreatedAtMillis,
+    );
+    messages.push({
+      messageId: MessageId.make(`codex-cli:${input.threadId}:rollout:${lineIndex}`),
+      role,
+      text,
+      turnId: rolloutTurnId(input.threadId, payload, lineIndex),
+      createdAt: DateTime.formatIso(DateTime.makeUnsafe(lastCreatedAtMillis)),
+    });
+  }
+
+  return messages;
+}
+
+export function isCodexRolloutPathWithinSessionsRoot(
+  path: Path.Path,
+  sessionsRoot: string,
+  rolloutPath: string,
+): boolean {
+  const relative = path.relative(path.resolve(sessionsRoot), path.resolve(rolloutPath));
+  return relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+}
+
 export function codexCliMessageImportCommand(input: {
   readonly threadId: ThreadId;
   readonly message: CodexCliImportedMessage;
@@ -252,6 +409,21 @@ function readImportedCodexUpdatedAt(runtimePayload: unknown): number | undefined
     : undefined;
 }
 
+function readCodexCliImportVersion(runtimePayload: unknown): number | undefined {
+  if (
+    runtimePayload === null ||
+    typeof runtimePayload !== "object" ||
+    Array.isArray(runtimePayload) ||
+    !("codexCliImportVersion" in runtimePayload)
+  ) {
+    return undefined;
+  }
+  return typeof runtimePayload.codexCliImportVersion === "number" &&
+    Number.isFinite(runtimePayload.codexCliImportVersion)
+    ? runtimePayload.codexCliImportVersion
+    : undefined;
+}
+
 function readCodexResumeCursorThreadId(resumeCursor: unknown): string | undefined {
   if (
     resumeCursor === null ||
@@ -294,7 +466,10 @@ export function isCurrentCodexCliImport(
   binding: ProviderRuntimeBinding | undefined,
   listedThread: CodexListedThread,
 ): boolean {
-  return readImportedCodexUpdatedAt(binding?.runtimePayload) === listedThread.updatedAt;
+  return (
+    readCodexCliImportVersion(binding?.runtimePayload) === CODEX_CLI_IMPORT_VERSION &&
+    readImportedCodexUpdatedAt(binding?.runtimePayload) === listedThread.updatedAt
+  );
 }
 
 export function isImportableCodexInteractiveThread(thread: CodexListedThread): boolean {
@@ -452,9 +627,14 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
     const orchestrationEngine = yield* OrchestrationEngineService;
     const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
     const directory = yield* ProviderSessionDirectory;
+    const fileSystem = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const runtimeContext = yield* Effect.context<
-      ChildProcessSpawner.ChildProcessSpawner | Path.Path | ServerConfig | ServerSettingsService
+      | ChildProcessSpawner.ChildProcessSpawner
+      | FileSystem.FileSystem
+      | Path.Path
+      | ServerConfig
+      | ServerSettingsService
     >();
     const scanIntervalMs = Math.max(1, options?.scanIntervalMs ?? DEFAULT_SCAN_INTERVAL_MS);
 
@@ -528,7 +708,67 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
         includeTurns: true,
       });
       const thread = response.thread;
-      const messages = collectCodexCliImportedMessages(thread);
+      const appServerMessages = collectCodexCliImportedMessages(thread);
+      const messages =
+        appServerMessages.length > 0
+          ? appServerMessages
+          : yield* Effect.gen(function* () {
+              const listedPath = listedThread.path?.trim();
+              if (!listedPath) {
+                return [];
+              }
+
+              const sessionsRoot = path.resolve(target.homeLayout.sharedHomePath, "sessions");
+              const rolloutPath = path.resolve(listedPath);
+              if (!isCodexRolloutPathWithinSessionsRoot(path, sessionsRoot, rolloutPath)) {
+                yield* Effect.logWarning("codex.cli-import.rollout-path-rejected", {
+                  instanceId: target.instanceId,
+                  providerThreadId: listedThread.id,
+                  sessionsRoot,
+                  rolloutPath,
+                });
+                return [];
+              }
+
+              const [realSessionsRoot, realRolloutPath] = yield* Effect.all([
+                fileSystem.realPath(sessionsRoot),
+                fileSystem.realPath(rolloutPath),
+              ]);
+              if (!isCodexRolloutPathWithinSessionsRoot(path, realSessionsRoot, realRolloutPath)) {
+                yield* Effect.logWarning("codex.cli-import.rollout-path-rejected", {
+                  instanceId: target.instanceId,
+                  providerThreadId: listedThread.id,
+                  sessionsRoot: realSessionsRoot,
+                  rolloutPath: realRolloutPath,
+                });
+                return [];
+              }
+
+              const contents = yield* fileSystem.readFileString(realRolloutPath);
+              const recovered = collectCodexCliRolloutMessages({
+                threadId: thread.id,
+                contents,
+                createdAt: thread.createdAt,
+              });
+              if (recovered.length > 0) {
+                yield* Effect.logInfo("codex.cli-import.rollout-fallback-used", {
+                  instanceId: target.instanceId,
+                  providerThreadId: listedThread.id,
+                  rolloutPath: realRolloutPath,
+                  messageCount: recovered.length,
+                });
+              }
+              return recovered;
+            }).pipe(
+              Effect.catchCause((cause) =>
+                Effect.logWarning("codex.cli-import.rollout-fallback-failed", {
+                  instanceId: target.instanceId,
+                  providerThreadId: listedThread.id,
+                  rolloutPath: listedThread.path,
+                  cause,
+                }).pipe(Effect.as([])),
+              ),
+            );
       if (messages.length === 0) {
         return false;
       }
@@ -602,6 +842,7 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
             modelSelection,
             importedFrom: "codex-cli",
             importedAt: DateTime.formatIso(yield* DateTime.now),
+            codexCliImportVersion: CODEX_CLI_IMPORT_VERSION,
             codexCliUpdatedAt: thread.updatedAt,
           },
         });
