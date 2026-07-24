@@ -20,6 +20,7 @@ import {
   ConnectionTransientError,
   PrimaryConnectionTarget,
   RelayConnectionTarget,
+  SshConnectionTarget,
   type ConnectionAttemptError,
   type ConnectionTarget,
   type NetworkStatus,
@@ -42,6 +43,12 @@ const RELAY_TARGET = new RelayConnectionTarget({
   label: TARGET.label,
 });
 
+const SSH_TARGET = new SshConnectionTarget({
+  environmentId: TARGET.environmentId,
+  label: "SSH test environment",
+  connectionId: "ssh-environment-1",
+});
+
 const TARGET_ENTRY: ConnectionCatalogEntry = {
   target: TARGET,
   profile: Option.none(),
@@ -49,6 +56,11 @@ const TARGET_ENTRY: ConnectionCatalogEntry = {
 
 const RELAY_ENTRY: ConnectionCatalogEntry = {
   target: RELAY_TARGET,
+  profile: Option.none(),
+};
+
+const SSH_ENTRY: ConnectionCatalogEntry = {
+  target: SSH_TARGET,
   profile: Option.none(),
 };
 
@@ -430,6 +442,32 @@ describe("EnvironmentSupervisor", () => {
           message: "Test environment did not respond during connection setup.",
         },
       });
+    }).pipe(Effect.provide(TestClock.layer())),
+  );
+
+  it.effect("allows slow SSH preparation to finish without spawning overlapping attempts", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness({
+        prepare: () => Effect.sleep("30 seconds").pipe(Effect.as(PREPARED_CONNECTION)),
+      });
+      const supervisor = yield* EnvironmentSupervisor.make(SSH_ENTRY, {
+        initiallyDesired: true,
+      }).pipe(Effect.provide(harness.dependencies));
+
+      yield* awaitState(
+        supervisor.state,
+        (state) => state.phase === "connecting" && state.stage === "preparing",
+      );
+      yield* TestClock.adjust("15 seconds");
+
+      expect((yield* SubscriptionRef.get(supervisor.state)).phase).toBe("connecting");
+      expect(yield* Ref.get(harness.prepareCount)).toBe(1);
+
+      yield* TestClock.adjust("15 seconds");
+      yield* eventuallyState(supervisor.state, (state) => state.phase === "connected");
+
+      expect(yield* Ref.get(harness.prepareCount)).toBe(1);
+      expect(yield* Ref.get(harness.sessionCount)).toBe(1);
     }).pipe(Effect.provide(TestClock.layer())),
   );
 

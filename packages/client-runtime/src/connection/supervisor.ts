@@ -31,6 +31,12 @@ import * as ConnectionWakeups from "./wakeups.ts";
 
 const RETRY_DELAYS_MS = [1_000, 2_000, 4_000, 8_000, 16_000] as const;
 const CONNECTION_ESTABLISHMENT_TIMEOUT = "15 seconds";
+// Desktop SSH preparation can include package upload, remote startup, and
+// one-time credential issuance. Those operations already have their own
+// bounded transport timeouts, and Electron IPC cannot cancel them when this
+// supervisor gives up. Allow the original attempt to finish instead of
+// starting overlapping remote setup commands every 15 seconds.
+const SSH_CONNECTION_ESTABLISHMENT_TIMEOUT = "5 minutes";
 const CONNECTION_PROBE_TIMEOUT = "15 seconds";
 const BACKOFF_RESET_AFTER_MS = 30_000;
 
@@ -101,6 +107,12 @@ export interface EnvironmentSupervisorOptions {
 
 function retryDelayMs(failureCount: number): number {
   return RETRY_DELAYS_MS[Math.min(failureCount, RETRY_DELAYS_MS.length - 1)] ?? 16_000;
+}
+
+function connectionEstablishmentTimeout(target: ConnectionTarget) {
+  return target._tag === "SshConnectionTarget"
+    ? SSH_CONNECTION_ESTABLISHMENT_TIMEOUT
+    : CONNECTION_ESTABLISHMENT_TIMEOUT;
 }
 
 function annotateTarget(target: ConnectionTarget) {
@@ -472,7 +484,7 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
         ),
       ),
       waitForEstablishmentInterrupt().pipe(Effect.as<EstablishmentEvent>({ _tag: "Interrupted" })),
-      Effect.sleep(CONNECTION_ESTABLISHMENT_TIMEOUT).pipe(
+      Effect.sleep(connectionEstablishmentTimeout(target)).pipe(
         Effect.as<EstablishmentEvent>({ _tag: "TimedOut" }),
       ),
     ]);
