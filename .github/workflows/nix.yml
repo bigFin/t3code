@@ -1,0 +1,51 @@
+name: Downstream
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Reclaim hosted runner disk
+        if: github.event_name == 'workflow_dispatch'
+        run: ./scripts/ci-reclaim-hosted-runner-disk.sh
+
+      - uses: voidzero-dev/setup-vp@v1
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: true
+
+      - name: Test Codex CLI session import
+        run: |
+          vp test run \
+            apps/server/src/provider/Drivers/CodexCliSessionImporter.test.ts \
+            apps/server/src/orchestration/decider.import.test.ts \
+            apps/server/src/serverRuntimeStartup.test.ts \
+            apps/server/src/server.test.ts
+
+      - name: Typecheck affected packages
+        run: |
+          vp run --filter t3 typecheck
+          vp run --filter @t3tools/contracts typecheck
+
+      - uses: cachix/install-nix-action@v31
+
+      - name: Check Nix formatting
+        run: nix develop --command nixpkgs-fmt --check flake.nix nix/*.nix
+
+      - run: nix flake check --all-systems
+
+      - name: Build Nix package
+        if: github.event_name == 'workflow_dispatch'
+        run: nix build --no-link .#t3code

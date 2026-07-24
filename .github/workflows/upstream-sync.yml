@@ -1,0 +1,131 @@
+name: Sync upstream main
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "23 8 * * 1,3,5"
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: upstream-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          token: ${{ github.token }}
+
+      - name: Detect upstream changes
+        id: detect
+        run: |
+          git remote add upstream https://github.com/pingdotgg/t3code.git
+          git fetch upstream main
+
+          if git merge-base --is-ancestor upstream/main origin/main; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "origin/main already contains upstream/main"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Reclaim hosted runner disk
+        if: steps.detect.outputs.changed == 'true'
+        run: ./scripts/ci-reclaim-hosted-runner-disk.sh
+
+      - uses: cachix/install-nix-action@v31
+        if: steps.detect.outputs.changed == 'true'
+
+      - name: Merge upstream
+        if: steps.detect.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+
+          git switch -C automation/upstream-main origin/main
+          if ! git merge --no-ff upstream/main -m "Merge upstream main"; then
+            git merge --abort
+            issue_number="$(
+              gh issue list \
+                --state open \
+                --search '"Upstream sync requires conflict resolution" in:title' \
+                --json number \
+                --jq '.[0].number // empty'
+            )"
+            if [[ -n "$issue_number" ]]; then
+              gh issue comment "$issue_number" \
+                --body "The scheduled merge conflicted again in run ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}."
+            else
+              gh issue create \
+                --title "Upstream sync requires conflict resolution" \
+                --body "The scheduled merge of pingdotgg/t3code main conflicted with our downstream branch. Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+            fi
+            exit 1
+          fi
+
+          ./scripts/update-nix-pnpm-hash.sh
+          git add nix/t3code-unwrapped.nix flake.lock
+          git commit --amend --no-edit
+
+      - name: Install workspace dependencies
+        if: steps.detect.outputs.changed == 'true'
+        uses: voidzero-dev/setup-vp@v1
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: true
+
+      - name: Test downstream Codex integration
+        if: steps.detect.outputs.changed == 'true'
+        run: |
+          vp test run \
+            apps/server/src/provider/Drivers/CodexCliSessionImporter.test.ts \
+            apps/server/src/orchestration/decider.import.test.ts \
+            apps/server/src/serverRuntimeStartup.test.ts \
+            apps/server/src/server.test.ts
+          vp run --filter t3 typecheck
+          vp run --filter @t3tools/contracts typecheck
+
+      - name: Validate Nix package
+        if: steps.detect.outputs.changed == 'true'
+        run: |
+          nix develop --command nixpkgs-fmt --check flake.nix nix/*.nix
+          nix flake check --all-systems
+          nix build --no-link .#t3code
+
+      - name: Push integration branch
+        if: steps.detect.outputs.changed == 'true'
+        run: |
+          remote_sha="$(
+            git ls-remote --heads origin refs/heads/automation/upstream-main |
+              cut -f1
+          )"
+          if [[ -n "$remote_sha" ]]; then
+            git push \
+              --force-with-lease="refs/heads/automation/upstream-main:${remote_sha}" \
+              origin HEAD:automation/upstream-main
+          else
+            git push --set-upstream origin HEAD:automation/upstream-main
+          fi
+
+      - name: Create pull request
+        if: steps.detect.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh pr view automation/upstream-main >/dev/null 2>&1 || \
+            gh pr create \
+              --base main \
+              --head automation/upstream-main \
+              --title "Merge upstream T3 Code main" \
+              --body "Automated downstream integration of pingdotgg/t3code main. Merge with a merge commit; do not squash."
