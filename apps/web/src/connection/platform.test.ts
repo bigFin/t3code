@@ -11,6 +11,7 @@ import * as Effect from "effect/Effect";
 import {
   canRetainCachedPlatformRegistrationAfterRefreshFailure,
   canReuseCachedPlatformRegistration,
+  makeDesktopSshEnvironmentPrepare,
   primaryRegistrationToRetainAfterTopologyRead,
   provisionDesktopSshEnvironment,
   readPrimaryEnvironmentTargetResult,
@@ -28,16 +29,22 @@ const TARGET: DesktopSshEnvironmentTarget = {
 
 function makeBridge(
   calls: string[],
-  options?: { readonly failDescriptor?: boolean },
+  options?: {
+    readonly failDescriptor?: boolean;
+    readonly sessionAuthenticated?: boolean;
+  },
 ): DesktopBridge {
   return {
-    ensureSshEnvironment: async (target: DesktopSshEnvironmentTarget) => {
-      calls.push("ensure");
+    ensureSshEnvironment: async (
+      target: DesktopSshEnvironmentTarget,
+      ensureOptions?: { issuePairingToken?: boolean },
+    ) => {
+      calls.push(ensureOptions?.issuePairingToken === false ? "ensure-reuse" : "ensure-pairing");
       return {
         target,
         httpBaseUrl: "http://127.0.0.1:3201/",
         wsBaseUrl: "ws://127.0.0.1:3201/",
-        pairingToken: "pairing-token",
+        pairingToken: ensureOptions?.issuePairingToken === false ? null : "pairing-token",
       };
     },
     fetchSshEnvironmentDescriptor: async () => {
@@ -68,6 +75,12 @@ function makeBridge(
         scope: AuthStandardClientScopes.join(" "),
       };
     },
+    fetchSshSessionState: async () => {
+      calls.push("session");
+      return {
+        authenticated: options?.sessionAuthenticated ?? true,
+      };
+    },
   } as unknown as DesktopBridge;
 }
 
@@ -79,7 +92,7 @@ describe("desktop SSH pairing", () => {
       const provisioned = yield* provisionDesktopSshEnvironment(makeBridge(calls), TARGET);
 
       expect(provisioned.environmentId).toBe(EnvironmentId.make("environment-ssh"));
-      expect(calls).toEqual(["ensure", "descriptor", "token"]);
+      expect(calls).toEqual(["ensure-pairing", "descriptor", "token"]);
     }),
   );
 
@@ -92,7 +105,50 @@ describe("desktop SSH pairing", () => {
         TARGET,
       ).pipe(Effect.flip);
 
-      expect(calls).toEqual(["ensure", "descriptor"]);
+      expect(calls).toEqual(["ensure-pairing", "descriptor"]);
+    }),
+  );
+
+  it.effect("reuses a valid bearer session without issuing another pairing credential", () =>
+    Effect.gen(function* () {
+      const calls: string[] = [];
+      const prepare = makeDesktopSshEnvironmentPrepare(makeBridge(calls));
+      const input = {
+        connectionId: "ssh-devbox",
+        expectedEnvironmentId: EnvironmentId.make("environment-ssh"),
+        target: TARGET,
+      };
+
+      expect((yield* prepare(input)).bearerToken).toBe("bearer-token");
+      expect((yield* prepare(input)).bearerToken).toBe("bearer-token");
+
+      expect(calls).toEqual(["ensure-pairing", "token", "ensure-reuse", "session"]);
+    }),
+  );
+
+  it.effect("falls back to fresh pairing when the cached bearer is rejected", () =>
+    Effect.gen(function* () {
+      const calls: string[] = [];
+      const prepare = makeDesktopSshEnvironmentPrepare(
+        makeBridge(calls, { sessionAuthenticated: false }),
+      );
+      const input = {
+        connectionId: "ssh-devbox",
+        expectedEnvironmentId: EnvironmentId.make("environment-ssh"),
+        target: TARGET,
+      };
+
+      yield* prepare(input);
+      yield* prepare(input);
+
+      expect(calls).toEqual([
+        "ensure-pairing",
+        "token",
+        "ensure-reuse",
+        "session",
+        "ensure-pairing",
+        "token",
+      ]);
     }),
   );
 });

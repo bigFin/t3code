@@ -30,6 +30,7 @@ import {
   type DesktopBridge,
   type DesktopEnvironmentBootstrap,
   type DesktopSshEnvironmentTarget,
+  type EnvironmentId,
   PRIMARY_LOCAL_ENVIRONMENT_ID,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
@@ -137,6 +138,90 @@ function sshPreparationError(cause: unknown) {
   });
 }
 
+interface CachedSshBearerSession {
+  readonly bearerToken: string;
+  readonly environmentId: EnvironmentId;
+  readonly refreshAtEpochMs: number;
+  readonly targetSignature: string;
+}
+
+const SSH_BEARER_REFRESH_SKEW_MS = 5_000;
+
+function sshTargetSignature(target: DesktopSshEnvironmentTarget): string {
+  return JSON.stringify([target.alias, target.hostname, target.username, target.port]);
+}
+
+export function makeDesktopSshEnvironmentPrepare(bridge: DesktopBridge) {
+  const sessions = new Map<string, CachedSshBearerSession>();
+
+  return Effect.fn("web.connectionPlatform.ssh.prepareDesktop")(function* (input: {
+    readonly connectionId: string;
+    readonly expectedEnvironmentId: EnvironmentId;
+    readonly target: DesktopSshEnvironmentTarget;
+  }) {
+    const nowEpochMs = yield* Clock.currentTimeMillis;
+    const targetSignature = sshTargetSignature(input.target);
+    const cached = sessions.get(input.connectionId);
+
+    if (
+      cached !== undefined &&
+      cached.environmentId === input.expectedEnvironmentId &&
+      cached.targetSignature === targetSignature &&
+      nowEpochMs < cached.refreshAtEpochMs
+    ) {
+      const bootstrap = yield* Effect.tryPromise({
+        try: () =>
+          bridge.ensureSshEnvironment(input.target, {
+            issuePairingToken: false,
+          }),
+        catch: sshPreparationError,
+      });
+      const sessionState = yield* Effect.tryPromise({
+        try: () => bridge.fetchSshSessionState(bootstrap.httpBaseUrl, cached.bearerToken),
+        catch: sshPreparationError,
+      });
+      if (sessionState.authenticated) {
+        return {
+          bootstrap,
+          bearerToken: cached.bearerToken,
+        };
+      }
+      sessions.delete(input.connectionId);
+    } else if (cached !== undefined) {
+      sessions.delete(input.connectionId);
+    }
+
+    const bootstrap = yield* Effect.tryPromise({
+      try: () =>
+        bridge.ensureSshEnvironment(input.target, {
+          issuePairingToken: true,
+        }),
+      catch: sshPreparationError,
+    });
+    if (bootstrap.pairingToken === null) {
+      return yield* new ConnectionBlockedError({
+        reason: "authentication",
+        detail: "The SSH environment did not issue a pairing credential.",
+      });
+    }
+    const access = yield* Effect.tryPromise({
+      try: () => bridge.bootstrapSshBearerSession(bootstrap.httpBaseUrl, bootstrap.pairingToken!),
+      catch: sshPreparationError,
+    });
+    sessions.set(input.connectionId, {
+      bearerToken: access.access_token,
+      environmentId: input.expectedEnvironmentId,
+      refreshAtEpochMs:
+        nowEpochMs + Math.max(0, access.expires_in * 1_000 - SSH_BEARER_REFRESH_SKEW_MS),
+      targetSignature,
+    });
+    return {
+      bootstrap,
+      bearerToken: access.access_token,
+    };
+  });
+}
+
 export const provisionDesktopSshEnvironment = Effect.fn(
   "web.connectionPlatform.ssh.provisionDesktop",
 )(function* (bridge: DesktopBridge, target: DesktopSshEnvironmentTarget) {
@@ -206,6 +291,10 @@ const capabilitiesLayer = Layer.effectContext(
     const identity = RelayDeviceIdentity.of({
       deviceId: Effect.succeed(Option.none()),
     });
+    const prepareSshEnvironment =
+      window.desktopBridge === undefined
+        ? null
+        : makeDesktopSshEnvironmentPrepare(window.desktopBridge);
     const primaryAuth = PrimaryEnvironmentAuth.of({
       bearerToken: Effect.tryPromise({
         try: readDesktopPrimaryBearerToken,
@@ -229,34 +318,13 @@ const capabilitiesLayer = Layer.effectContext(
       }),
       prepare: Effect.fn("web.connectionPlatform.ssh.prepare")(function* (input) {
         const bridge = window.desktopBridge;
-        if (bridge === undefined) {
+        if (bridge === undefined || prepareSshEnvironment === null) {
           return yield* new ConnectionBlockedError({
             reason: "unsupported",
             detail: "SSH environments are only available in the desktop app.",
           });
         }
-        const bootstrap = yield* Effect.tryPromise({
-          try: () =>
-            bridge.ensureSshEnvironment(input.target, {
-              issuePairingToken: true,
-            }),
-          catch: sshPreparationError,
-        });
-        if (bootstrap.pairingToken === null) {
-          return yield* new ConnectionBlockedError({
-            reason: "authentication",
-            detail: "The SSH environment did not issue a pairing credential.",
-          });
-        }
-        const access = yield* Effect.tryPromise({
-          try: () =>
-            bridge.bootstrapSshBearerSession(bootstrap.httpBaseUrl, bootstrap.pairingToken!),
-          catch: sshPreparationError,
-        });
-        return {
-          bootstrap,
-          bearerToken: access.access_token,
-        };
+        return yield* prepareSshEnvironment(input);
       }),
       disconnect: Effect.fn("web.connectionPlatform.ssh.disconnect")(function* (target) {
         const bridge = window.desktopBridge;
