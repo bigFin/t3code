@@ -3,7 +3,7 @@ name: Sync upstream main
 on:
   workflow_dispatch:
   schedule:
-    - cron: "23 8 * * 1,3,5"
+    - cron: "23 2,14 * * *"
 
 permissions:
   contents: write
@@ -21,14 +21,25 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          fetch-depth: 0
+          fetch-depth: 1
+          filter: blob:none
           token: ${{ github.token }}
 
       - name: Detect upstream changes
         id: detect
         run: |
+          git fetch \
+            --unshallow \
+            --filter=blob:none \
+            --no-tags \
+            origin main
+
           git remote add upstream https://github.com/pingdotgg/t3code.git
-          git fetch upstream main
+          git fetch \
+            --filter=blob:none \
+            --no-tags \
+            upstream \
+            +refs/heads/main:refs/remotes/upstream/main
 
           if git merge-base --is-ancestor upstream/main origin/main; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
@@ -42,6 +53,9 @@ jobs:
         run: ./scripts/ci-reclaim-hosted-runner-disk.sh
 
       - uses: cachix/install-nix-action@v31
+        if: steps.detect.outputs.changed == 'true'
+
+      - uses: DeterminateSystems/magic-nix-cache-action@v14
         if: steps.detect.outputs.changed == 'true'
 
       - name: Merge upstream
@@ -123,9 +137,30 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh pr view automation/upstream-main >/dev/null 2>&1 || \
-            gh pr create \
-              --base main \
-              --head automation/upstream-main \
-              --title "Merge upstream T3 Code main" \
-              --body "Automated downstream integration of pingdotgg/t3code main. Merge with a merge commit; do not squash."
+          if gh pr view automation/upstream-main >/dev/null 2>&1; then
+            echo "The upstream integration pull request already exists."
+            exit 0
+          fi
+
+          if pr_url="$(
+            gh api \
+              --method POST \
+              "repos/${GITHUB_REPOSITORY}/pulls" \
+              --raw-field base=main \
+              --raw-field head=automation/upstream-main \
+              --raw-field title="Merge upstream T3 Code main" \
+              --raw-field body="Automated downstream integration of pingdotgg/t3code main. Merge with a merge commit; do not squash." \
+              --jq .html_url \
+              2>pr-create-error.log
+          )"; then
+            echo "Created ${pr_url}"
+          else
+            echo "::warning::The validated integration branch was pushed, but GitHub did not allow this workflow token to create its pull request."
+            cat pr-create-error.log
+            {
+              echo "## Upstream integration is ready"
+              echo
+              echo "The validated branch \`automation/upstream-main\` was pushed successfully."
+              echo "Create or update its pull request against \`main\` manually."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
