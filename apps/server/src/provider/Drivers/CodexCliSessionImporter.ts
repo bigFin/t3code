@@ -10,6 +10,7 @@ import {
   ThreadId,
   TurnId,
   ModelSelection,
+  type OrchestrationThread,
 } from "@t3tools/contracts";
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
@@ -375,6 +376,74 @@ export function codexCliMessageImportCommand(input: {
     turnId: input.message.turnId,
     createdAt: input.message.createdAt,
   };
+}
+
+function normalizedMessageText(text: string): string {
+  return text.replace(/\r\n?/gu, "\n").trim();
+}
+
+const T3_PENDING_MESSAGE_MATCH_WINDOW_MS = 30_000;
+
+/**
+ * A T3-started Codex turn persists the optimistic user message before Codex
+ * writes the same prompt into its rollout. If the desktop dies between those
+ * writes, restart recovery sees two independently keyed copies. Reuse the
+ * original T3 message id when the latest projected turn, text, and timestamps
+ * all identify the imported user item as that pending message.
+ */
+export function reconcileCodexCliImportedMessages(
+  messages: ReadonlyArray<CodexCliImportedMessage>,
+  projectedThread: Pick<OrchestrationThread, "latestTurn" | "messages"> | undefined,
+): ReadonlyArray<CodexCliImportedMessage> {
+  const latestTurn = projectedThread?.latestTurn;
+  if (projectedThread === undefined || latestTurn === undefined || latestTurn === null) {
+    return messages;
+  }
+
+  const requestedAtMillis = Date.parse(latestTurn.requestedAt);
+  if (!Number.isFinite(requestedAtMillis)) {
+    return messages;
+  }
+
+  return messages.map((message) => {
+    if (message.role !== "user" || message.turnId !== latestTurn.turnId) {
+      return message;
+    }
+
+    const importedAtMillis = Date.parse(message.createdAt);
+    if (
+      !Number.isFinite(importedAtMillis) ||
+      Math.abs(importedAtMillis - requestedAtMillis) > T3_PENDING_MESSAGE_MATCH_WINDOW_MS
+    ) {
+      return message;
+    }
+
+    const normalizedImportedText = normalizedMessageText(message.text);
+    const match = projectedThread.messages
+      .filter(
+        (candidate) =>
+          candidate.role === "user" &&
+          candidate.turnId === null &&
+          normalizedMessageText(candidate.text) === normalizedImportedText,
+      )
+      .map((candidate) => ({
+        candidate,
+        distance: Math.abs(Date.parse(candidate.createdAt) - requestedAtMillis),
+      }))
+      .filter(
+        ({ distance }) =>
+          Number.isFinite(distance) && distance <= T3_PENDING_MESSAGE_MATCH_WINDOW_MS,
+      )
+      .sort((left, right) => left.distance - right.distance)[0]?.candidate;
+
+    return match === undefined
+      ? message
+      : {
+          ...message,
+          messageId: match.id,
+          createdAt: match.createdAt,
+        };
+  });
 }
 
 function resolveThreadTitle(thread: CodexListedThread | CodexReadThread): string {
@@ -966,7 +1035,7 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
               ),
             } satisfies CodexCliImportedMessage)
           : undefined;
-      const messages =
+      const rawMessages =
         recoveredTerminalMessage === undefined ||
         recoveredMessages.some(
           (message) =>
@@ -976,6 +1045,11 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
         )
           ? recoveredMessages
           : [...recoveredMessages, recoveredTerminalMessage];
+      const projectedThreadDetail =
+        projectedThread === undefined
+          ? undefined
+          : Option.getOrUndefined(yield* projectionSnapshotQuery.getThreadDetailById(threadId));
+      const messages = reconcileCodexCliImportedMessages(rawMessages, projectedThreadDetail);
       if (messages.length === 0 && projectedThread === undefined) {
         return "skipped" satisfies CodexCliThreadImportResult;
       }

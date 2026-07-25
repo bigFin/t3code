@@ -21,6 +21,7 @@ import {
   isImportableCodexInteractiveThread,
   isLiveCodexBinding,
   parseCodexRolloutTerminalEvidence,
+  reconcileCodexCliImportedMessages,
   resolveStaleCodexCliSession,
   shouldInterruptStaleCodexCliSession,
 } from "./CodexCliSessionImporter.ts";
@@ -325,6 +326,90 @@ describe("CodexCliSessionImporter transcript conversion", () => {
     expect(repeated.commandId).toBe(first.commandId);
     expect(changed.commandId).not.toBe(first.commandId);
     expect(first.messageId).toBe(message.messageId);
+  });
+
+  it("reuses a pending T3 message id for Codex's copy of the same prompt", () => {
+    const imported = {
+      messageId: MessageId.make("codex-cli:019codex-thread:item-200"),
+      role: "user" as const,
+      text: "Keep working after I close the window.",
+      turnId: TurnId.make("turn-pending"),
+      createdAt: "2026-07-25T19:53:14.000Z",
+    };
+    const projectedThread = {
+      id: ThreadId.make("019codex-thread"),
+      latestTurn: {
+        turnId: TurnId.make("turn-pending"),
+        state: "running" as const,
+        requestedAt: "2026-07-25T19:53:12.490Z",
+        startedAt: "2026-07-25T19:53:12.490Z",
+        completedAt: null,
+        assistantMessageId: null,
+      },
+      messages: [
+        {
+          id: MessageId.make("t3-pending-message"),
+          role: "user" as const,
+          text: "Keep working after I close the window.",
+          turnId: null,
+          streaming: false,
+          createdAt: "2026-07-25T19:53:12.490Z",
+          updatedAt: "2026-07-25T19:53:12.490Z",
+        },
+      ],
+    } as Parameters<typeof reconcileCodexCliImportedMessages>[1];
+
+    expect(reconcileCodexCliImportedMessages([imported], projectedThread)).toEqual([
+      {
+        ...imported,
+        messageId: MessageId.make("t3-pending-message"),
+        createdAt: "2026-07-25T19:53:12.490Z",
+      },
+    ]);
+  });
+
+  it("keeps distinct or temporally unrelated imported user messages", () => {
+    const projectedThread = {
+      id: ThreadId.make("019codex-thread"),
+      latestTurn: {
+        turnId: TurnId.make("turn-pending"),
+        state: "running" as const,
+        requestedAt: "2026-07-25T19:53:12.490Z",
+        startedAt: "2026-07-25T19:53:12.490Z",
+        completedAt: null,
+        assistantMessageId: null,
+      },
+      messages: [
+        {
+          id: MessageId.make("t3-pending-message"),
+          role: "user" as const,
+          text: "Original prompt.",
+          turnId: null,
+          streaming: false,
+          createdAt: "2026-07-25T19:53:12.490Z",
+          updatedAt: "2026-07-25T19:53:12.490Z",
+        },
+      ],
+    } as Parameters<typeof reconcileCodexCliImportedMessages>[1];
+    const distinct = {
+      messageId: MessageId.make("codex-cli:019codex-thread:item-201"),
+      role: "user" as const,
+      text: "A genuinely different follow-up.",
+      turnId: TurnId.make("turn-pending"),
+      createdAt: "2026-07-25T19:53:14.000Z",
+    };
+    const oldDuplicate = {
+      messageId: MessageId.make("codex-cli:019codex-thread:item-100"),
+      role: "user" as const,
+      text: "Original prompt.",
+      turnId: TurnId.make("turn-pending"),
+      createdAt: "2026-07-25T18:53:14.000Z",
+    };
+
+    expect(reconcileCodexCliImportedMessages([distinct, oldDuplicate], projectedThread)).toEqual([
+      distinct,
+      oldDuplicate,
+    ]);
   });
 
   it("protects starting and running provider bindings from periodic scan downgrades", () => {
