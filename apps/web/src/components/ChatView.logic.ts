@@ -335,6 +335,13 @@ export function threadHasStarted(thread: Thread | null | undefined): boolean {
   );
 }
 
+export function shouldMarkThreadUpdateVisited(input: {
+  visibilityState: DocumentVisibilityState;
+  hasFocus: boolean;
+}): boolean {
+  return input.visibilityState === "visible" && input.hasFocus;
+}
+
 // `threadProvider` is the open branded driver kind carried by the session.
 // Unknown driver kinds degrade to `null` (i.e. "unlocked"), which is the safe
 // rollback / fork behavior — the routing layer is the right place to surface

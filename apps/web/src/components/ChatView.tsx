@@ -266,6 +266,7 @@ import {
   resolveSendEnvMode,
   revokeBlobPreviewUrl,
   revokeUserMessagePreviewUrls,
+  shouldMarkThreadUpdateVisited,
   waitForStartedServerThread,
 } from "./ChatView.logic";
 import { useLocalStorage } from "~/hooks/useLocalStorage";
@@ -1777,6 +1778,14 @@ function ChatViewContent(props: ChatViewProps) {
 
   useEffect(() => {
     if (!serverThread?.id) return;
+    if (
+      !shouldMarkThreadUpdateVisited({
+        visibilityState: document.visibilityState,
+        hasFocus: document.hasFocus(),
+      })
+    ) {
+      return;
+    }
     const threadUpdatedAt = Date.parse(serverThread.updatedAt);
     if (Number.isNaN(threadUpdatedAt)) return;
     const lastVisitedAt = activeThreadLastVisitedAt ? Date.parse(activeThreadLastVisitedAt) : NaN;

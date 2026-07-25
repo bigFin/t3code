@@ -25,6 +25,7 @@ import {
   reconcileRetainedMountedThreadIds,
   resolveThreadMetadataUpdateForNextTurn,
   resolveSendEnvMode,
+  shouldMarkThreadUpdateVisited,
   shouldShowBranchMismatchBanner,
   shouldWriteThreadErrorToCurrentServerThread,
 } from "./ChatView.logic";
@@ -337,6 +338,29 @@ describe("shouldShowBranchMismatchBanner", () => {
     ).toBe(false);
     expect(
       shouldShowBranchMismatchBanner({ ...base, composerHasContent: true, hasMismatch: false }),
+    ).toBe(false);
+  });
+});
+
+describe("shouldMarkThreadUpdateVisited", () => {
+  it("acknowledges updates only while the application is visible and focused", () => {
+    expect(
+      shouldMarkThreadUpdateVisited({
+        visibilityState: "visible",
+        hasFocus: true,
+      }),
+    ).toBe(true);
+    expect(
+      shouldMarkThreadUpdateVisited({
+        visibilityState: "hidden",
+        hasFocus: true,
+      }),
+    ).toBe(false);
+    expect(
+      shouldMarkThreadUpdateVisited({
+        visibilityState: "visible",
+        hasFocus: false,
+      }),
     ).toBe(false);
   });
 });
