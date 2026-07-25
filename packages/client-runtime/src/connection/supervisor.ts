@@ -398,6 +398,8 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
   const monitorConnectedLease = Effect.fnUntraced(function* (
     lease: ConnectionDriver.EnvironmentConnectionLease,
   ) {
+    let consecutiveTransientProbeFailures = 0;
+
     for (;;) {
       const next = yield* Queue.take(signals);
       switch (next._tag) {
@@ -438,6 +440,27 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
                 ),
               );
               if (probeEvent._tag === "ProbeCompleted") {
+                if (Exit.isSuccess(probeEvent.exit)) {
+                  consecutiveTransientProbeFailures = 0;
+                  break;
+                }
+                const typedFailure = probeEvent.exit.cause.reasons.find(Cause.isFailReason);
+                if (
+                  typedFailure?.error._tag === "ConnectionTransientError" &&
+                  consecutiveTransientProbeFailures === 0
+                ) {
+                  consecutiveTransientProbeFailures = 1;
+                  yield* Effect.logWarning(
+                    "Connection health check failed once; keeping the live session until another consecutive failure.",
+                    {
+                      environmentId: target.environmentId,
+                      environmentLabel: target.label,
+                      reason: typedFailure.error.reason,
+                      detail: typedFailure.error.detail,
+                    },
+                  );
+                  break;
+                }
                 yield* probeEvent.exit;
                 break;
               }

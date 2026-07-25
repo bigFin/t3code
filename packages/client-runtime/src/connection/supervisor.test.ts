@@ -715,11 +715,22 @@ describe("EnvironmentSupervisor", () => {
     }),
   );
 
-  it.effect("reconnects when the foreground liveness probe fails", () =>
+  it.effect("keeps the live session after an isolated foreground liveness probe failure", () =>
     Effect.gen(function* () {
+      const probeCount = yield* Ref.make(0);
+      const firstProbeCalled = yield* Deferred.make<void>();
+      const secondProbeCalled = yield* Deferred.make<void>();
       const harness = yield* makeHarness({
-        probe: (attempt) =>
-          attempt === 1 ? Effect.fail(transient("The live session is stale.")) : Effect.void,
+        probe: () =>
+          Ref.updateAndGet(probeCount, (count) => count + 1).pipe(
+            Effect.flatMap((count) =>
+              Deferred.succeed(count === 1 ? firstProbeCalled : secondProbeCalled, undefined).pipe(
+                Effect.andThen(
+                  count === 1 ? Effect.fail(transient("The live session is stale.")) : Effect.void,
+                ),
+              ),
+            ),
+          ),
       });
       const supervisor = yield* EnvironmentSupervisor.make(TARGET_ENTRY, {
         initiallyDesired: true,
@@ -727,6 +738,45 @@ describe("EnvironmentSupervisor", () => {
 
       yield* awaitState(supervisor.state, (state) => state.phase === "connected");
       yield* harness.wake("application-active");
+      yield* Deferred.await(firstProbeCalled);
+      yield* harness.wake("application-active");
+      yield* Deferred.await(secondProbeCalled);
+
+      expect(yield* Ref.get(probeCount)).toBe(2);
+      expect(yield* Ref.get(harness.sessionCount)).toBe(1);
+      expect(yield* Ref.get(harness.releaseCount)).toBe(0);
+      expect((yield* SubscriptionRef.get(supervisor.state)).phase).toBe("connected");
+    }),
+  );
+
+  it.effect("reconnects after consecutive foreground liveness probe failures", () =>
+    Effect.gen(function* () {
+      const probeCount = yield* Ref.make(0);
+      const firstProbeCalled = yield* Deferred.make<void>();
+      const secondProbeCalled = yield* Deferred.make<void>();
+      const harness = yield* makeHarness({
+        probe: () =>
+          Ref.updateAndGet(probeCount, (count) => count + 1).pipe(
+            Effect.flatMap((count) =>
+              Deferred.succeed(count === 1 ? firstProbeCalled : secondProbeCalled, undefined),
+            ),
+            Effect.andThen(Effect.fail(transient("The live session is stale."))),
+          ),
+      });
+      const supervisor = yield* EnvironmentSupervisor.make(TARGET_ENTRY, {
+        initiallyDesired: true,
+      }).pipe(Effect.provide(harness.dependencies));
+
+      yield* awaitState(supervisor.state, (state) => state.phase === "connected");
+      yield* harness.wake("application-active");
+      yield* Deferred.await(firstProbeCalled);
+
+      expect(yield* Ref.get(probeCount)).toBe(1);
+      expect(yield* Ref.get(harness.sessionCount)).toBe(1);
+      expect((yield* SubscriptionRef.get(supervisor.state)).phase).toBe("connected");
+
+      yield* harness.wake("application-active");
+      yield* Deferred.await(secondProbeCalled);
       yield* awaitState(supervisor.state, (state) => state.phase === "backoff");
       yield* TestClock.adjust("1 second");
       yield* eventuallyState(
@@ -734,15 +784,27 @@ describe("EnvironmentSupervisor", () => {
         (state) => state.phase === "connected" && state.generation === 2,
       );
 
+      expect(yield* Ref.get(probeCount)).toBe(2);
       expect(yield* Ref.get(harness.sessionCount)).toBe(2);
       expect(yield* Ref.get(harness.releaseCount)).toBe(1);
     }).pipe(Effect.provide(TestClock.layer())),
   );
 
-  it.effect("times out a stalled foreground liveness probe and reconnects", () =>
+  it.effect("reconnects after consecutive stalled foreground liveness probes", () =>
     Effect.gen(function* () {
+      const probeCount = yield* Ref.make(0);
+      const firstProbeStarted = yield* Deferred.make<void>();
+      const secondProbeStarted = yield* Deferred.make<void>();
       const harness = yield* makeHarness({
-        probe: (attempt) => (attempt === 1 ? Effect.never : Effect.void),
+        probe: (attempt) =>
+          attempt === 1
+            ? Ref.updateAndGet(probeCount, (count) => count + 1).pipe(
+                Effect.flatMap((count) =>
+                  Deferred.succeed(count === 1 ? firstProbeStarted : secondProbeStarted, undefined),
+                ),
+                Effect.andThen(Effect.never),
+              )
+            : Effect.void,
       });
       const supervisor = yield* EnvironmentSupervisor.make(TARGET_ENTRY, {
         initiallyDesired: true,
@@ -750,6 +812,12 @@ describe("EnvironmentSupervisor", () => {
 
       yield* awaitState(supervisor.state, (state) => state.phase === "connected");
       yield* harness.wake("application-active");
+      yield* Deferred.await(firstProbeStarted);
+      yield* TestClock.adjust("15 seconds");
+      expect((yield* SubscriptionRef.get(supervisor.state)).phase).toBe("connected");
+
+      yield* harness.wake("application-active");
+      yield* Deferred.await(secondProbeStarted);
       yield* TestClock.adjust("15 seconds");
       yield* awaitState(
         supervisor.state,
