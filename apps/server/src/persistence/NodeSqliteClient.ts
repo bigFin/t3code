@@ -26,6 +26,8 @@ import * as Statement from "effect/unstable/sql/Statement";
 
 const ATTR_DB_SYSTEM_NAME = "db.system.name";
 
+export const DEFAULT_BUSY_TIMEOUT_MS = 30_000;
+
 export const TypeId: TypeId = "~local/sqlite-node/SqliteClient";
 
 export type TypeId = "~local/sqlite-node/SqliteClient";
@@ -34,6 +36,7 @@ export interface SqliteClientConfig {
   readonly filename: string;
   readonly readonly?: boolean | undefined;
   readonly allowExtension?: boolean | undefined;
+  readonly timeout?: number | undefined;
   readonly prepareCacheSize?: number | undefined;
   readonly prepareCacheTTL?: Duration.Input | undefined;
   readonly spanAttributes?: Record<string, unknown> | undefined;
@@ -287,6 +290,7 @@ const make = (
       new NodeSqlite.DatabaseSync(options.filename, {
         readOnly: options.readonly ?? false,
         allowExtension: options.allowExtension ?? false,
+        timeout: options.timeout ?? DEFAULT_BUSY_TIMEOUT_MS,
       }),
   );
 
@@ -302,6 +306,7 @@ const makeMemory = (
     () => {
       const database = new NodeSqlite.DatabaseSync(":memory:", {
         allowExtension: config.allowExtension ?? false,
+        timeout: config.timeout ?? DEFAULT_BUSY_TIMEOUT_MS,
       });
       return database;
     },

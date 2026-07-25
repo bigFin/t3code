@@ -38,7 +38,25 @@ layer("NodeSqliteClient", (it) => {
       assert.equal(error.reason.operation, "prepare");
     }),
   );
+
+  it.effect("waits for transient SQLite writer contention by default", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const rows = yield* sql<{ readonly timeout: number }>`PRAGMA busy_timeout`;
+
+      assert.equal(rows[0]?.timeout, SqliteClient.DEFAULT_BUSY_TIMEOUT_MS);
+    }),
+  );
 });
+
+it.effect("allows the SQLite busy timeout to be overridden", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const rows = yield* sql<{ readonly timeout: number }>`PRAGMA busy_timeout`;
+
+    assert.equal(rows[0]?.timeout, 1_234);
+  }).pipe(Effect.provide(SqliteClient.layerMemory({ timeout: 1_234 }))),
+);
 
 it.effect("returns a typed failure when the database cannot be opened", () =>
   Effect.gen(function* () {
