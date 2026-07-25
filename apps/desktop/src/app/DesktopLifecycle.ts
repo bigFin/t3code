@@ -51,6 +51,15 @@ export class DesktopLifecycle extends Context.Service<
 const { logInfo: logLifecycleInfo, logError: logLifecycleError } =
   makeComponentLogger("desktop-lifecycle");
 
+export function shouldQuitAfterLastWindowCloses(platform: NodeJS.Platform): boolean {
+  // Keep the Linux desktop/backend process alive after the compositor closes
+  // the last window so active provider turns can continue. Launching T3 again
+  // hits the single-instance handler and recreates the main window. Windows
+  // retains the conventional last-window-exits behavior; macOS already stays
+  // resident by platform convention.
+  return platform === "win32";
+}
+
 function addScopedListener<Args extends ReadonlyArray<unknown>>(
   target: unknown,
   eventName: string,
@@ -199,7 +208,10 @@ export const make = DesktopLifecycle.of({
         Effect.gen(function* () {
           const app = yield* ElectronApp.ElectronApp;
           const state = yield* DesktopState.DesktopState;
-          if (environment.platform !== "darwin" && !(yield* Ref.get(state.quitting))) {
+          if (
+            shouldQuitAfterLastWindowCloses(environment.platform) &&
+            !(yield* Ref.get(state.quitting))
+          ) {
             yield* app.quit;
           }
         }).pipe(Effect.withSpan("desktop.lifecycle.windowAllClosed")),

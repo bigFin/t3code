@@ -3,14 +3,13 @@ import { storage } from "@clerk/electron/storage";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 
 import { clerkFrontendApiHostnameFromPublishableKey } from "@t3tools/shared/relayAuth";
 import * as ElectronApp from "../electron/ElectronApp.ts";
 import * as ElectronProtocol from "../electron/ElectronProtocol.ts";
-import * as ElectronWindow from "../electron/ElectronWindow.ts";
+import * as DesktopWindow from "../window/DesktopWindow.ts";
 import * as DesktopEnvironment from "./DesktopEnvironment.ts";
 
 declare const __T3CODE_BUILD_CLERK_PUBLISHABLE_KEY__: string | undefined;
@@ -47,7 +46,7 @@ export class DesktopClerk extends Context.Service<
     readonly configure: Effect.Effect<
       void,
       never,
-      ElectronApp.ElectronApp | ElectronWindow.ElectronWindow | Scope.Scope
+      ElectronApp.ElectronApp | DesktopWindow.DesktopWindow | Scope.Scope
     >;
   }
 >()("@t3tools/desktop/app/DesktopClerk") {}
@@ -109,8 +108,8 @@ export const make = Effect.gen(function* () {
   return DesktopClerk.of({
     configure: Effect.gen(function* () {
       const electronApp = yield* ElectronApp.ElectronApp;
-      const electronWindow = yield* ElectronWindow.ElectronWindow;
-      const context = yield* Effect.context<ElectronWindow.ElectronWindow>();
+      const desktopWindow = yield* DesktopWindow.DesktopWindow;
+      const context = yield* Effect.context<DesktopWindow.DesktopWindow>();
       const runPromise = Effect.runPromiseWith(context);
 
       if (!(yield* electronApp.requestSingleInstanceLock)) {
@@ -119,14 +118,7 @@ export const make = Effect.gen(function* () {
       }
 
       yield* electronApp.on("second-instance", () => {
-        void runPromise(
-          Effect.gen(function* () {
-            const mainWindow = yield* electronWindow.currentMainOrFirst;
-            if (Option.isSome(mainWindow)) {
-              yield* electronWindow.reveal(mainWindow.value);
-            }
-          }),
-        );
+        void runPromise(desktopWindow.activate);
       });
     }).pipe(Effect.withSpan("desktop.clerk.configure")),
   });
