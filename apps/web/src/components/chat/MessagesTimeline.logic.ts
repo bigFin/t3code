@@ -385,8 +385,8 @@ function deriveTurnFolds(input: {
     const duration = elapsedMs !== null ? formatDuration(elapsedMs) : null;
     const label = isLatestInterruptedTurn
       ? duration
-        ? `You stopped after ${duration}`
-        : "You stopped this response"
+        ? `Response interrupted after ${duration}`
+        : "Response interrupted"
       : duration
         ? `Worked for ${duration}`
         : "Worked";
