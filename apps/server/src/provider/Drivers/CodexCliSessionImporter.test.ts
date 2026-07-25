@@ -20,6 +20,8 @@ import {
   isCurrentCodexCliImport,
   isImportableCodexInteractiveThread,
   isLiveCodexBinding,
+  parseCodexRolloutTerminalEvidence,
+  resolveStaleCodexCliSession,
   shouldInterruptStaleCodexCliSession,
 } from "./CodexCliSessionImporter.ts";
 
@@ -413,6 +415,210 @@ describe("CodexCliSessionImporter transcript conversion", () => {
       ),
     ).toBe(false);
     expect(shouldInterruptStaleCodexCliSession(undefined, null)).toBe(false);
+  });
+
+  it("reconciles stale projected work against the live rollout and upstream turn", () => {
+    const activeTurn = {
+      status: "interrupted" as const,
+      error: null,
+      items: [],
+    };
+    expect(
+      resolveStaleCodexCliSession({
+        rolloutIsOpen: true,
+        rolloutTerminalState: null,
+        upstreamTurn: activeTurn,
+      }),
+    ).toEqual({ status: "preserve" });
+    expect(
+      resolveStaleCodexCliSession({
+        rolloutIsOpen: false,
+        rolloutTerminalState: null,
+        upstreamTurn: activeTurn,
+      }),
+    ).toEqual({
+      status: "interrupted",
+      lastError:
+        "The Codex process ended before it produced a final response. T3 recovered the available transcript.",
+    });
+    expect(
+      resolveStaleCodexCliSession({
+        rolloutIsOpen: true,
+        rolloutTerminalState: "interrupted",
+        upstreamTurn: activeTurn,
+      }),
+    ).toEqual({
+      status: "interrupted",
+      lastError: "The Codex turn was interrupted before it produced a final response.",
+    });
+  });
+
+  it("settles recovered turns when Codex persisted a final response", () => {
+    expect(
+      resolveStaleCodexCliSession({
+        rolloutIsOpen: true,
+        rolloutTerminalState: null,
+        upstreamTurn: {
+          status: "interrupted",
+          error: null,
+          items: [
+            {
+              id: "message-1",
+              type: "agentMessage",
+              text: "Recovered final",
+              phase: "final_answer",
+            },
+          ],
+        },
+      }),
+    ).toEqual({ status: "ready", lastError: null });
+    expect(
+      resolveStaleCodexCliSession({
+        rolloutIsOpen: false,
+        rolloutHasFinalResponse: true,
+        rolloutTerminalState: "completed",
+        upstreamTurn: {
+          status: "completed",
+          error: null,
+          items: [],
+        },
+      }),
+    ).toEqual({
+      status: "ready",
+      lastError: null,
+    });
+    expect(
+      resolveStaleCodexCliSession({
+        rolloutIsOpen: false,
+        rolloutTerminalState: "completed",
+        upstreamTurn: {
+          status: "completed",
+          error: null,
+          items: [],
+        },
+      }),
+    ).toEqual({
+      status: "ready",
+      lastError:
+        "Codex completed this turn without a final response. T3 recovered the available transcript.",
+    });
+  });
+
+  it("extracts final and interrupted terminal evidence from rollout tails", () => {
+    const completed = [
+      JSON.stringify({
+        type: "event_msg",
+        payload: {
+          type: "task_complete",
+          turn_id: "turn-other",
+          last_agent_message: "Ignore this.",
+          completed_at: 1_785_004_000,
+        },
+      }),
+      "{malformed",
+      JSON.stringify({
+        type: "event_msg",
+        payload: {
+          type: "task_complete",
+          turn_id: "turn-target",
+          last_agent_message: "Recovered final response.",
+          completed_at: 1_785_004_355,
+        },
+      }),
+    ].join("\n");
+
+    expect(parseCodexRolloutTerminalEvidence(completed, "turn-target")).toEqual({
+      state: "completed",
+      finalMessage: "Recovered final response.",
+      completedAt: 1_785_004_355,
+    });
+    expect(
+      parseCodexRolloutTerminalEvidence(
+        JSON.stringify({
+          type: "event_msg",
+          payload: {
+            type: "turn_aborted",
+            turn_id: "turn-target",
+          },
+        }),
+        "turn-target",
+      ),
+    ).toEqual({
+      state: "interrupted",
+      finalMessage: null,
+      completedAt: null,
+    });
+  });
+
+  it("keeps commentary-only recovered turns live until terminal evidence appears", () => {
+    const commentaryOnlyTurn = {
+      status: "interrupted" as const,
+      error: null,
+      items: [
+        {
+          id: "message-commentary",
+          type: "agentMessage" as const,
+          text: "I am still checking that.",
+          phase: "commentary" as const,
+        },
+      ],
+    };
+
+    expect(
+      resolveStaleCodexCliSession({
+        rolloutIsOpen: true,
+        rolloutTerminalState: null,
+        upstreamTurn: commentaryOnlyTurn,
+      }),
+    ).toEqual({ status: "preserve" });
+    expect(
+      resolveStaleCodexCliSession({
+        rolloutIsOpen: false,
+        rolloutTerminalState: null,
+        upstreamTurn: commentaryOnlyTurn,
+      }),
+    ).toEqual({
+      status: "interrupted",
+      lastError:
+        "The Codex process ended before it produced a final response. T3 recovered the available transcript.",
+    });
+  });
+
+  it("treats legacy unphased assistant messages as final responses", () => {
+    expect(
+      resolveStaleCodexCliSession({
+        rolloutIsOpen: false,
+        rolloutTerminalState: null,
+        upstreamTurn: {
+          status: "interrupted",
+          error: null,
+          items: [
+            {
+              id: "message-legacy",
+              type: "agentMessage",
+              text: "Legacy final response",
+            },
+          ],
+        },
+      }),
+    ).toEqual({ status: "ready", lastError: null });
+  });
+
+  it("surfaces failed upstream turns as errors", () => {
+    expect(
+      resolveStaleCodexCliSession({
+        rolloutIsOpen: false,
+        rolloutTerminalState: null,
+        upstreamTurn: {
+          status: "failed",
+          error: { message: "Provider quota exhausted." },
+          items: [],
+        },
+      }),
+    ).toEqual({
+      status: "error",
+      lastError: "Provider quota exhausted.",
+    });
   });
 
   it("recognizes an unchanged CLI thread from its persisted upstream timestamp", () => {

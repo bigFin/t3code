@@ -1,6 +1,7 @@
 import {
   EnvironmentId,
   EventId,
+  MessageId,
   ORCHESTRATION_WS_METHODS,
   ProjectId,
   ProviderInstanceId,
@@ -288,6 +289,63 @@ const titleUpdated = (title: string, sequence = 2): OrchestrationThreadStreamIte
       threadId: THREAD_ID,
       title,
       updatedAt: "2026-04-01T01:00:00.000Z",
+    },
+  },
+});
+
+const assistantMessageCompleted = (
+  text: string,
+  sequence: number,
+): OrchestrationThreadStreamItem => ({
+  kind: "event",
+  event: {
+    eventId: EventId.make(`event-assistant-completed-${sequence}`),
+    sequence,
+    occurredAt: "2026-04-01T01:00:00.000Z",
+    commandId: null,
+    causationEventId: null,
+    correlationId: null,
+    metadata: {},
+    aggregateKind: "thread",
+    aggregateId: THREAD_ID,
+    type: "thread.message-sent",
+    payload: {
+      threadId: THREAD_ID,
+      messageId: MessageId.make("assistant-turn-1"),
+      role: "assistant",
+      text,
+      turnId: TurnId.make("turn-1"),
+      streaming: false,
+      createdAt: "2026-04-01T01:00:00.000Z",
+      updatedAt: "2026-04-01T01:00:00.000Z",
+    },
+  },
+});
+
+const sessionReady = (sequence: number): OrchestrationThreadStreamItem => ({
+  kind: "event",
+  event: {
+    eventId: EventId.make(`event-session-ready-${sequence}`),
+    sequence,
+    occurredAt: "2026-04-01T01:00:01.000Z",
+    commandId: null,
+    causationEventId: null,
+    correlationId: null,
+    metadata: {},
+    aggregateKind: "thread",
+    aggregateId: THREAD_ID,
+    type: "thread.session-set",
+    payload: {
+      threadId: THREAD_ID,
+      session: {
+        threadId: THREAD_ID,
+        status: "ready",
+        providerName: "codex",
+        runtimeMode: "full-access",
+        activeTurnId: null,
+        lastError: null,
+        updatedAt: "2026-04-01T01:00:01.000Z",
+      },
     },
   },
 });
@@ -653,6 +711,69 @@ describe("EnvironmentThreads", () => {
       expect(yield* Ref.get(harness.subscriptionCount)).toBe(2);
       expect(yield* Ref.get(harness.lastSubscribeAfterSequence)).toBe(CACHED_SNAPSHOT_SEQUENCE + 1);
       expect((yield* Ref.get(harness.latest)).status).toBe("synchronizing");
+    }),
+  );
+
+  it.effect("catches up a final response and completion after reconnecting mid-turn", () =>
+    Effect.gen(function* () {
+      const partialThread: OrchestrationThread = {
+        ...ACTIVE_THREAD,
+        messages: [
+          {
+            id: MessageId.make("assistant-turn-1"),
+            role: "assistant",
+            text: "Partial response",
+            turnId: TurnId.make("turn-1"),
+            streaming: true,
+            createdAt: "2026-04-01T00:01:01.000Z",
+            updatedAt: "2026-04-01T00:01:01.000Z",
+          },
+        ],
+      };
+      const harness = yield* makeHarness({
+        completionMarker: true,
+      });
+      yield* Queue.offer(harness.inputs, snapshot(partialThread));
+      yield* Queue.offer(harness.inputs, synchronized());
+      yield* awaitThreadState(
+        harness.observed,
+        (value) =>
+          value.status === "live" &&
+          Option.isSome(value.data) &&
+          value.data.value.session?.status === "running",
+      );
+
+      yield* harness.replaceSession;
+      for (let attempt = 0; attempt < 100; attempt += 1) {
+        if ((yield* Ref.get(harness.subscriptionCount)) >= 2) break;
+        yield* Effect.yieldNow;
+      }
+
+      expect(yield* Ref.get(harness.lastSubscribeAfterSequence)).toBe(1);
+      yield* Queue.offer(
+        harness.inputs,
+        assistantMessageCompleted("Complete response after reconnect.", 2),
+      );
+      yield* Queue.offer(harness.inputs, sessionReady(3));
+      yield* Queue.offer(harness.inputs, synchronized());
+
+      const recovered = yield* awaitThreadState(
+        harness.observed,
+        (value) =>
+          value.status === "live" &&
+          Option.isSome(value.data) &&
+          value.data.value.session?.status === "ready",
+      );
+      const thread = Option.getOrThrow(recovered.data);
+      expect(thread.messages).toContainEqual(
+        expect.objectContaining({
+          id: MessageId.make("assistant-turn-1"),
+          text: "Complete response after reconnect.",
+          streaming: false,
+        }),
+      );
+      expect(thread.latestTurn?.state).toBe("completed");
+      expect(thread.latestTurn?.completedAt).toBe("2026-04-01T01:00:01.000Z");
     }),
   );
 
