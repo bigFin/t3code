@@ -220,6 +220,8 @@ describe("ssh tunnel scripts", () => {
       "does not satisfy required range ",
     );
     assert.include(buildRemoteLaunchScript(), 'stop_pid "$REMOTE_PID"');
+    assert.include(buildRemoteLaunchScript(), "ps -eo pid=,ppid=");
+    assert.include(buildRemoteLaunchScript(), 'kill -KILL "$PID_TO_SIGNAL"');
     assert.include(buildRemoteLaunchScript(), "wait_ready");
     assert.include(buildRemoteLaunchScript(), '"$RUNNER_FILE" serve --host 127.0.0.1');
     assert.include(
@@ -241,7 +243,9 @@ describe("ssh tunnel scripts", () => {
       buildRemoteStopScript(target),
       'if [ "$REMOTE_MANAGED" != "external" ] && [ -n "$REMOTE_PID" ]',
     );
-    assert.include(buildRemoteStopScript(target), 'kill "$REMOTE_PID" 2>/dev/null || true');
+    assert.include(buildRemoteStopScript(target), 'kill "$PID_TO_SIGNAL" 2>/dev/null || true');
+    assert.include(buildRemoteStopScript(target), "ps -eo pid=,ppid=");
+    assert.include(buildRemoteStopScript(target), 'kill -KILL "$PID_TO_SIGNAL"');
     assert.include(buildRemoteStopScript(target), 'rm -f "$PID_FILE" "$PORT_FILE" "$MANAGED_FILE"');
     assert.include(
       buildRemoteLaunchScript(),
@@ -538,6 +542,62 @@ describe("ssh tunnel scripts", () => {
 
       assert.equal(spawnedCommands.filter((args) => args.includes("-N")).length, 2);
       assert.equal(tunnelKillCount, 1);
+    }).pipe(Effect.provide(layer), Effect.scoped);
+  });
+
+  it.effect("keeps an existing tunnel through a brief backend stall", () => {
+    const spawnedCommands: Array<ReadonlyArray<string>> = [];
+    let tunnelKillCount = 0;
+    let readinessRequestCount = 0;
+    const spawner = ChildProcessSpawner.make((command) =>
+      Effect.sync(() => {
+        const args = commandArgs(command);
+        spawnedCommands.push(args);
+        if (args.includes("-N")) {
+          return makeRunningProcess(() => {
+            tunnelKillCount += 1;
+          });
+        }
+        if (args.includes("sh") && args.includes("--")) {
+          return makeSuccessfulProcess('{"remotePort":3773}\n');
+        }
+        return makeSuccessfulProcess('{"stopped":true}\n');
+      }),
+    );
+    const temporarilyUnavailableHttpClient = HttpClient.make((request) =>
+      Effect.sync(() => {
+        readinessRequestCount += 1;
+        const status = readinessRequestCount === 1 || readinessRequestCount >= 26 ? 200 : 503;
+        return HttpClientResponse.fromWeb(request, new Response("", { status }));
+      }),
+    );
+    const layer = Layer.mergeAll(
+      NodeServices.layer,
+      TestClock.layer(),
+      Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner),
+      Layer.succeed(HttpClient.HttpClient, temporarilyUnavailableHttpClient),
+      Layer.succeed(NetService.NetService, testNetService),
+      SshPasswordPrompt.disabledLayer,
+      SshEnvironmentManager.layer(),
+    );
+    const target = {
+      alias: "devbox",
+      hostname: "devbox.example.com",
+      username: "julius",
+      port: 2222,
+    } as const;
+
+    return Effect.gen(function* () {
+      const manager = yield* SshEnvironmentManager;
+      const first = yield* manager.ensureEnvironment(target);
+      const secondFiber = yield* manager.ensureEnvironment(target).pipe(Effect.forkChild);
+      yield* Effect.yieldNow;
+      yield* TestClock.adjust(Duration.seconds(3));
+      const second = yield* Fiber.join(secondFiber);
+
+      assert.equal(second.httpBaseUrl, first.httpBaseUrl);
+      assert.equal(spawnedCommands.filter((args) => args.includes("-N")).length, 1);
+      assert.equal(tunnelKillCount, 0);
     }).pipe(Effect.provide(layer), Effect.scoped);
   });
 });

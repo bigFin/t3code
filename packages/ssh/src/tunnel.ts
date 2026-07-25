@@ -59,6 +59,7 @@ const TUNNEL_SHUTDOWN_TIMEOUT_MS = 2_000;
 const REMOTE_READY_TIMEOUT_MS = 15_000;
 const REMOTE_PACKAGE_READY_TIMEOUT_MS = 120_000;
 const REMOTE_REUSE_READY_TIMEOUT_MS = 2_000;
+const EXISTING_TUNNEL_READY_TIMEOUT_MS = 15_000;
 
 export interface RemoteT3RunnerOptions {
   readonly packageSpec?: string;
@@ -492,6 +493,40 @@ wait_for_pid_exit() {
     sleep 0.1
   done
 }
+descendant_pids() {
+  ROOT_PID="$1"
+  ps -eo pid=,ppid= 2>/dev/null | awk -v root="$ROOT_PID" '
+    { parent[$1] = $2 }
+    END {
+      for (pid in parent) {
+        current = pid
+        while ((current in parent) && parent[current] != current) {
+          if (parent[current] == root) {
+            print pid
+            break
+          }
+          current = parent[current]
+        }
+      }
+    }
+  '
+}
+pid_tree_is_running() {
+  for PID_TO_CHECK in $1; do
+    if kill -0 "$PID_TO_CHECK" 2>/dev/null; then
+      return 0
+    fi
+  done
+  return 1
+}
+wait_for_pid_tree_exit() {
+  PID_TREE_TO_WAIT="$1"
+  WAIT_COUNT=0
+  while pid_tree_is_running "$PID_TREE_TO_WAIT" && [ "$WAIT_COUNT" -lt 20 ]; do
+    WAIT_COUNT=$((WAIT_COUNT + 1))
+    sleep 0.1
+  done
+}
 resolve_default_runtime_port() {
   node - "$DEFAULT_RUNTIME_FILE" <<'NODE'
 const fs = require("node:fs");
@@ -525,8 +560,17 @@ NODE
 stop_pid() {
   PID_TO_STOP="$1"
   if [ -n "$PID_TO_STOP" ] && kill -0 "$PID_TO_STOP" 2>/dev/null; then
-    kill "$PID_TO_STOP" 2>/dev/null || true
-    wait_for_pid_exit "$PID_TO_STOP"
+    PID_TREE="$PID_TO_STOP $(descendant_pids "$PID_TO_STOP" || true)"
+    for PID_TO_SIGNAL in $PID_TREE; do
+      kill "$PID_TO_SIGNAL" 2>/dev/null || true
+    done
+    wait_for_pid_tree_exit "$PID_TREE"
+    if pid_tree_is_running "$PID_TREE"; then
+      for PID_TO_SIGNAL in $PID_TREE; do
+        kill -KILL "$PID_TO_SIGNAL" 2>/dev/null || true
+      done
+      wait_for_pid_tree_exit "$PID_TREE"
+    fi
   fi
 }
 is_legacy_managed_runtime() {
@@ -686,12 +730,42 @@ MANAGED_FILE="$STATE_DIR/managed"
 REMOTE_MANAGED="$(cat "$MANAGED_FILE" 2>/dev/null || true)"
 REMOTE_PID="$(cat "$PID_FILE" 2>/dev/null || true)"
 if [ "$REMOTE_MANAGED" != "external" ] && [ -n "$REMOTE_PID" ] && kill -0 "$REMOTE_PID" 2>/dev/null; then
-  kill "$REMOTE_PID" 2>/dev/null || true
-  WAIT_COUNT=0
-  while kill -0 "$REMOTE_PID" 2>/dev/null && [ "$WAIT_COUNT" -lt 20 ]; do
-    WAIT_COUNT=$((WAIT_COUNT + 1))
-    sleep 0.1
+  PID_TREE="$REMOTE_PID $(ps -eo pid=,ppid= 2>/dev/null | awk -v root="$REMOTE_PID" '
+    { parent[$1] = $2 }
+    END {
+      for (pid in parent) {
+        current = pid
+        while ((current in parent) && parent[current] != current) {
+          if (parent[current] == root) {
+            print pid
+            break
+          }
+          current = parent[current]
+        }
+      }
+    }
+  ' || true)"
+  for PID_TO_SIGNAL in $PID_TREE; do
+    kill "$PID_TO_SIGNAL" 2>/dev/null || true
   done
+  WAIT_COUNT=0
+  PID_TREE_RUNNING=1
+  while [ "$PID_TREE_RUNNING" -eq 1 ] && [ "$WAIT_COUNT" -lt 20 ]; do
+    PID_TREE_RUNNING=0
+    for PID_TO_CHECK in $PID_TREE; do
+      if kill -0 "$PID_TO_CHECK" 2>/dev/null; then
+        PID_TREE_RUNNING=1
+        break
+      fi
+    done
+    WAIT_COUNT=$((WAIT_COUNT + 1))
+    [ "$PID_TREE_RUNNING" -eq 0 ] || sleep 0.1
+  done
+  if [ "$PID_TREE_RUNNING" -eq 1 ]; then
+    for PID_TO_SIGNAL in $PID_TREE; do
+      kill -KILL "$PID_TO_SIGNAL" 2>/dev/null || true
+    done
+  fi
 fi
 rm -f "$PID_FILE" "$PORT_FILE" "$MANAGED_FILE"
 printf '{"stopped":true}\\n'
@@ -1608,7 +1682,10 @@ const makeSshEnvironmentManager = Effect.fn("ssh/tunnel.SshEnvironmentManager.ma
         remotePort: entry.remotePort,
       });
       const readinessExit = yield* Effect.exit(
-        waitForHttpReady({ baseUrl: entry.httpBaseUrl, timeoutMs: 2_000 }),
+        waitForHttpReady({
+          baseUrl: entry.httpBaseUrl,
+          timeoutMs: EXISTING_TUNNEL_READY_TIMEOUT_MS,
+        }),
       );
       if (Exit.isSuccess(readinessExit)) {
         yield* Effect.logDebug("ssh.environment.tunnel.reused", {
