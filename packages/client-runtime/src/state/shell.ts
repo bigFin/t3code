@@ -17,7 +17,6 @@ import { AsyncResult, Atom } from "effect/unstable/reactivity";
 import { EnvironmentRegistry } from "../connection/registry.ts";
 import { connectionProjectionPhase } from "../connection/model.ts";
 import { EnvironmentSupervisor } from "../connection/supervisor.ts";
-import * as ConnectionWakeups from "../connection/wakeups.ts";
 import { safeErrorLogAttributes } from "../errors/safeLog.ts";
 import { EnvironmentCacheStore } from "../platform/persistence.ts";
 import { subscribeDynamic } from "../rpc/client.ts";
@@ -52,7 +51,6 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
   const supervisor = yield* EnvironmentSupervisor;
   const cache = yield* EnvironmentCacheStore;
   const snapshotLoader = yield* ShellSnapshotLoader;
-  const wakeups = yield* Effect.serviceOption(ConnectionWakeups.ConnectionWakeups);
   const environmentId = supervisor.target.environmentId;
   const cachedSnapshot = yield* cache.loadShell(environmentId).pipe(
     Effect.catch((error) =>
@@ -169,12 +167,6 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
     yield* Queue.offer(persistence, nextSnapshot);
   });
 
-  const foregroundResubscriptions = Option.match(wakeups, {
-    onNone: () => Stream.never,
-    onSome: (service) =>
-      service.changes.pipe(Stream.filter((reason) => reason === "application-active")),
-  });
-
   yield* setSynchronizing;
   yield* Effect.forkScoped(
     subscribeDynamic(
@@ -187,6 +179,21 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
         yield* Ref.set(awaitingCompletion, supportsCompletionMarker);
         yield* setSynchronizing;
 
+        // A cached or previously synchronized shell already carries the exact
+        // event-store cursor needed for a durable resume. Subscribe immediately
+        // from that cursor instead of blocking live delivery on another full
+        // HTTP snapshot. The server falls back to an authoritative snapshot
+        // when the cursor is invalid or too far behind.
+        const current = yield* SubscriptionRef.get(state);
+        if (Option.isSome(current.snapshot)) {
+          return {
+            afterSequence: current.snapshot.value.snapshotSequence,
+            ...(supportsCompletionMarker ? { requestCompletionMarker: true as const } : {}),
+          };
+        }
+
+        // Keep the gzip-friendly HTTP snapshot path for a genuinely cold
+        // environment. Once any shell state exists, reconnects stay cursor-only.
         const prepared = yield* SubscriptionRef.get(supervisor.prepared).pipe(
           Effect.flatMap(
             Option.match({
@@ -215,7 +222,6 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
       {
         onExpectedFailure: (cause) => setStreamError(Cause.squash(cause)),
         retryExpectedFailureAfter: "250 millis",
-        resubscribe: foregroundResubscriptions,
       },
     ).pipe(Stream.runForEach(applyItem)),
   );

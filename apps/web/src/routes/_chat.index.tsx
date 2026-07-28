@@ -10,7 +10,7 @@ import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "../components/
 import { SidebarInset } from "../components/ui/sidebar";
 import { useNewThreadHandler } from "../hooks/useHandleNewThread";
 import {
-  useAllEnvironmentShellsBootstrapped,
+  useAllEnvironmentShellCachesHydrated,
   useProjects,
   useThreadShells,
 } from "../state/entities";
@@ -39,17 +39,17 @@ function ChatIndexRouteView() {
 function IndexDraftLanding() {
   const projects = useProjects();
   const threads = useThreadShells();
-  const bootstrapped = useAllEnvironmentShellsBootstrapped();
+  const cachesHydrated = useAllEnvironmentShellCachesHydrated();
   const handleNewThread = useNewThreadHandler();
   const startingRef = useRef(false);
   const [startState, setStartState] = useState({ failed: false, retryRequest: 0 });
 
   const mostRecentProject = useMemo(
     () =>
-      bootstrapped
+      cachesHydrated
         ? (sortScopedProjectsForSidebar(projects, threads, "updated_at")[0] ?? null)
         : null,
-    [bootstrapped, projects, threads],
+    [cachesHydrated, projects, threads],
   );
 
   useEffect(() => {
@@ -65,7 +65,7 @@ function IndexDraftLanding() {
     });
   }, [handleNewThread, mostRecentProject, startState.retryRequest]);
 
-  if (!bootstrapped) {
+  if (!cachesHydrated) {
     return null;
   }
   if (mostRecentProject !== null) {
