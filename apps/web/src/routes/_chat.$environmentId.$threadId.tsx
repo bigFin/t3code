@@ -3,8 +3,13 @@ import { useEffect } from "react";
 
 import ChatView from "../components/ChatView";
 import { threadHasStarted } from "../components/ChatView.logic";
+import { ThreadRouteLoadingView } from "../components/ThreadRouteLoadingView";
 import { finalizePromotedDraftThreadByRef, useComposerDraftStore } from "../composerDraftStore";
-import { resolveThreadRouteRef, resolveThreadRouteRenderState } from "../threadRoutes";
+import {
+  resolveThreadRouteLoadingCopy,
+  resolveThreadRouteRef,
+  resolveThreadRouteRenderState,
+} from "../threadRoutes";
 import { SidebarInset } from "~/components/ui/sidebar";
 import {
   useEnvironmentThreadRefs,
@@ -14,6 +19,7 @@ import {
 } from "../state/entities";
 import { useEnvironmentQuery } from "../state/query";
 import { environmentShell } from "../state/shell";
+import { useEnvironment, useEnvironments } from "../state/environments";
 
 function ChatThreadRouteView() {
   const navigate = useNavigate();
@@ -23,6 +29,8 @@ function ChatThreadRouteView() {
   const shell = useEnvironmentQuery(
     threadRef === null ? null : environmentShell.stateAtom(threadRef.environmentId),
   );
+  const environment = useEnvironment(threadRef?.environmentId ?? null);
+  const { networkStatus } = useEnvironments();
   const serverThreadShell = useThreadShell(threadRef);
   const serverThreadDetail = useThreadDetail(threadRef);
   const serverThreadStatus = useThreadStatus(threadRef);
@@ -50,6 +58,13 @@ function ChatThreadRouteView() {
   });
   const serverThreadStarted = threadHasStarted(serverThreadDetail);
   const environmentHasAnyThreads = environmentHasServerThreads || environmentHasDraftThreads;
+  const loadingCopy = resolveThreadRouteLoadingCopy({
+    environmentLabel: environment?.label ?? "remote environment",
+    connectionPhase: environment?.connection.phase ?? null,
+    networkStatus,
+    connectionError: environment?.connection.error ?? null,
+    shellError: shell.error,
+  });
 
   useEffect(() => {
     if (!threadRef || !bootstrapComplete) {
@@ -68,7 +83,13 @@ function ChatThreadRouteView() {
     finalizePromotedDraftThreadByRef(threadRef);
   }, [draftThread, serverThreadStarted, threadRef]);
 
-  if (!threadRef || renderState !== "ready") {
+  if (!threadRef) {
+    return null;
+  }
+  if (renderState === "loading") {
+    return <ThreadRouteLoadingView {...loadingCopy} />;
+  }
+  if (renderState !== "ready") {
     return null;
   }
 

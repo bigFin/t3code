@@ -7,6 +7,7 @@ import {
   buildDraftThreadRouteParams,
   buildThreadRouteParams,
   resolveActiveThreadRouteRef,
+  resolveThreadRouteLoadingCopy,
   resolveThreadRouteRenderState,
   resolveThreadRouteRef,
   resolveThreadRouteTarget,
@@ -104,6 +105,34 @@ describe("threadRoutes", () => {
         draftThreadExists: false,
       }),
     ).toBe("loading");
+  });
+
+  it("describes remote connection progress while a thread detail is loading", () => {
+    expect(
+      resolveThreadRouteLoadingCopy({
+        environmentLabel: "Laptop",
+        connectionPhase: "reconnecting",
+        networkStatus: "online",
+        connectionError: null,
+        shellError: null,
+      }),
+    ).toEqual({
+      title: "Reconnecting to Laptop...",
+      description: "Waiting for Laptop to provide the latest session state.",
+    });
+
+    expect(
+      resolveThreadRouteLoadingCopy({
+        environmentLabel: "Laptop",
+        connectionPhase: "connected",
+        networkStatus: "online",
+        connectionError: null,
+        shellError: null,
+      }),
+    ).toEqual({
+      title: "Loading session...",
+      description: "Fetching the latest session state from Laptop.",
+    });
   });
 
   it("renders server details and local drafts when they are ready", () => {

@@ -1,3 +1,8 @@
+import {
+  connectionPhaseMessage,
+  type EnvironmentConnectionPhase,
+  type NetworkStatus,
+} from "@t3tools/client-runtime/connection";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import type { EnvironmentId, ScopedThreadRef, ThreadId } from "@t3tools/contracts";
 import type { DraftId } from "./composerDraftStore";
@@ -19,6 +24,39 @@ type DraftThreadRouteState = {
 };
 
 export type ThreadRouteRenderState = "loading" | "ready" | "missing";
+
+export interface ThreadRouteLoadingCopy {
+  readonly title: string;
+  readonly description: string;
+}
+
+export function resolveThreadRouteLoadingCopy(input: {
+  readonly environmentLabel: string;
+  readonly connectionPhase: EnvironmentConnectionPhase | null;
+  readonly networkStatus: NetworkStatus;
+  readonly connectionError: string | null;
+  readonly shellError: string | null;
+}): ThreadRouteLoadingCopy {
+  if (input.connectionPhase !== null && input.connectionPhase !== "connected") {
+    return {
+      title: connectionPhaseMessage(
+        input.connectionPhase,
+        input.environmentLabel,
+        input.networkStatus,
+      ),
+      description:
+        input.connectionError ??
+        input.shellError ??
+        `Waiting for ${input.environmentLabel} to provide the latest session state.`,
+    };
+  }
+
+  return {
+    title: "Loading session...",
+    description:
+      input.shellError ?? `Fetching the latest session state from ${input.environmentLabel}.`,
+  };
+}
 
 export function resolveThreadRouteRenderState(input: {
   bootstrapComplete: boolean;
