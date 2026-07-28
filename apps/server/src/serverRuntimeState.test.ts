@@ -9,6 +9,7 @@ import * as Path from "effect/Path";
 import * as References from "effect/References";
 import * as Schema from "effect/Schema";
 
+import packageJson from "../package.json" with { type: "json" };
 import * as ServerRuntimeState from "./serverRuntimeState.ts";
 
 const isServerRuntimeStateError = Schema.is(ServerRuntimeState.ServerRuntimeStateError);
@@ -41,6 +42,17 @@ describe("serverRuntimeState", () => {
 
       assert.deepEqual(Option.getOrThrow(restored), state);
     }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("records the running server package version", () =>
+    Effect.gen(function* () {
+      const state = yield* ServerRuntimeState.makePersistedServerRuntimeState({
+        config: { host: "127.0.0.1" },
+        port: 4_971,
+      });
+
+      assert.equal(state.serverVersion, packageJson.version);
+    }),
   );
 
   it("requires both SSH launcher identity fields", () => {

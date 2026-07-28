@@ -7,6 +7,7 @@ import * as Schema from "effect/Schema";
 import { writeFileStringAtomically } from "./atomicWrite.ts";
 import type * as ServerConfig from "./config.ts";
 import { formatHostForUrl, isWildcardHost } from "./startupAccess.ts";
+import packageJson from "../package.json" with { type: "json" };
 
 export const PersistedServerRuntimeState = Schema.Struct({
   version: Schema.Literal(1),
@@ -15,6 +16,7 @@ export const PersistedServerRuntimeState = Schema.Struct({
   port: Schema.Int,
   origin: Schema.String,
   startedAt: Schema.String,
+  serverVersion: Schema.optional(Schema.String),
   sshLaunch: Schema.optional(
     Schema.Struct({
       stateKey: Schema.String,
@@ -72,6 +74,7 @@ export const makePersistedServerRuntimeState = (input: {
       port: input.port,
       origin: runtimeOriginForConfig(input.config, input.port),
       startedAt: DateTime.formatIso(now),
+      serverVersion: packageJson.version,
       ...(sshLaunch ? { sshLaunch } : {}),
     };
   });

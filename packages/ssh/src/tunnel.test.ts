@@ -20,6 +20,7 @@ import {
   buildRemotePairingScript,
   buildRemoteStopScript,
   buildRemoteT3RunnerScript,
+  compareRemoteT3Versions,
   describeReadinessCause,
   issueRemotePairingToken,
   launchOrReuseRemoteServer,
@@ -193,7 +194,7 @@ describe("ssh tunnel scripts", () => {
     assert.include(script, 'exec node "$T3_NODE_SCRIPT_PATH" "$@"');
   });
 
-  it("uses the remote t3 runner for launch and pairing scripts", () => {
+  it("uses the active remote t3 runner for launch and pairing scripts", () => {
     const target = {
       alias: "devbox",
       hostname: "devbox.example.com",
@@ -207,6 +208,39 @@ describe("ssh tunnel scripts", () => {
     );
     assert.include(buildRemoteLaunchScript(), "RUNNER_CHANGED=1");
     assert.match(buildRemoteLaunchScript(), /RUNNER_ID='[0-9a-f]{64}'/u);
+    assert.include(
+      buildRemoteLaunchScript({ version: "0.0.30" }),
+      "DESIRED_SERVER_VERSION='0.0.30'",
+    );
+    assert.include(buildRemoteLaunchScript(), "runtime.serverVersion");
+    assert.include(buildRemoteLaunchScript(), 'if [ "$VERSION_DECISION" != "reuse" ]; then');
+    assert.include(buildRemoteLaunchScript(), "RUNNER_CHANGED=0");
+    assert.include(buildRemoteLaunchScript(), 'rm -f "$RUNNER_NEXT"');
+    assert.isBelow(
+      buildRemoteLaunchScript().indexOf('if [ "$VERSION_DECISION" != "reuse" ]; then'),
+      buildRemoteLaunchScript().indexOf(
+        'elif [ -n "$REMOTE_PID" ] && [ -n "$REMOTE_PORT" ] && kill -0 "$REMOTE_PID"',
+      ),
+    );
+    assert.include(
+      buildRemoteLaunchScript(),
+      'LAUNCH_LOCK_DIR="$HOME/.t3/ssh-launch/server-launch.lock"',
+    );
+    assert.include(buildRemoteLaunchScript(), "acquire_launch_lock()");
+    assert.include(buildRemoteLaunchScript(), 'while ! mkdir "$LAUNCH_LOCK_DIR"');
+    assert.include(buildRemoteLaunchScript(), 'kill -0 "$LOCK_OWNER"');
+    assert.include(
+      buildRemoteLaunchScript(),
+      'if [ -z "$LOCK_OWNER" ] && [ "$WAIT_COUNT" -ge 50 ]; then',
+    );
+    assert.include(
+      buildRemoteLaunchScript(),
+      "Timed out waiting for another T3 remote server launch",
+    );
+    assert.isBelow(
+      buildRemoteLaunchScript().indexOf("acquire_launch_lock"),
+      buildRemoteLaunchScript().indexOf('DEFAULT_RUNTIME_INFO="$(resolve_default_runtime_port'),
+    );
     assert.include(buildRemoteLaunchScript(), "ensure_remote_node_path()");
     assert.include(buildRemoteLaunchScript(), "if ! ensure_remote_node_path; then");
     assert.include(
@@ -236,7 +270,8 @@ describe("ssh tunnel scripts", () => {
     );
     assert.include(buildRemotePairingScript(target), 'PAIRING_BASE_DIR="$DEFAULT_SERVER_HOME"');
     assert.notInclude(buildRemotePairingScript(target), "server-home");
-    assert.include(buildRemotePairingScript(target, { packageSpec: "t3@nightly" }), "t3@nightly");
+    assert.include(buildRemotePairingScript(target), 'if [ ! -x "$RUNNER_FILE" ]; then');
+    assert.notInclude(buildRemotePairingScript(target), "cat >");
     assert.include(
       buildRemoteStopScript(target),
       'if [ "$REMOTE_MANAGED" != "external" ] && [ -n "$REMOTE_PID" ]',
@@ -285,6 +320,19 @@ describe("ssh tunnel scripts", () => {
     );
   });
 
+  it("orders remote T3 versions monotonically", () => {
+    assert.equal(compareRemoteT3Versions("0.0.30", "0.0.29"), 1);
+    assert.equal(compareRemoteT3Versions("0.0.29", "0.0.30"), -1);
+    assert.equal(compareRemoteT3Versions("1.2.3", "1.2.3"), 0);
+    assert.equal(compareRemoteT3Versions("1.2.3", "1.2.3-nightly.20260728.1"), 1);
+    assert.equal(
+      compareRemoteT3Versions("1.2.3-nightly.20260728.2", "1.2.3-nightly.20260728.1"),
+      1,
+    );
+    assert.equal(compareRemoteT3Versions("", "1.2.3"), null);
+    assert.equal(compareRemoteT3Versions("nightly", "1.2.3"), null);
+  });
+
   it.effect("accepts launch JSON after remote shell startup noise", () => {
     const target = {
       alias: "devbox",
@@ -304,7 +352,7 @@ describe("ssh tunnel scripts", () => {
     }).pipe(Effect.provide(processLayer));
   });
 
-  it.effect("uploads and reuses the matching remote package archive for launch and pairing", () => {
+  it.effect("uploads the matching remote package once and pairs with the active runner", () => {
     const target = {
       alias: "devbox",
       hostname: "devbox.example.com",
@@ -364,7 +412,7 @@ describe("ssh tunnel scripts", () => {
 
       const first = yield* launchOrReuseRemoteServer(target, undefined, runner);
       const second = yield* launchOrReuseRemoteServer(target, undefined, runner);
-      const pairing = yield* issueRemotePairingToken(target, undefined, runner);
+      const pairing = yield* issueRemotePairingToken(target);
 
       assert.equal(first.remotePort, 3774);
       assert.equal(second.remotePort, 3774);
@@ -372,11 +420,16 @@ describe("ssh tunnel scripts", () => {
       assert.equal(uploadCount, 1);
       assert.deepEqual(uploadedBytes, Array.from(archiveBytes));
       assert.lengthOf(runnerScripts, 3);
-      for (const script of runnerScripts) {
+      for (const script of runnerScripts.slice(0, 2)) {
         assert.include(script, `T3_PACKAGE_SPEC='${remoteArchivePath}'`);
         assert.notInclude(script, "T3_PACKAGE_SPEC='t3@stale'");
       }
       assert.include(runnerScripts[0] ?? "", 'wait_ready "120000"');
+      assert.include(
+        runnerScripts[2] ?? "",
+        '"$RUNNER_FILE" auth pairing create --base-dir "$PAIRING_BASE_DIR" --json',
+      );
+      assert.notInclude(runnerScripts[2] ?? "", "T3_PACKAGE_SPEC=");
     }).pipe(Effect.provide(processLayer), Effect.scoped);
   });
 
@@ -489,7 +542,7 @@ describe("ssh tunnel scripts", () => {
     }).pipe(Effect.provide(processLayer));
   });
 
-  it.effect("closes the tunnel scope and starts fresh after disconnect", () => {
+  it.effect("closes only the local tunnel and starts fresh after disconnect", () => {
     const spawnedCommands: Array<ReadonlyArray<string>> = [];
     const readinessPaths: string[] = [];
     let tunnelKillCount = 0;
@@ -556,13 +609,64 @@ describe("ssh tunnel scripts", () => {
 
       yield* manager.disconnectEnvironment(target);
       assert.equal(tunnelKillCount, 1);
-      assert.equal(stopCommandCount, 1);
+      assert.equal(stopCommandCount, 0);
 
       yield* manager.ensureEnvironment(target);
 
       assert.equal(spawnedCommands.filter((args) => args.includes("-N")).length, 2);
       assert.equal(tunnelKillCount, 1);
+      assert.equal(stopCommandCount, 0);
     }).pipe(Effect.provide(layer), Effect.scoped);
+  });
+
+  it.effect("keeps the shared remote server alive when the manager scope closes", () => {
+    let tunnelKillCount = 0;
+    let stopCommandCount = 0;
+    const spawner = ChildProcessSpawner.make((command) =>
+      Effect.sync(() => {
+        const args = commandArgs(command);
+        if (args.includes("-N")) {
+          return makeRunningProcess(() => {
+            tunnelKillCount += 1;
+          });
+        }
+        if (args.includes("sh") && args.includes("--")) {
+          return makeSuccessfulProcess('{"remotePort":3773,"serverKind":"managed"}\n');
+        }
+        if (args.includes("sh")) {
+          stopCommandCount += 1;
+          return makeSuccessfulProcess('{"stopped":true}\n');
+        }
+        return makeSuccessfulProcess("\n");
+      }),
+    );
+    const descriptorOnlyHttpClient = HttpClient.make((request) =>
+      Effect.succeed(HttpClientResponse.fromWeb(request, new Response("", { status: 200 }))),
+    );
+    const layer = Layer.mergeAll(
+      NodeServices.layer,
+      Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner),
+      Layer.succeed(HttpClient.HttpClient, descriptorOnlyHttpClient),
+      Layer.succeed(NetService.NetService, testNetService),
+      SshPasswordPrompt.disabledLayer,
+      SshEnvironmentManager.layer(),
+    );
+    const target = {
+      alias: "devbox",
+      hostname: "devbox.example.com",
+      username: "julius",
+      port: 2222,
+    } as const;
+
+    return Effect.gen(function* () {
+      yield* Effect.gen(function* () {
+        const manager = yield* SshEnvironmentManager;
+        yield* manager.ensureEnvironment(target);
+      }).pipe(Effect.provide(layer), Effect.scoped);
+
+      assert.equal(tunnelKillCount, 1);
+      assert.equal(stopCommandCount, 0);
+    });
   });
 
   it.effect("keeps an existing tunnel through a brief backend stall", () => {

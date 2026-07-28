@@ -15,8 +15,10 @@ import {
   baseSshArgs,
   getLastNonEmptyOutputLine,
   parseSshResolveOutput,
+  remoteStateKey,
   resolveRemoteT3CliPackageSpec,
   runSshCommand,
+  targetConnectionKey,
 } from "./command.ts";
 import { SshCommandError } from "./errors.ts";
 
@@ -103,6 +105,24 @@ describe("ssh command", () => {
       );
     }),
   );
+
+  it("shares remote backend identity across aliases for the same resolved endpoint", () => {
+    const first = {
+      alias: "devbox",
+      hostname: "Devbox.Example.com",
+      username: "julius",
+      port: 2222,
+    } as const;
+    const second = {
+      alias: "devbox-via-tailnet",
+      hostname: "devbox.example.com",
+      username: "julius",
+      port: 2222,
+    } as const;
+
+    assert.notEqual(targetConnectionKey(first), targetConnectionKey(second));
+    assert.equal(remoteStateKey(first), remoteStateKey(second));
+  });
 
   it.effect("resolves the remote t3 package spec from the desktop release channel", () =>
     Effect.sync(() => {
