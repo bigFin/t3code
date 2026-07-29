@@ -148,13 +148,19 @@ describe("environment shell synchronization", () => {
     }),
   );
 
-  it.effect("resumes a warm shell cache immediately from its persisted cursor", () =>
+  it.effect("resumes a warm shell cache immediately and reconciles it in the background", () =>
     Effect.gen(function* () {
       const cachedSnapshot: OrchestrationShellSnapshot = {
         snapshotSequence: 5,
         projects: [],
         threads: [{ id: "stale-thread" } as never],
         updatedAt: "2026-06-06T00:00:00.000Z",
+      };
+      const authoritativeSnapshot: OrchestrationShellSnapshot = {
+        snapshotSequence: 8,
+        projects: [],
+        threads: [{ id: "settled-thread" } as never],
+        updatedAt: "2026-06-06T00:01:00.000Z",
       };
       const events = yield* Queue.unbounded<OrchestrationShellStreamItem>();
       const capturedAfterSequence = yield* SubscriptionRef.make<number | undefined>(undefined);
@@ -200,7 +206,7 @@ describe("environment shell synchronization", () => {
       const snapshotLoader = ShellSnapshotLoader.of({
         load: () =>
           SubscriptionRef.update(loaderCalls, (count) => count + 1).pipe(
-            Effect.as(Option.none<OrchestrationShellSnapshot>()),
+            Effect.as(Option.some(authoritativeSnapshot)),
           ),
       });
       const shellState = yield* makeEnvironmentShellState().pipe(
@@ -217,10 +223,14 @@ describe("environment shell synchronization", () => {
 
       expect(yield* SubscriptionRef.get(capturedAfterSequence)).toBe(5);
       expect(yield* Ref.get(capturedCompletionMarker)).toBe(true);
-      expect(yield* SubscriptionRef.get(loaderCalls)).toBe(0);
+      for (let attempt = 0; attempt < 100; attempt += 1) {
+        if ((yield* SubscriptionRef.get(loaderCalls)) === 1) break;
+        yield* Effect.yieldNow;
+      }
+      expect(yield* SubscriptionRef.get(loaderCalls)).toBe(1);
       const synchronizing = yield* SubscriptionRef.get(shellState);
       expect(synchronizing.status).toBe("synchronizing");
-      expect(Option.getOrThrow(synchronizing.snapshot)).toEqual(cachedSnapshot);
+      expect(Option.getOrThrow(synchronizing.snapshot)).toEqual(authoritativeSnapshot);
 
       yield* Queue.offer(events, { kind: "synchronized" });
       yield* SubscriptionRef.changes(shellState).pipe(
@@ -230,7 +240,7 @@ describe("environment shell synchronization", () => {
     }),
   );
 
-  it.effect("keeps a healthy shell subscription on application activation", () =>
+  it.effect("reconciles a healthy shell on application activation without resubscribing", () =>
     Effect.gen(function* () {
       const events = yield* Queue.unbounded<OrchestrationShellStreamItem>();
       const wakeups = yield* Queue.unbounded<ConnectionWakeups.ConnectionWakeup>();
@@ -299,7 +309,7 @@ describe("environment shell synchronization", () => {
         yield* Effect.yieldNow;
       }
 
-      expect(yield* Ref.get(loaderCalls)).toBe(0);
+      expect(yield* Ref.get(loaderCalls)).toBe(2);
       expect(yield* Ref.get(subscriptionCount)).toBe(1);
       expect((yield* SubscriptionRef.get(shellState)).status).toBe("live");
     }),

@@ -450,6 +450,27 @@ describe("EnvironmentThreads", () => {
     }),
   );
 
+  it.effect("persists the initial active snapshot once for restart resume", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness();
+      yield* Queue.offer(harness.inputs, snapshot(ACTIVE_THREAD));
+      yield* awaitThreadState(
+        harness.observed,
+        (value) =>
+          value.status === "live" &&
+          Option.isSome(value.data) &&
+          value.data.value.session?.status === "running",
+      );
+
+      yield* TestClock.adjust("500 millis");
+      yield* Effect.yieldNow;
+
+      expect(yield* Ref.get(harness.savedThreads)).toEqual([
+        { snapshotSequence: 1, thread: ACTIVE_THREAD },
+      ]);
+    }),
+  );
+
   it.effect("seeds the thread from the HTTP snapshot and resumes live events", () =>
     Effect.gen(function* () {
       const httpThread: OrchestrationThread = { ...BASE_THREAD, title: "HTTP title" };

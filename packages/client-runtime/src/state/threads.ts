@@ -195,6 +195,11 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
     if (item.kind === "snapshot") {
       yield* SubscriptionRef.set(lastSequence, item.snapshot.snapshotSequence);
       yield* setThread(item.snapshot.thread);
+      // Persist the initial snapshot even while a turn is active. This pays the
+      // encoding cost once, then active stream updates remain memory-only until
+      // the thread settles. A restart can therefore resume a large active
+      // thread from its cursor instead of downloading its entire history again.
+      yield* Queue.offer(persistence, item.snapshot);
       return;
     }
 

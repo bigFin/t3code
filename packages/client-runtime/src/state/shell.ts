@@ -17,6 +17,7 @@ import { AsyncResult, Atom } from "effect/unstable/reactivity";
 import { EnvironmentRegistry } from "../connection/registry.ts";
 import { connectionProjectionPhase } from "../connection/model.ts";
 import { EnvironmentSupervisor } from "../connection/supervisor.ts";
+import * as ConnectionWakeups from "../connection/wakeups.ts";
 import { safeErrorLogAttributes } from "../errors/safeLog.ts";
 import { EnvironmentCacheStore } from "../platform/persistence.ts";
 import { subscribeDynamic } from "../rpc/client.ts";
@@ -51,6 +52,7 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
   const supervisor = yield* EnvironmentSupervisor;
   const cache = yield* EnvironmentCacheStore;
   const snapshotLoader = yield* ShellSnapshotLoader;
+  const wakeups = yield* Effect.serviceOption(ConnectionWakeups.ConnectionWakeups);
   const environmentId = supervisor.target.environmentId;
   const cachedSnapshot = yield* cache.loadShell(environmentId).pipe(
     Effect.catch((error) =>
@@ -70,6 +72,7 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
   });
   const awaitingCompletion = yield* Ref.make(false);
   const persistence = yield* Queue.sliding<OrchestrationShellSnapshot>(1);
+  const reconciliationRequests = yield* Queue.sliding<void>(1);
 
   const persist = Effect.fn("EnvironmentShellState.persist")(function* (
     snapshot: OrchestrationShellSnapshot,
@@ -146,7 +149,13 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
     const current = yield* SubscriptionRef.get(state);
     const nextSnapshot =
       item.kind === "snapshot"
-        ? item.snapshot
+        ? Option.match(current.snapshot, {
+            onNone: () => item.snapshot,
+            onSome: (snapshot) =>
+              item.snapshot.snapshotSequence >= snapshot.snapshotSequence
+                ? item.snapshot
+                : snapshot,
+          })
         : Option.match(current.snapshot, {
             onNone: () => null,
             onSome: (snapshot) =>
@@ -167,6 +176,32 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
     yield* Queue.offer(persistence, nextSnapshot);
   });
 
+  const getPrepared = SubscriptionRef.get(supervisor.prepared).pipe(
+    Effect.flatMap(
+      Option.match({
+        onSome: Effect.succeed,
+        onNone: () =>
+          SubscriptionRef.changes(supervisor.prepared).pipe(
+            Stream.filter(Option.isSome),
+            Stream.map((value) => value.value),
+            Stream.runHead,
+            Effect.map(Option.getOrThrow),
+          ),
+      }),
+    ),
+  );
+  const reconcileSnapshot = Effect.fn("EnvironmentShellState.reconcileSnapshot")(function* () {
+    const prepared = yield* getPrepared;
+    const httpSnapshot = yield* snapshotLoader.load(prepared);
+    if (Option.isSome(httpSnapshot)) {
+      yield* applyItem({ kind: "snapshot", snapshot: httpSnapshot.value });
+    }
+  });
+  yield* Stream.fromQueue(reconciliationRequests).pipe(
+    Stream.runForEach(() => reconcileSnapshot()),
+    Effect.forkScoped,
+  );
+
   yield* setSynchronizing;
   yield* Effect.forkScoped(
     subscribeDynamic(
@@ -179,13 +214,14 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
         yield* Ref.set(awaitingCompletion, supportsCompletionMarker);
         yield* setSynchronizing;
 
-        // A cached or previously synchronized shell already carries the exact
-        // event-store cursor needed for a durable resume. Subscribe immediately
-        // from that cursor instead of blocking live delivery on another full
-        // HTTP snapshot. The server falls back to an authoritative snapshot
-        // when the cursor is invalid or too far behind.
+        // A cached or previously synchronized shell carries a cursor for an
+        // immediate event replay. Reconcile it with an authoritative HTTP
+        // snapshot in the background as well: a prior backend can disappear
+        // after updating projections but before every client receives the final
+        // stream event, leaving an otherwise valid cache permanently "running".
         const current = yield* SubscriptionRef.get(state);
         if (Option.isSome(current.snapshot)) {
+          yield* Queue.offer(reconciliationRequests, undefined);
           return {
             afterSequence: current.snapshot.value.snapshotSequence,
             ...(supportsCompletionMarker ? { requestCompletionMarker: true as const } : {}),
@@ -194,20 +230,7 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
 
         // Keep the gzip-friendly HTTP snapshot path for a genuinely cold
         // environment. Once any shell state exists, reconnects stay cursor-only.
-        const prepared = yield* SubscriptionRef.get(supervisor.prepared).pipe(
-          Effect.flatMap(
-            Option.match({
-              onSome: Effect.succeed,
-              onNone: () =>
-                SubscriptionRef.changes(supervisor.prepared).pipe(
-                  Stream.filter(Option.isSome),
-                  Stream.map((value) => value.value),
-                  Stream.runHead,
-                  Effect.map(Option.getOrThrow),
-                ),
-            }),
-          ),
-        );
+        const prepared = yield* getPrepared;
         const httpSnapshot = yield* snapshotLoader.load(prepared);
         if (Option.isSome(httpSnapshot)) {
           yield* applyItem({ kind: "snapshot", snapshot: httpSnapshot.value });
@@ -225,6 +248,13 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
       },
     ).pipe(Stream.runForEach(applyItem)),
   );
+  if (Option.isSome(wakeups)) {
+    yield* wakeups.value.changes.pipe(
+      Stream.filter((reason) => reason === "application-active"),
+      Stream.runForEach(() => Queue.offer(reconciliationRequests, undefined)),
+      Effect.forkScoped,
+    );
+  }
   yield* SubscriptionRef.changes(supervisor.state).pipe(
     Stream.runForEach((connectionState) => {
       switch (connectionProjectionPhase(connectionState)) {
