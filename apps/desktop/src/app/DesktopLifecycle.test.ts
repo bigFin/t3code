@@ -1,4 +1,4 @@
-import { assert, describe, it } from "@effect/vitest";
+import { assert, describe, it, vi } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
@@ -14,6 +14,62 @@ import * as DesktopState from "./DesktopState.ts";
 import * as DesktopWindow from "../window/DesktopWindow.ts";
 
 describe("DesktopLifecycle", () => {
+  it("quits after the shutdown watchdog expires", async () => {
+    vi.useFakeTimers();
+    try {
+      let resolveShutdown!: () => void;
+      const shutdown = new Promise<void>((resolve) => {
+        resolveShutdown = resolve;
+      });
+      const onTimeout = vi.fn();
+      const quit = vi.fn();
+
+      DesktopLifecycle.quitAfterShutdownOrTimeout({
+        shutdown,
+        timeoutMs: 1_000,
+        onTimeout,
+        quit,
+      });
+
+      await vi.advanceTimersByTimeAsync(999);
+      assert.equal(quit.mock.calls.length, 0);
+
+      await vi.advanceTimersByTimeAsync(1);
+      assert.equal(onTimeout.mock.calls.length, 1);
+      assert.equal(quit.mock.calls.length, 1);
+
+      resolveShutdown();
+      await Promise.resolve();
+      assert.equal(quit.mock.calls.length, 1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("cancels the shutdown watchdog after graceful completion", async () => {
+    vi.useFakeTimers();
+    try {
+      const onTimeout = vi.fn();
+      const quit = vi.fn();
+
+      DesktopLifecycle.quitAfterShutdownOrTimeout({
+        shutdown: Promise.resolve(),
+        timeoutMs: 1_000,
+        onTimeout,
+        quit,
+      });
+
+      await Promise.resolve();
+      assert.equal(quit.mock.calls.length, 1);
+
+      await vi.advanceTimersByTimeAsync(1_000);
+      assert.equal(onTimeout.mock.calls.length, 0);
+      assert.equal(quit.mock.calls.length, 1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("keeps Linux alive after the last window closes", () => {
     assert.equal(DesktopLifecycle.shouldQuitAfterLastWindowCloses("linux"), false);
   });

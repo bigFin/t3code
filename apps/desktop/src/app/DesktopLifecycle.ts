@@ -1,3 +1,4 @@
+// @effect-diagnostics globalTimers:off
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -48,8 +49,13 @@ export class DesktopLifecycle extends Context.Service<
   }
 >()("@t3tools/desktop/app/DesktopLifecycle") {}
 
-const { logInfo: logLifecycleInfo, logError: logLifecycleError } =
-  makeComponentLogger("desktop-lifecycle");
+const {
+  logInfo: logLifecycleInfo,
+  logWarning: logLifecycleWarning,
+  logError: logLifecycleError,
+} = makeComponentLogger("desktop-lifecycle");
+
+const DESKTOP_SHUTDOWN_TIMEOUT_MS = 10_000;
 
 export function shouldQuitAfterLastWindowCloses(platform: NodeJS.Platform): boolean {
   // Keep the Linux desktop/backend process alive after the compositor closes
@@ -79,6 +85,26 @@ function addScopedListener<Args extends ReadonlyArray<unknown>>(
         eventTarget.removeListener(eventName, untypedListener);
       }),
   ).pipe(Effect.asVoid);
+}
+
+export function quitAfterShutdownOrTimeout(options: {
+  readonly shutdown: Promise<unknown>;
+  readonly timeoutMs: number;
+  readonly onTimeout: () => void;
+  readonly quit: () => void;
+}): void {
+  let finished = false;
+  const finish = () => {
+    if (finished) return;
+    finished = true;
+    clearTimeout(timeout);
+    options.quit();
+  };
+  const timeout = setTimeout(() => {
+    options.onTimeout();
+    finish();
+  }, options.timeoutMs);
+  void options.shutdown.then(finish, finish);
 }
 
 const requestDesktopShutdownAndWait = Effect.fn("desktop.lifecycle.requestShutdownAndWait")(
@@ -113,40 +139,72 @@ function handleBeforeQuit(
   }
 
   event.preventDefault();
-  void runEffect(
+  const shutdown = runEffect(
     Effect.gen(function* () {
       const state = yield* DesktopState.DesktopState;
       yield* Ref.set(state.quitting, true);
       yield* logLifecycleInfo("before-quit received");
       yield* requestDesktopShutdownAndWait();
     }).pipe(Effect.withSpan("desktop.lifecycle.beforeQuit")),
-  ).finally(() => {
-    markQuitAllowed();
-    void runEffect(
-      Effect.gen(function* () {
-        const electronApp = yield* ElectronApp.ElectronApp;
-        yield* electronApp.quit;
-      }).pipe(Effect.withSpan("desktop.lifecycle.quitAfterShutdown")),
-    );
+  );
+  quitAfterShutdownOrTimeout({
+    shutdown,
+    timeoutMs: DESKTOP_SHUTDOWN_TIMEOUT_MS,
+    onTimeout: () => {
+      void runEffect(
+        logLifecycleWarning("desktop shutdown timed out; forcing Electron quit", {
+          timeoutMs: DESKTOP_SHUTDOWN_TIMEOUT_MS,
+        }),
+      );
+    },
+    quit: () => {
+      markQuitAllowed();
+      void runEffect(
+        Effect.gen(function* () {
+          const electronApp = yield* ElectronApp.ElectronApp;
+          yield* electronApp.quit;
+        }).pipe(Effect.withSpan("desktop.lifecycle.quitAfterShutdown")),
+      );
+    },
   });
 }
 
 function quitFromSignal(
   signal: "SIGINT" | "SIGTERM",
   runEffect: <A, E>(effect: Effect.Effect<A, E, DesktopLifecycleRuntimeServices>) => Promise<A>,
+  markQuitAllowed: () => void,
 ): void {
-  void runEffect(
+  const shutdown = runEffect(
     Effect.gen(function* () {
       yield* Effect.annotateCurrentSpan({ signal });
-      const electronApp = yield* ElectronApp.ElectronApp;
       const state = yield* DesktopState.DesktopState;
       const wasQuitting = yield* Ref.getAndSet(state.quitting, true);
       if (wasQuitting) return;
       yield* logLifecycleInfo("process signal received", { signal });
       yield* requestDesktopShutdownAndWait();
-      yield* electronApp.quit;
     }).pipe(Effect.withSpan("desktop.lifecycle.processSignal")),
   );
+  quitAfterShutdownOrTimeout({
+    shutdown,
+    timeoutMs: DESKTOP_SHUTDOWN_TIMEOUT_MS,
+    onTimeout: () => {
+      void runEffect(
+        logLifecycleWarning("desktop shutdown timed out after process signal", {
+          signal,
+          timeoutMs: DESKTOP_SHUTDOWN_TIMEOUT_MS,
+        }),
+      );
+    },
+    quit: () => {
+      markQuitAllowed();
+      void runEffect(
+        Effect.gen(function* () {
+          const electronApp = yield* ElectronApp.ElectronApp;
+          yield* electronApp.quit;
+        }).pipe(Effect.withSpan("desktop.lifecycle.quitAfterSignal")),
+      );
+    },
+  });
 }
 
 export const make = DesktopLifecycle.of({
@@ -232,10 +290,14 @@ export const make = DesktopLifecycle.of({
 
     if (environment.platform !== "win32") {
       yield* addScopedListener(process, "SIGINT", () => {
-        quitFromSignal("SIGINT", runEffect);
+        quitFromSignal("SIGINT", runEffect, () => {
+          quitAllowed = true;
+        });
       });
       yield* addScopedListener(process, "SIGTERM", () => {
-        quitFromSignal("SIGTERM", runEffect);
+        quitFromSignal("SIGTERM", runEffect, () => {
+          quitAllowed = true;
+        });
       });
     }
   }).pipe(Effect.withSpan("desktop.lifecycle.register")),
