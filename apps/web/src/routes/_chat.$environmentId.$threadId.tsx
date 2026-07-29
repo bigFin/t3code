@@ -10,6 +10,7 @@ import {
   resolveThreadRouteRef,
   resolveThreadRouteRenderState,
 } from "../threadRoutes";
+import { resolveThreadSyncPhase } from "../threadSync";
 import { SidebarInset } from "~/components/ui/sidebar";
 import {
   useEnvironmentThreadRefs,
@@ -56,6 +57,11 @@ function ChatThreadRouteView() {
     serverThreadDetailDeleted: serverThreadStatus === "deleted",
     draftThreadExists,
   });
+  const threadSyncPhase = resolveThreadSyncPhase({
+    detailExists: serverThreadDetail !== null,
+    shellExists: serverThreadShell !== null,
+    status: serverThreadStatus,
+  });
   const serverThreadStarted = threadHasStarted(serverThreadDetail);
   const environmentHasAnyThreads = environmentHasServerThreads || environmentHasDraftThreads;
   const loadingCopy = resolveThreadRouteLoadingCopy({
@@ -86,10 +92,10 @@ function ChatThreadRouteView() {
   if (!threadRef) {
     return null;
   }
-  if (renderState === "loading") {
+  if (renderState === "loading" && serverThreadShell === null) {
     return <ThreadRouteLoadingView {...loadingCopy} />;
   }
-  if (renderState !== "ready") {
+  if (renderState !== "ready" && !(renderState === "loading" && serverThreadShell !== null)) {
     return null;
   }
 
@@ -99,6 +105,7 @@ function ChatThreadRouteView() {
         environmentId={threadRef.environmentId}
         threadId={threadRef.threadId}
         routeKind="server"
+        threadSyncPhase={threadSyncPhase}
       />
     </SidebarInset>
   );

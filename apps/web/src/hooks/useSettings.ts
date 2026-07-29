@@ -21,6 +21,7 @@ import {
   type ClientSettingsPatch,
   type ClientSettings,
   DEFAULT_CLIENT_SETTINGS,
+  type EnvironmentIdentificationMode,
   type UnifiedSettings,
 } from "@t3tools/contracts/settings";
 import { safeErrorLogAttributes } from "@t3tools/client-runtime/errors";
@@ -222,6 +223,20 @@ export function useClientSettings<T = ClientSettings>(
   return useMemo(() => (selector ? selector(settings) : (settings as T)), [selector, settings]);
 }
 
+export function resolveEnvironmentIdentificationMode(input: {
+  mode: EnvironmentIdentificationMode;
+  settingsHydrated: boolean;
+}): EnvironmentIdentificationMode {
+  // Avoid briefly rendering the default artwork before a persisted pill/none choice loads.
+  return input.settingsHydrated ? input.mode : "none";
+}
+
+export function useEnvironmentIdentificationMode(): EnvironmentIdentificationMode {
+  const settingsHydrated = useClientSettingsHydrated();
+  const mode = useClientSettingsValue().environmentIdentificationMode;
+  return resolveEnvironmentIdentificationMode({ mode, settingsHydrated });
+}
+
 /**
  * Resolved sidebar v2 state: an explicit choice in Settings → Beta if the user
  * has made one, otherwise the default for this build stage (on for nightly and
@@ -287,7 +302,6 @@ function useUpdateSettingsTarget(environmentId: EnvironmentId | null) {
           });
         }
       }
-
       if (Object.keys(clientPatch).length > 0) {
         persistClientSettings({
           ...getClientSettingsSnapshot(),
