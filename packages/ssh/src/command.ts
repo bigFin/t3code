@@ -112,6 +112,10 @@ export function baseSshArgs(
     `BatchMode=${input?.batchMode ?? "no"}`,
     "-o",
     "ConnectTimeout=10",
+    "-o",
+    "ControlMaster=no",
+    "-o",
+    "ControlPath=none",
     ...(target.port !== null ? ["-p", String(target.port)] : []),
   ];
 }

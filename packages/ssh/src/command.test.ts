@@ -101,7 +101,18 @@ describe("ssh command", () => {
           },
           { batchMode: "no" },
         ),
-        ["-o", "BatchMode=no", "-o", "ConnectTimeout=10", "-p", "2222"],
+        [
+          "-o",
+          "BatchMode=no",
+          "-o",
+          "ConnectTimeout=10",
+          "-o",
+          "ControlMaster=no",
+          "-o",
+          "ControlPath=none",
+          "-p",
+          "2222",
+        ],
       );
     }),
   );
