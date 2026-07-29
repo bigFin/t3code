@@ -34,7 +34,7 @@ stdenv.mkDerivation {
     inherit version;
     inherit src;
     fetcherVersion = 4;
-    hash = "sha256-56GXx1HQe1pbHGt0XL5TS+V+K+R4hAzLfrFVpjd2mCA=";
+    hash = "sha256-utoVKy4F5pbs+FHvTtl06hw4vJnK8FBZ5Xw1wxFpEyY=";
   };
 
   nativeBuildInputs = [
