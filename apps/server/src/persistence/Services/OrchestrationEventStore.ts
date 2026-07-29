@@ -47,6 +47,20 @@ export interface OrchestrationEventStoreShape {
   ) => Stream.Stream<OrchestrationEvent, OrchestrationEventStoreError>;
 
   /**
+   * Replay one aggregate's events within a bounded global sequence range.
+   *
+   * The aggregate filter is applied by storage before rows are decoded, using
+   * the stream sequence index.
+   */
+  readonly readAggregateFromSequence: (input: {
+    readonly aggregateKind: OrchestrationEvent["aggregateKind"];
+    readonly aggregateId: OrchestrationEvent["aggregateId"];
+    readonly sequenceExclusive: number;
+    readonly sequenceInclusiveUpperBound: number;
+    readonly limit?: number;
+  }) => Stream.Stream<OrchestrationEvent, OrchestrationEventStoreError>;
+
+  /**
    * Read all events from the beginning of the stream.
    *
    * @returns Stream containing all stored events.

@@ -48,6 +48,12 @@ function shouldPersistThread(thread: OrchestrationThread): boolean {
   return status !== "starting" && status !== "running";
 }
 
+interface PendingThreadReplay {
+  readonly sequence: number;
+  readonly data: Option.Option<OrchestrationThread>;
+  readonly deleted: boolean;
+}
+
 export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make")(function* (
   threadId: ThreadIdType,
 ) {
@@ -80,6 +86,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
     Option.match(cached, { onNone: () => 0, onSome: (snapshot) => snapshot.snapshotSequence }),
   );
   const awaitingCompletion = yield* Ref.make(false);
+  const pendingReplay = yield* Ref.make<Option.Option<PendingThreadReplay>>(Option.none());
   const persistence = yield* Queue.sliding<OrchestrationThreadDetailSnapshot>(1);
 
   const persist = Effect.fn("EnvironmentThreadState.persist")(function* (
@@ -124,13 +131,14 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
   );
   const setDisconnected = Effect.gen(function* () {
     yield* Ref.set(awaitingCompletion, false);
+    yield* Ref.set(pendingReplay, Option.none());
     yield* SubscriptionRef.update(state, (current) => ({
       ...current,
       status: current.status === "deleted" ? current.status : statusWithoutLiveData(current.data),
     }));
   });
   const setStreamError = (cause: Cause.Cause<unknown>) =>
-    Ref.set(awaitingCompletion, false).pipe(
+    Effect.all([Ref.set(awaitingCompletion, false), Ref.set(pendingReplay, Option.none())]).pipe(
       Effect.andThen(
         SubscriptionRef.update(state, (current) => ({
           ...current,
@@ -183,7 +191,20 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
     item: OrchestrationThreadStreamItem,
   ) {
     if (item.kind === "synchronized") {
+      const pending = yield* Ref.get(pendingReplay);
+      yield* Ref.set(pendingReplay, Option.none());
       yield* Ref.set(awaitingCompletion, false);
+      if (Option.isSome(pending)) {
+        yield* SubscriptionRef.set(lastSequence, pending.value.sequence);
+        if (pending.value.deleted) {
+          yield* setDeleted();
+          return;
+        }
+        if (Option.isSome(pending.value.data)) {
+          yield* setThread(pending.value.data.value);
+          return;
+        }
+      }
       yield* SubscriptionRef.update(state, (current) =>
         Option.isSome(current.data) && current.status !== "deleted"
           ? { ...current, status: "live" as const, error: Option.none() }
@@ -193,6 +214,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
     }
 
     if (item.kind === "snapshot") {
+      yield* Ref.set(pendingReplay, Option.none());
       yield* SubscriptionRef.set(lastSequence, item.snapshot.snapshotSequence);
       yield* setThread(item.snapshot.thread);
       // Persist the initial snapshot even while a turn is active. This pays the
@@ -203,10 +225,50 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
       return;
     }
 
-    const sequence = yield* SubscriptionRef.get(lastSequence);
-    if (item.event.sequence <= sequence) {
+    const waiting = yield* Ref.get(awaitingCompletion);
+    const pending = yield* Ref.get(pendingReplay);
+    const sequence = Option.match(pending, {
+      onNone: () => 0,
+      onSome: (value) => value.sequence,
+    });
+    const appliedSequence =
+      waiting && Option.isSome(pending) ? sequence : yield* SubscriptionRef.get(lastSequence);
+    if (item.event.sequence <= appliedSequence) {
       return;
     }
+
+    if (waiting) {
+      const current = Option.isSome(pending)
+        ? pending.value.data
+        : (yield* SubscriptionRef.get(state)).data;
+      if (Option.isNone(current)) {
+        yield* Ref.set(
+          pendingReplay,
+          Option.some({
+            sequence: item.event.sequence,
+            data: Option.none(),
+            deleted: item.event.type === "thread.deleted",
+          }),
+        );
+        return;
+      }
+      const result = applyThreadDetailEvent(current.value, item.event);
+      yield* Ref.set(
+        pendingReplay,
+        Option.some({
+          sequence: item.event.sequence,
+          data:
+            result.kind === "updated"
+              ? Option.some(result.thread)
+              : result.kind === "deleted"
+                ? Option.none()
+                : current,
+          deleted: result.kind === "deleted",
+        }),
+      );
+      return;
+    }
+
     yield* SubscriptionRef.set(lastSequence, item.event.sequence);
 
     const current = yield* SubscriptionRef.get(state);
@@ -253,6 +315,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
           Effect.map((config) => config.threadResumeCompletionMarker === true),
           Effect.orElseSucceed(() => false),
         );
+        yield* Ref.set(pendingReplay, Option.none());
         yield* Ref.set(awaitingCompletion, supportsCompletionMarker);
         yield* setSynchronizing;
 

@@ -352,11 +352,11 @@ const sessionReady = (sequence: number): OrchestrationThreadStreamItem => ({
   },
 });
 
-const deleted = (): OrchestrationThreadStreamItem => ({
+const deleted = (sequence = 3): OrchestrationThreadStreamItem => ({
   kind: "event",
   event: {
     eventId: EventId.make("event-deleted"),
-    sequence: 3,
+    sequence,
     occurredAt: "2026-04-01T02:00:00.000Z",
     commandId: null,
     causationEventId: null,
@@ -518,12 +518,19 @@ describe("EnvironmentThreads", () => {
     }),
   );
 
-  it.effect("removes cached data when the thread is deleted", () =>
+  it.effect("removes cached data when a replay batch deletes the thread", () =>
     Effect.gen(function* () {
-      const harness = yield* makeHarness({ cached: BASE_THREAD });
-      yield* Queue.offer(harness.inputs, snapshot(BASE_THREAD));
-      yield* Queue.offer(harness.inputs, deleted());
+      const harness = yield* makeHarness({ cached: BASE_THREAD, completionMarker: true });
+      yield* Queue.offer(harness.inputs, deleted(CACHED_SNAPSHOT_SEQUENCE + 1));
+      for (let index = 0; index < 10; index += 1) {
+        yield* Effect.yieldNow;
+      }
 
+      const beforeMarker = yield* Ref.get(harness.latest);
+      expect(beforeMarker.status).toBe("synchronizing");
+      expect(Option.getOrThrow(beforeMarker.data)).toEqual(BASE_THREAD);
+
+      yield* Queue.offer(harness.inputs, synchronized());
       const state = yield* awaitThreadState(
         harness.observed,
         (value) => value.status === "deleted",
@@ -546,6 +553,7 @@ describe("EnvironmentThreads", () => {
       });
       yield* Queue.offer(harness.inputs, snapshot(BASE_THREAD));
       yield* Queue.offer(harness.inputs, deleted());
+      yield* Queue.offer(harness.inputs, synchronized());
       yield* awaitThreadState(harness.observed, (value) => value.status === "deleted");
 
       expect(yield* Ref.get(harness.loaderCalls)).toBe(0);
@@ -678,7 +686,7 @@ describe("EnvironmentThreads", () => {
     }),
   );
 
-  it.effect("keeps replayed updates synchronizing until the completion marker arrives", () =>
+  it.effect("publishes a replay batch once when the completion marker arrives", () =>
     Effect.gen(function* () {
       const harness = yield* makeHarness({ cached: BASE_THREAD, completionMarker: true });
       yield* awaitThreadState(
@@ -689,16 +697,23 @@ describe("EnvironmentThreads", () => {
 
       yield* Queue.offer(
         harness.inputs,
-        titleUpdated("Caught-up title", CACHED_SNAPSHOT_SEQUENCE + 1),
+        titleUpdated("Intermediate title", CACHED_SNAPSHOT_SEQUENCE + 1),
       );
-      const catchingUp = yield* awaitThreadState(
-        harness.observed,
-        (value) =>
-          value.status === "synchronizing" &&
-          Option.isSome(value.data) &&
-          value.data.value.title === "Caught-up title",
+      yield* Queue.offer(
+        harness.inputs,
+        titleUpdated("Ignored duplicate", CACHED_SNAPSHOT_SEQUENCE + 1),
       );
+      yield* Queue.offer(
+        harness.inputs,
+        titleUpdated("Caught-up title", CACHED_SNAPSHOT_SEQUENCE + 2),
+      );
+      for (let index = 0; index < 10; index += 1) {
+        yield* Effect.yieldNow;
+      }
+
+      const catchingUp = yield* Ref.get(harness.latest);
       expect(catchingUp.status).toBe("synchronizing");
+      expect(Option.getOrThrow(catchingUp.data).title).toBe("Cached thread");
 
       yield* Queue.offer(harness.inputs, synchronized());
       const live = yield* awaitThreadState(
@@ -706,6 +721,19 @@ describe("EnvironmentThreads", () => {
         (value) => value.status === "live" && Option.isSome(value.data),
       );
       expect(Option.getOrThrow(live.data).title).toBe("Caught-up title");
+
+      yield* TestClock.adjust("500 millis");
+      yield* Effect.yieldNow;
+      expect(yield* Ref.get(harness.savedThreads)).toEqual([
+        {
+          snapshotSequence: CACHED_SNAPSHOT_SEQUENCE + 2,
+          thread: {
+            ...BASE_THREAD,
+            title: "Caught-up title",
+            updatedAt: "2026-04-01T01:00:00.000Z",
+          },
+        },
+      ]);
     }),
   );
 

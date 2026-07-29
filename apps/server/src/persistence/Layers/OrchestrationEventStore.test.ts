@@ -1,4 +1,4 @@
-import { CommandId, EventId, ProjectId } from "@t3tools/contracts";
+import { CommandId, EventId, ProjectId, ThreadId } from "@t3tools/contracts";
 import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -118,6 +118,66 @@ layer("OrchestrationEventStore", (it) => {
           ),
         );
       }
+    }),
+  );
+
+  it.effect("replays one aggregate with sequence bounds and a limit", () =>
+    Effect.gen(function* () {
+      const eventStore = yield* OrchestrationEventStore;
+      const targetThreadId = ThreadId.make("thread-target");
+      const otherThreadId = ThreadId.make("thread-other");
+      const now = "2026-01-01T00:00:00.000Z";
+      const appendTitle = (threadId: ThreadId, title: string, index: number) =>
+        eventStore.append({
+          type: "thread.meta-updated",
+          eventId: EventId.make(`evt-thread-${index}`),
+          aggregateKind: "thread",
+          aggregateId: threadId,
+          occurredAt: now,
+          commandId: null,
+          causationEventId: null,
+          correlationId: null,
+          metadata: {},
+          payload: {
+            threadId,
+            title,
+            updatedAt: now,
+          },
+        });
+
+      const beforeCursor = yield* appendTitle(targetThreadId, "before cursor", 1);
+      yield* appendTitle(otherThreadId, "unrelated", 2);
+      const firstExpected = yield* appendTitle(targetThreadId, "first expected", 3);
+      const secondExpected = yield* appendTitle(targetThreadId, "second expected", 4);
+      yield* appendTitle(targetThreadId, "past upper bound", 5);
+
+      const bounded = yield* Stream.runCollect(
+        eventStore.readAggregateFromSequence({
+          aggregateKind: "thread",
+          aggregateId: targetThreadId,
+          sequenceExclusive: beforeCursor.sequence,
+          sequenceInclusiveUpperBound: secondExpected.sequence,
+          limit: 10,
+        }),
+      ).pipe(Effect.map((events) => Array.from(events)));
+      assert.deepEqual(
+        bounded.map((event) => event.sequence),
+        [firstExpected.sequence, secondExpected.sequence],
+      );
+
+      const limited = yield* Stream.runCollect(
+        eventStore.readAggregateFromSequence({
+          aggregateKind: "thread",
+          aggregateId: targetThreadId,
+          sequenceExclusive: beforeCursor.sequence,
+          sequenceInclusiveUpperBound: secondExpected.sequence,
+          limit: 1,
+        }),
+      ).pipe(Effect.map((events) => Array.from(events)));
+      assert.deepEqual(
+        limited.map((event) => event.sequence),
+        [firstExpected.sequence],
+      );
     }),
   );
 });

@@ -705,6 +705,7 @@ const buildAppUnderTest = (options?: {
       Layer.provide(
         Layer.mock(OrchestrationEngine.OrchestrationEngineService)({
           readEvents: () => Stream.empty,
+          readAggregateEvents: () => Stream.empty,
           dispatch: () => Effect.succeed({ sequence: 0 }),
           streamDomainEvents: Stream.empty,
           latestSequence: Effect.succeed(0),
@@ -5972,6 +5973,202 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       assert.equal(items[0]?.kind, "snapshot");
       assert.equal(items[1]?.kind, "event");
       assert.equal(items[1]?.kind === "event" ? items[1].event.sequence : null, 2);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest), TestClock.withLive),
+  );
+
+  it.effect("subscribeThread replays only the requested aggregate through the captured head", () =>
+    Effect.gen(function* () {
+      const otherThreadId = ThreadId.make("thread-other");
+      const now = "2026-01-01T00:00:00.000Z";
+      let readEventsCalls = 0;
+      let aggregateInput:
+        | Parameters<
+            OrchestrationEngine.OrchestrationEngineService["Service"]["readAggregateEvents"]
+          >[0]
+        | undefined;
+      const messageEvent = (threadId: ThreadId, sequence: number): OrchestrationEvent =>
+        ({
+          sequence,
+          eventId: EventId.make(`event-message-${threadId}-${sequence}`),
+          aggregateKind: "thread",
+          aggregateId: threadId,
+          occurredAt: now,
+          commandId: null,
+          causationEventId: null,
+          correlationId: null,
+          metadata: {},
+          type: "thread.message-sent",
+          payload: {
+            threadId,
+            messageId: MessageId.make(`message-${threadId}-${sequence}`),
+            role: "user",
+            text: "Catch up",
+            turnId: null,
+            streaming: false,
+            createdAt: now,
+            updatedAt: now,
+          },
+        }) satisfies OrchestrationEvent;
+
+      yield* buildAppUnderTest({
+        layers: {
+          orchestrationEngine: {
+            latestSequence: Effect.succeed(10),
+            readEvents: () =>
+              Stream.sync(() => {
+                readEventsCalls += 1;
+                return messageEvent(defaultThreadId, 10);
+              }),
+            readAggregateEvents: (input) => {
+              aggregateInput = input;
+              return Stream.fromIterable([
+                messageEvent(otherThreadId, 8),
+                messageEvent(defaultThreadId, 9),
+              ]);
+            },
+          },
+        },
+      });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const items = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[ORCHESTRATION_WS_METHODS.subscribeThread]({
+            threadId: defaultThreadId,
+            afterSequence: 5,
+            requestCompletionMarker: true,
+          }).pipe(Stream.take(2), Stream.runCollect),
+        ),
+      );
+
+      assert.equal(items[0]?.kind, "event");
+      assert.equal(items[0]?.kind === "event" ? items[0].event.sequence : null, 9);
+      assert.deepEqual(items[1], { kind: "synchronized" });
+      assert.deepEqual(aggregateInput, {
+        aggregateKind: "thread",
+        aggregateId: defaultThreadId,
+        sequenceExclusive: 5,
+        sequenceInclusiveUpperBound: 10,
+        limit: 1_001,
+      });
+      assert.equal(readEventsCalls, 0);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("subscribeThread falls back to a snapshot when aggregate replay is too large", () =>
+    Effect.gen(function* () {
+      const thread = makeDefaultOrchestrationReadModel().threads[0]!;
+      const now = "2026-01-01T00:00:00.000Z";
+      const replayEvents = Array.from(
+        { length: 1_001 },
+        (_unused, index): OrchestrationEvent => ({
+          sequence: index + 1,
+          eventId: EventId.make(`event-message-${index + 1}`),
+          aggregateKind: "thread",
+          aggregateId: defaultThreadId,
+          occurredAt: now,
+          commandId: null,
+          causationEventId: null,
+          correlationId: null,
+          metadata: {},
+          type: "thread.message-sent",
+          payload: {
+            threadId: defaultThreadId,
+            messageId: MessageId.make(`message-${index + 1}`),
+            role: "user",
+            text: "Catch up",
+            turnId: null,
+            streaming: false,
+            createdAt: now,
+            updatedAt: now,
+          },
+        }),
+      );
+
+      yield* buildAppUnderTest({
+        layers: {
+          orchestrationEngine: {
+            latestSequence: Effect.succeed(2_000),
+            readAggregateEvents: () => Stream.fromIterable(replayEvents),
+          },
+          projectionSnapshotQuery: {
+            getThreadDetailSnapshot: () =>
+              Effect.succeed(Option.some({ snapshotSequence: 2_000, thread })),
+          },
+        },
+      });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const items = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[ORCHESTRATION_WS_METHODS.subscribeThread]({
+            threadId: defaultThreadId,
+            afterSequence: 0,
+            requestCompletionMarker: true,
+          }).pipe(Stream.take(2), Stream.runCollect),
+        ),
+      );
+
+      assert.equal(items[0]?.kind, "snapshot");
+      assert.deepEqual(items[1], { kind: "synchronized" });
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("subscribeThread orders live events buffered during aggregate replay before sync", () =>
+    Effect.gen(function* () {
+      const liveEvents = yield* PubSub.unbounded<OrchestrationEvent>();
+      const now = "2026-01-01T00:00:00.000Z";
+      const messageEvent = (sequence: number): OrchestrationEvent => ({
+        sequence,
+        eventId: EventId.make(`event-message-${sequence}`),
+        aggregateKind: "thread",
+        aggregateId: defaultThreadId,
+        occurredAt: now,
+        commandId: null,
+        causationEventId: null,
+        correlationId: null,
+        metadata: {},
+        type: "thread.message-sent",
+        payload: {
+          threadId: defaultThreadId,
+          messageId: MessageId.make(`message-${sequence}`),
+          role: "user",
+          text: "Catch up",
+          turnId: null,
+          streaming: false,
+          createdAt: now,
+          updatedAt: now,
+        },
+      });
+
+      yield* buildAppUnderTest({
+        layers: {
+          orchestrationEngine: {
+            latestSequence: Effect.succeed(2),
+            streamDomainEvents: Stream.fromPubSub(liveEvents),
+            readAggregateEvents: () =>
+              Stream.fromEffect(
+                PubSub.publish(liveEvents, messageEvent(3)).pipe(Effect.as(messageEvent(2))),
+              ),
+          },
+        },
+      });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const items = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[ORCHESTRATION_WS_METHODS.subscribeThread]({
+            threadId: defaultThreadId,
+            afterSequence: 1,
+            requestCompletionMarker: true,
+          }).pipe(Stream.take(3), Stream.runCollect),
+        ),
+      ).pipe(Effect.timeout("2 seconds"));
+
+      assert.deepEqual(
+        Array.from(items, (item) => (item.kind === "event" ? item.event.sequence : item.kind)),
+        [2, 3, "synchronized"],
+      );
     }).pipe(Effect.provide(NodeHttpServer.layerTest), TestClock.withLive),
   );
 
