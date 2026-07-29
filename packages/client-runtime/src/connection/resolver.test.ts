@@ -148,7 +148,7 @@ const makeDependencies = Effect.fn("TestConnectionResolver.makeDependencies")((o
     provision: () => Effect.die("unused"),
     prepare:
       options?.prepareSsh ??
-      (() =>
+      ((input) =>
         Effect.succeed({
           bootstrap: {
             target: SSH_TARGET,
@@ -157,6 +157,9 @@ const makeDependencies = Effect.fn("TestConnectionResolver.makeDependencies")((o
             pairingToken: null,
           },
           bearerToken: "ssh-bearer",
+          environmentId: input.expectedEnvironmentId,
+          label: "SSH",
+          socketUrl: "ws://127.0.0.1:4010/ws?wsTicket=ssh",
         })),
     disconnect: () => Effect.void,
   });
@@ -401,9 +404,10 @@ describe("ConnectionResolver", () => {
     }),
   );
 
-  it.effect("delegates SSH launch to the platform gateway before remote authorization", () =>
+  it.effect("delegates the complete SSH authorization flow to the platform gateway", () =>
     Effect.gen(function* () {
       const preparedTargets = yield* Ref.make<ReadonlyArray<DesktopSshEnvironmentTarget>>([]);
+      const bearerAuthorizationCalls = yield* Ref.make(0);
       const target = new SshConnectionTarget({
         environmentId: ENVIRONMENT_ID,
         label: "SSH",
@@ -416,6 +420,10 @@ describe("ConnectionResolver", () => {
         target: SSH_TARGET,
       });
       const brokerLayer = yield* makeDependencies({
+        authorizeBearer: () =>
+          Ref.update(bearerAuthorizationCalls, (count) => count + 1).pipe(
+            Effect.andThen(Effect.die("SSH authorization must stay behind the platform gateway")),
+          ),
         prepareSsh: (input) =>
           Ref.update(preparedTargets, (values) => [...values, input.target]).pipe(
             Effect.as({
@@ -426,6 +434,9 @@ describe("ConnectionResolver", () => {
                 pairingToken: null,
               },
               bearerToken: "ssh-bearer",
+              environmentId: input.expectedEnvironmentId,
+              label: "SSH",
+              socketUrl: "ws://127.0.0.1:4010/ws?wsTicket=ssh",
             }),
           ),
       });
@@ -433,8 +444,9 @@ describe("ConnectionResolver", () => {
 
       expect(
         (yield* broker.prepare(catalogEntry(target, Option.some(profile)))).socketUrl,
-      ).toContain("wsTicket=bearer");
+      ).toContain("wsTicket=ssh");
       expect(yield* Ref.get(preparedTargets)).toEqual([SSH_TARGET]);
+      expect(yield* Ref.get(bearerAuthorizationCalls)).toBe(0);
     }),
   );
 

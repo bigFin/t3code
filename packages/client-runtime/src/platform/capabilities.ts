@@ -11,14 +11,18 @@ import type * as Option from "effect/Option";
 
 import type { ConnectionAttemptError } from "../connection/model.ts";
 
-export interface PreparedSshEnvironment {
+export interface SshBearerEnvironment {
   readonly bootstrap: DesktopSshEnvironmentBootstrap;
   readonly bearerToken: string;
 }
 
-export interface ProvisionedSshEnvironment extends PreparedSshEnvironment {
+export interface ProvisionedSshEnvironment extends SshBearerEnvironment {
   readonly environmentId: EnvironmentId;
   readonly label: string;
+}
+
+export interface PreparedSshEnvironment extends ProvisionedSshEnvironment {
+  readonly socketUrl: string;
 }
 
 export class CloudSession extends Context.Service<

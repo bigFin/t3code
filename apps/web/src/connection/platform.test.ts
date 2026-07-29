@@ -81,6 +81,13 @@ function makeBridge(
         authenticated: options?.sessionAuthenticated ?? true,
       };
     },
+    issueSshWebSocketTicket: async () => {
+      calls.push("ticket");
+      return {
+        ticket: "websocket-ticket",
+        expires_in: 30,
+      };
+    },
   } as unknown as DesktopBridge;
 }
 
@@ -119,10 +126,23 @@ describe("desktop SSH pairing", () => {
         target: TARGET,
       };
 
-      expect((yield* prepare(input)).bearerToken).toBe("bearer-token");
-      expect((yield* prepare(input)).bearerToken).toBe("bearer-token");
+      expect((yield* prepare(input)).socketUrl).toBe(
+        "ws://127.0.0.1:3201/ws?wsTicket=websocket-ticket",
+      );
+      expect((yield* prepare(input)).socketUrl).toBe(
+        "ws://127.0.0.1:3201/ws?wsTicket=websocket-ticket",
+      );
 
-      expect(calls).toEqual(["ensure-pairing", "token", "ensure-reuse", "session"]);
+      expect(calls).toEqual([
+        "ensure-pairing",
+        "token",
+        "descriptor",
+        "ticket",
+        "ensure-reuse",
+        "session",
+        "descriptor",
+        "ticket",
+      ]);
     }),
   );
 
@@ -144,10 +164,14 @@ describe("desktop SSH pairing", () => {
       expect(calls).toEqual([
         "ensure-pairing",
         "token",
+        "descriptor",
+        "ticket",
         "ensure-reuse",
         "session",
         "ensure-pairing",
         "token",
+        "descriptor",
+        "ticket",
       ]);
     }),
   );

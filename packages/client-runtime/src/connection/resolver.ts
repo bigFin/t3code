@@ -189,7 +189,6 @@ const makeRelayBroker = Effect.fn("clientRuntime.connection.broker.makeRelay")(f
 const makeSshBroker = Effect.fn("clientRuntime.connection.broker.makeSsh")(function* () {
   const profiles = yield* ConnectionProfileStore.ConnectionProfileStore;
   const ssh = yield* ClientCapabilities.SshEnvironmentGateway;
-  const remote = yield* RemoteEnvironmentAuthorization.RemoteEnvironmentAuthorization;
 
   return Effect.fn("clientRuntime.connection.broker.ssh")(function* (
     entry: ConnectionCatalogEntry & { readonly target: SshConnectionTarget },
@@ -224,18 +223,15 @@ const makeSshBroker = Effect.fn("clientRuntime.connection.broker.makeSsh")(funct
         target: prepared.bootstrap.target,
       }),
     );
-    const authorized = yield* remote.authorizeBearer({
-      expectedEnvironmentId: target.environmentId,
-      httpBaseUrl: prepared.bootstrap.httpBaseUrl,
-      wsBaseUrl: prepared.bootstrap.wsBaseUrl,
-      bearerToken: prepared.bearerToken,
-    });
     return {
-      environmentId: authorized.environmentId,
-      label: authorized.label,
-      httpBaseUrl: authorized.httpBaseUrl,
-      socketUrl: authorized.socketUrl,
-      httpAuthorization: authorized.httpAuthorization,
+      environmentId: prepared.environmentId,
+      label: prepared.label,
+      httpBaseUrl: prepared.bootstrap.httpBaseUrl,
+      socketUrl: prepared.socketUrl,
+      httpAuthorization: {
+        _tag: "Bearer",
+        token: prepared.bearerToken,
+      },
       target,
     } satisfies PreparedConnection;
   });
