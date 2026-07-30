@@ -13,6 +13,7 @@ import {
   scopedThreadKey,
 } from "@t3tools/client-runtime/environment";
 import type { ScopedThreadRef, SidebarProjectGroupingMode } from "@t3tools/contracts";
+import type { SidebarV2ThreadSortOrder } from "@t3tools/contracts/settings";
 import {
   AlarmClockIcon,
   AlarmClockOffIcon,
@@ -116,6 +117,7 @@ import {
   resolveLatestCompletedThread,
   resolveNextWorkingThread,
   resolveSettledTimestamp,
+  resolveSidebarV2CompactAttention,
   resolveSidebarV2Status,
   resolveWorkingStartedAt,
   shouldNavigateAfterProjectRemoval,
@@ -471,6 +473,7 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
   const lastVisitedDate = lastVisitedAt === undefined ? null : parseTimestampDate(lastVisitedAt);
   const wokeAtDate = props.wokeAt === null ? null : parseTimestampDate(props.wokeAt);
   const isWoke = wokeAtDate !== null && (lastVisitedDate === null || lastVisitedDate < wokeAtDate);
+  const compactAttention = resolveSidebarV2CompactAttention({ isUnread, isWoke });
   // In-flight rows (working, or waiting on approval/input) fade as a whole:
   // there is nothing for the user to do yet, so prominence is reserved for
   // rows that need a human — done (unread), read-but-unsettled, failed, and
@@ -839,7 +842,7 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
                   <span className="text-xs text-blue-600 tabular-nums dark:text-blue-400">
                     {props.snoozeWakeLabelText}
                   </span>
-                ) : isWoke ? (
+                ) : compactAttention === "woke" ? (
                   // A wake can land straight in the settled tail (e.g. PR
                   // merged while snoozed); the signal must survive the trip.
                   <span
@@ -849,6 +852,18 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
                   >
                     <AlarmClockIcon aria-hidden className="size-3" />
                     Woke
+                  </span>
+                ) : compactAttention === "done" ? (
+                  // Completion must survive a move into the compact tail too.
+                  // A merged/closed PR can settle the row at the same moment
+                  // the response lands, so card-only status would disappear.
+                  <span
+                    role="status"
+                    aria-label="Completed response"
+                    className="inline-flex items-center gap-1 text-xs font-medium text-emerald-700 dark:text-emerald-300"
+                  >
+                    <CircleCheckIcon aria-hidden className="size-3" />
+                    Done
                   </span>
                 ) : (
                   <span className="text-xs">
@@ -2590,6 +2605,44 @@ export default function SidebarV2() {
         }
       >
         <SidebarGroup className="px-2 pb-1 pt-0">
+          <div
+            data-thread-selection-safe
+            className="mb-1 flex items-center justify-between gap-2 px-2.5"
+          >
+            <span className="text-xs font-medium text-sidebar-muted-foreground/55">
+              Active threads
+            </span>
+            <Select
+              value={sidebarV2ThreadSortOrder}
+              onValueChange={(value) => {
+                if (value === "created_at" || value === "last_response_at") {
+                  updateSettings({
+                    sidebarV2ThreadSortOrder: value satisfies SidebarV2ThreadSortOrder,
+                  });
+                }
+              }}
+            >
+              <SelectTrigger
+                size="xs"
+                variant="ghost"
+                className="w-auto max-w-full"
+                aria-label="Sort active threads"
+                data-testid="sidebar-v2-thread-sort"
+              >
+                <SelectValue>
+                  {sidebarV2ThreadSortOrder === "last_response_at" ? "Last response" : "Created"}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectPopup align="end" alignItemWithTrigger={false}>
+                <SelectItem hideIndicator value="created_at">
+                  Creation time
+                </SelectItem>
+                <SelectItem hideIndicator value="last_response_at">
+                  Last response received
+                </SelectItem>
+              </SelectPopup>
+            </Select>
+          </div>
           <TooltipProvider
             key="sidebar-thread-tooltips-150"
             delay={150}

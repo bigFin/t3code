@@ -1,5 +1,4 @@
 import { useEffect, useState } from "react";
-import type { SidebarV2ThreadSortOrder } from "@t3tools/contracts/settings";
 
 import {
   useClientSettings,
@@ -7,7 +6,6 @@ import {
   useUpdateClientSettings,
 } from "../../hooks/useSettings";
 import { Input } from "../ui/input";
-import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { Switch } from "../ui/switch";
 import { SettingsPageContainer, SettingsRow, SettingsSection } from "./settingsLayout";
 
@@ -58,9 +56,6 @@ function AutoSettleDaysInput({
 
 export function BetaSettingsPanel() {
   const sidebarV2Enabled = useSidebarV2Enabled();
-  const sidebarV2ThreadSortOrder = useClientSettings(
-    (settings) => settings.sidebarV2ThreadSortOrder,
-  );
   const sidebarAutoSettleAfterDays = useClientSettings(
     (settings) => settings.sidebarAutoSettleAfterDays,
   );
@@ -89,38 +84,6 @@ export function BetaSettingsPanel() {
         />
         {sidebarV2Enabled ? (
           <>
-            <SettingsRow
-              title="Active thread order"
-              description="Keep cards stable by creation time, or promote a thread when its latest assistant response completes."
-              control={
-                <Select
-                  value={sidebarV2ThreadSortOrder}
-                  onValueChange={(value) => {
-                    if (value === "created_at" || value === "last_response_at") {
-                      updateSettings({
-                        sidebarV2ThreadSortOrder: value satisfies SidebarV2ThreadSortOrder,
-                      });
-                    }
-                  }}
-                >
-                  <SelectTrigger className="w-full sm:w-48" aria-label="Active thread order">
-                    <SelectValue>
-                      {sidebarV2ThreadSortOrder === "last_response_at"
-                        ? "Last response received"
-                        : "Creation time"}
-                    </SelectValue>
-                  </SelectTrigger>
-                  <SelectPopup align="end" alignItemWithTrigger={false}>
-                    <SelectItem hideIndicator value="created_at">
-                      Creation time
-                    </SelectItem>
-                    <SelectItem hideIndicator value="last_response_at">
-                      Last response received
-                    </SelectItem>
-                  </SelectPopup>
-                </Select>
-              }
-            />
             <SettingsRow
               title="Auto-settle inactive threads"
               description="Threads with no activity for this long settle automatically. Threads on merged or closed PRs always settle."

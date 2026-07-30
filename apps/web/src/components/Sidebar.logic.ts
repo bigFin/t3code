@@ -425,6 +425,7 @@ export function resolveThreadRowClassName(input: {
 // Unread completion is tracked separately: it describes whether a ready
 // thread needs attention, not what the thread is currently doing.
 export type SidebarV2Status = "approval" | "input" | "working" | "failed" | "ready";
+export type SidebarV2CompactAttention = "woke" | "done" | null;
 
 type SidebarV2StatusInput = Pick<
   SidebarThreadSummary,
@@ -445,6 +446,15 @@ export function resolveSidebarV2Status(thread: SidebarV2StatusInput): SidebarV2S
     return "failed";
   }
   return "ready";
+}
+
+export function resolveSidebarV2CompactAttention(input: {
+  isUnread: boolean;
+  isWoke: boolean;
+}): SidebarV2CompactAttention {
+  if (input.isWoke) return "woke";
+  if (input.isUnread) return "done";
+  return null;
 }
 
 type LatestCompletedThreadInput = {

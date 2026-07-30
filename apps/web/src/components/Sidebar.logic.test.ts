@@ -18,6 +18,7 @@ import {
   resolveNextWorkingThread,
   resolveProjectStatusIndicator,
   resolveSidebarStageBadgeLabel,
+  resolveSidebarV2CompactAttention,
   resolveThreadRowClassName,
   resolveSidebarV2Status,
   resolveThreadStatusPill,
@@ -693,6 +694,20 @@ describe("resolveSidebarV2Status", () => {
 
   it("defaults to ready with no session", () => {
     expect(resolveSidebarV2Status({ ...idle, session: null })).toBe("ready");
+  });
+});
+
+describe("resolveSidebarV2CompactAttention", () => {
+  it("keeps an unread completion visible after the row becomes compact", () => {
+    expect(resolveSidebarV2CompactAttention({ isUnread: true, isWoke: false })).toBe("done");
+  });
+
+  it("prioritizes a fresh wake over an unread completion", () => {
+    expect(resolveSidebarV2CompactAttention({ isUnread: true, isWoke: true })).toBe("woke");
+  });
+
+  it("returns no attention state for a read compact row", () => {
+    expect(resolveSidebarV2CompactAttention({ isUnread: false, isWoke: false })).toBeNull();
   });
 });
 
