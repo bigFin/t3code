@@ -135,6 +135,10 @@
       "types": "./src/state/threadSearch.ts",
       "default": "./src/state/threadSearch.ts"
     },
+    "./state/thread-failure": {
+      "types": "./src/state/thread-failure.ts",
+      "default": "./src/state/thread-failure.ts"
+    },
     "./state/vcs": {
       "types": "./src/state/vcs.ts",
       "default": "./src/state/vcs.ts"

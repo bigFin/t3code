@@ -29,6 +29,7 @@ export const ProjectionThreadSession = Schema.Struct({
   runtimeMode: RuntimeMode,
   activeTurnId: Schema.NullOr(TurnId),
   lastError: Schema.NullOr(Schema.String),
+  retrying: Schema.Boolean,
   updatedAt: IsoDateTime,
 });
 export type ProjectionThreadSession = typeof ProjectionThreadSession.Type;

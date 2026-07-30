@@ -47,6 +47,8 @@ export const ProviderSession = Schema.Struct({
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
   lastError: Schema.optional(TrimmedNonEmptyString),
+  /** The provider is retrying the active turn after a transient failure. */
+  retrying: Schema.optional(Schema.Boolean),
 });
 export type ProviderSession = typeof ProviderSession.Type;
 

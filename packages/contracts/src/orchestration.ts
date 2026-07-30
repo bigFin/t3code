@@ -278,6 +278,8 @@ export const OrchestrationSession = Schema.Struct({
   runtimeMode: RuntimeMode.pipe(Schema.withDecodingDefault(Effect.succeed(DEFAULT_RUNTIME_MODE))),
   activeTurnId: Schema.NullOr(TurnId),
   lastError: Schema.NullOr(TrimmedNonEmptyString),
+  /** The provider is retrying the active turn after a transient failure. */
+  retrying: Schema.optional(Schema.Boolean),
   updatedAt: IsoDateTime,
 });
 export type OrchestrationSession = typeof OrchestrationSession.Type;

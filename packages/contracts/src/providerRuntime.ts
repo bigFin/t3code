@@ -600,6 +600,8 @@ export type ToolDeniedPayload = typeof ToolDeniedPayload.Type;
 
 const RuntimeWarningPayload = Schema.Struct({
   message: TrimmedNonEmptyStringSchema,
+  /** The provider is handling this warning by retrying the active turn. */
+  retrying: Schema.optional(Schema.Boolean),
   detail: Schema.optional(Schema.Unknown),
 });
 export type RuntimeWarningPayload = typeof RuntimeWarningPayload.Type;

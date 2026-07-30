@@ -1257,6 +1257,7 @@ function mapToRuntimeEvents(
         ...runtimeEventBase(event, canonicalThreadId),
         payload: {
           message,
+          ...(willRetry ? { retrying: true } : {}),
           ...(!willRetry ? { class: "provider_error" as const } : {}),
           ...(event.payload !== undefined ? { detail: event.payload } : {}),
         },

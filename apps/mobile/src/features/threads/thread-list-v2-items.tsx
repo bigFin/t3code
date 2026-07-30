@@ -2,6 +2,7 @@ import type {
   EnvironmentProject,
   EnvironmentThreadShell,
 } from "@t3tools/client-runtime/state/shell";
+import { classifyThreadFailure } from "@t3tools/client-runtime/state/thread-failure";
 import type { EnvironmentThreadSearchMatch } from "@t3tools/client-runtime/state/thread-search";
 import type { MenuAction } from "@react-native-menu/menu";
 import { memo, useCallback, useEffect, useMemo, type ComponentProps } from "react";
@@ -42,6 +43,7 @@ const STATUS_LABEL_BY_STATUS: Partial<
 > = {
   approval: { label: "Approval", className: "text-amber-700 dark:text-amber-300" },
   input: { label: "Input", className: "text-indigo-600 dark:text-indigo-300" },
+  retrying: { label: "Retrying", className: "text-amber-700 dark:text-amber-300" },
   working: { label: "Working", className: "text-sky-600 dark:text-sky-400" },
   failed: { label: "Failed", className: "text-red-700 dark:text-red-300" },
 };
@@ -278,7 +280,10 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
   const selected = props.selected === true;
 
   const status = resolveThreadListV2Status(thread);
-  const statusLabel = STATUS_LABEL_BY_STATUS[status];
+  const statusLabel =
+    status === "failed" && classifyThreadFailure(thread.session?.lastError) === "capacity"
+      ? { label: "Capacity Limited", className: "text-red-700 dark:text-red-300" }
+      : STATUS_LABEL_BY_STATUS[status];
   const timeLabel = threadTimeLabel(thread);
 
   const handleDelete = useCallback(() => onDeleteThread(thread), [onDeleteThread, thread]);
@@ -383,13 +388,15 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
         </View>
       ) : null}
       <View className="mt-1 flex-row items-center gap-2">
-        {status === "failed" && thread.session?.lastError ? (
+        {(status === "failed" || status === "retrying") && thread.session?.lastError ? (
           <Text
             className={cn(
               "flex-1 text-xs",
               selected
                 ? "text-user-bubble-foreground-muted"
-                : "text-red-600/80 dark:text-red-400/80",
+                : status === "retrying"
+                  ? "text-amber-700/80 dark:text-amber-300/80"
+                  : "text-red-600/80 dark:text-red-400/80",
             )}
             numberOfLines={1}
           >

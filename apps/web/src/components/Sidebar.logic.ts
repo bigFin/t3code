@@ -5,6 +5,7 @@ import type {
   SidebarThreadSortOrder,
   SidebarV2ThreadSortOrder,
 } from "@t3tools/contracts/settings";
+import { classifyThreadFailure } from "@t3tools/client-runtime/state/thread-failure";
 import {
   getThreadSortTimestamp,
   sortThreads,
@@ -121,6 +122,9 @@ export interface ThreadStatusPill {
   label:
     | "Working"
     | "Connecting"
+    | "Retrying"
+    | "Capacity Limited"
+    | "Error"
     | "Completed"
     | "Pending Approval"
     | "Awaiting Input"
@@ -131,8 +135,11 @@ export interface ThreadStatusPill {
 }
 
 const THREAD_STATUS_PRIORITY: Record<ThreadStatusPill["label"], number> = {
+  Error: 7,
+  "Capacity Limited": 7,
   "Pending Approval": 5,
   "Awaiting Input": 4,
+  Retrying: 3,
   Working: 3,
   Connecting: 3,
   "Plan Ready": 2,
@@ -418,13 +425,13 @@ export function resolveThreadRowClassName(input: {
 }
 
 // ── Sidebar v2 status model ─────────────────────────────────────────
-// Five visual states, three colors: color is reserved for "act now"
-// (approval), "in motion" (working), and "broken" (failed). Ready is the
+// Six visual states, three colors: color is reserved for "act now"
+// (approval), "in motion" (working/retrying), and "broken" (failed). Ready is the
 // unlabeled resting state — the agent stopped and is waiting on the user,
 // whether it finished, asked a question, or proposed a plan.
 // Unread completion is tracked separately: it describes whether a ready
 // thread needs attention, not what the thread is currently doing.
-export type SidebarV2Status = "approval" | "input" | "working" | "failed" | "ready";
+export type SidebarV2Status = "approval" | "input" | "retrying" | "working" | "failed" | "ready";
 export type SidebarV2CompactAttention = "woke" | "done" | null;
 
 type SidebarV2StatusInput = Pick<
@@ -438,6 +445,9 @@ export function resolveSidebarV2Status(thread: SidebarV2StatusInput): SidebarV2S
   }
   if (thread.hasPendingUserInput) {
     return "input";
+  }
+  if (thread.session?.retrying === true) {
+    return "retrying";
   }
   if (thread.session?.status === "running" || thread.session?.status === "starting") {
     return "working";
@@ -682,6 +692,15 @@ export function resolveThreadStatusPill(input: {
     };
   }
 
+  if (thread.session?.retrying === true) {
+    return {
+      label: "Retrying",
+      colorClass: "text-amber-700 dark:text-amber-300/90",
+      dotClass: "bg-amber-500 dark:bg-amber-300/90",
+      pulse: true,
+    };
+  }
+
   if (thread.session?.status === "running") {
     return {
       label: "Working",
@@ -697,6 +716,16 @@ export function resolveThreadStatusPill(input: {
       colorClass: "text-sky-600 dark:text-sky-300/80",
       dotClass: "bg-sky-500 dark:bg-sky-300/80",
       pulse: true,
+    };
+  }
+
+  if (thread.session?.status === "error" || thread.latestTurn?.state === "error") {
+    const capacityLimited = classifyThreadFailure(thread.session?.lastError) === "capacity";
+    return {
+      label: capacityLimited ? "Capacity Limited" : "Error",
+      colorClass: "text-red-700 dark:text-red-300/90",
+      dotClass: "bg-red-500 dark:bg-red-300/90",
+      pulse: false,
     };
   }
 

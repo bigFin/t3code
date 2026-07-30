@@ -672,6 +672,15 @@ describe("resolveSidebarV2Status", () => {
     ).toBe("working");
   });
 
+  it("reports retrying before a running session", () => {
+    expect(
+      resolveSidebarV2Status({
+        ...idle,
+        session: { ...session, retrying: true, lastError: "Server overloaded" },
+      }),
+    ).toBe("retrying");
+  });
+
   it("reports failed only while the session status is error", () => {
     expect(
       resolveSidebarV2Status({
@@ -1167,6 +1176,37 @@ describe("resolveThreadStatusPill", () => {
         thread: baseThread,
       }),
     ).toMatchObject({ label: "Working", pulse: true });
+  });
+
+  it("shows retrying while the provider handles a transient failure", () => {
+    expect(
+      resolveThreadStatusPill({
+        thread: {
+          ...baseThread,
+          session: {
+            ...baseThread.session,
+            retrying: true,
+            lastError: "Server overloaded",
+          },
+        },
+      }),
+    ).toMatchObject({ label: "Retrying", pulse: true });
+  });
+
+  it("shows capacity limited for a terminal capacity error", () => {
+    expect(
+      resolveThreadStatusPill({
+        thread: {
+          ...baseThread,
+          session: {
+            ...baseThread.session,
+            status: "error",
+            activeTurnId: null,
+            lastError: "At capacity. Please try again later.",
+          },
+        },
+      }),
+    ).toMatchObject({ label: "Capacity Limited", pulse: false });
   });
 
   it("shows plan ready when a settled plan turn has a proposed plan ready for follow-up", () => {

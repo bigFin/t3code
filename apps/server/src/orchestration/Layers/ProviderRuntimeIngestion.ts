@@ -1446,6 +1446,7 @@ const make = Effect.gen(function* () {
               runtimeMode: thread.session?.runtimeMode ?? "full-access",
               activeTurnId: nextActiveTurnId,
               lastError,
+              retrying: false,
               updatedAt: now,
             },
             createdAt: now,
@@ -1696,6 +1697,35 @@ const make = Effect.gen(function* () {
               runtimeMode: thread.session?.runtimeMode ?? "full-access",
               activeTurnId: eventTurnId ?? null,
               lastError: runtimeErrorMessage,
+              retrying: false,
+              updatedAt: now,
+            },
+            createdAt: now,
+          });
+        }
+      }
+
+      if (event.type === "runtime.warning" && event.payload.retrying === true) {
+        const shouldApplyRuntimeRetry = !STRICT_PROVIDER_LIFECYCLE_GUARD
+          ? true
+          : activeTurnId === null || eventTurnId === undefined || sameId(activeTurnId, eventTurnId);
+
+        if (shouldApplyRuntimeRetry) {
+          yield* orchestrationEngine.dispatch({
+            type: "thread.session.set",
+            commandId: yield* providerCommandId(event, "runtime-retry-session-set"),
+            threadId: thread.id,
+            session: {
+              threadId: thread.id,
+              status: "running",
+              providerName: event.provider,
+              ...(event.providerInstanceId !== undefined
+                ? { providerInstanceId: event.providerInstanceId }
+                : {}),
+              runtimeMode: thread.session?.runtimeMode ?? "full-access",
+              activeTurnId: eventTurnId ?? activeTurnId,
+              lastError: event.payload.message,
+              retrying: true,
               updatedAt: now,
             },
             createdAt: now,

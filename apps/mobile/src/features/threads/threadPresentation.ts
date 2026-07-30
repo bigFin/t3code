@@ -1,5 +1,6 @@
 import type { StatusTone } from "../../components/StatusPill";
 import type { OrchestrationLatestTurn, OrchestrationSession } from "@t3tools/contracts";
+import { classifyThreadFailure } from "@t3tools/client-runtime/state/thread-failure";
 import { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
 
 export function threadSortValue(thread: EnvironmentThreadShell): number {
@@ -12,6 +13,8 @@ export type ThreadStatusKind =
   | "awaiting-input"
   | "working"
   | "connecting"
+  | "retrying"
+  | "capacity-limited"
   | "error"
   | "plan-ready";
 
@@ -73,6 +76,18 @@ export function resolveThreadStatus(
     };
   }
 
+  if (thread.session?.retrying === true) {
+    return {
+      kind: "retrying",
+      label: "Retrying",
+      pillClassName: "bg-amber-500/12 dark:bg-amber-500/16",
+      textClassName: "text-amber-700 dark:text-amber-300",
+      iconColor: "#ff9f0a",
+      iconBackground: "rgba(255,159,10,0.22)",
+      pulse: true,
+    };
+  }
+
   if (thread.session?.status === "running") {
     return {
       kind: "working",
@@ -98,9 +113,10 @@ export function resolveThreadStatus(
   }
 
   if (thread.session?.status === "error" || thread.latestTurn?.state === "error") {
+    const capacityLimited = classifyThreadFailure(thread.session?.lastError) === "capacity";
     return {
-      kind: "error",
-      label: "Error",
+      kind: capacityLimited ? "capacity-limited" : "error",
+      label: capacityLimited ? "Capacity Limited" : "Error",
       pillClassName: "bg-rose-500/12 dark:bg-rose-500/16",
       textClassName: "text-rose-700 dark:text-rose-300",
       iconColor: "#ff453a",

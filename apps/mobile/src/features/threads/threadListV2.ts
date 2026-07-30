@@ -9,11 +9,11 @@ import type { PendingNewTask } from "../../state/use-pending-new-tasks";
  * Thread List v2 model, ported from the web sidebar v2
  * (apps/web/src/components/Sidebar.logic.ts + SidebarV2.tsx).
  *
- * Four visual states, three colors: color is reserved for "act now"
- * (approval), "in motion" (working), and "broken" (failed). Ready is the
+ * Five visual states, three colors: color is reserved for "act now"
+ * (approval), "in motion" (working/retrying), and "broken" (failed). Ready is the
  * unlabeled resting state.
  */
-export type ThreadListV2Status = "approval" | "input" | "working" | "failed" | "ready";
+export type ThreadListV2Status = "approval" | "input" | "retrying" | "working" | "failed" | "ready";
 
 // Settled-tail paging: recent history is the common lookup; the deep tail
 // stays behind an explicit Show more. Shared by the compact Home list and
@@ -49,6 +49,9 @@ export function resolveThreadListV2Status(
   }
   if (thread.hasPendingUserInput) {
     return "input";
+  }
+  if (thread.session?.retrying === true) {
+    return "retrying";
   }
   if (thread.session?.status === "running" || thread.session?.status === "starting") {
     return "working";

@@ -758,6 +758,7 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
       }
       NodeAssert.equal(firstEvent.value.turnId, "turn-1");
       NodeAssert.equal(firstEvent.value.payload.message, "Reconnecting... 2/5");
+      NodeAssert.equal(firstEvent.value.payload.retrying, true);
     }),
   );
 

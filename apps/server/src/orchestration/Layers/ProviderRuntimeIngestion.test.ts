@@ -2676,6 +2676,12 @@ describe("ProviderRuntimeIngestion", () => {
       payload: {},
     });
 
+    await waitForThread(
+      harness.readModel,
+      (entry) =>
+        entry.session?.status === "running" && entry.session?.activeTurnId === "turn-warning",
+    );
+
     harness.emit({
       type: "runtime.warning",
       eventId: asEventId("evt-warning-runtime"),
@@ -2685,25 +2691,25 @@ describe("ProviderRuntimeIngestion", () => {
       turnId: asTurnId("turn-warning"),
       payload: {
         message: "Reconnecting... 2/5",
-        detail: {
-          willRetry: true,
-        },
+        retrying: true,
       },
     });
 
-    const thread = await waitForThread(
-      harness.readModel,
-      (entry) =>
-        entry.session?.status === "running" &&
-        entry.session?.activeTurnId === "turn-warning" &&
-        entry.activities.some(
-          (activity: ProviderRuntimeTestActivity) =>
-            activity.id === "evt-warning-runtime" && activity.kind === "runtime.warning",
-        ),
-    );
+    await harness.drain();
+    const readModel = await harness.readModel();
+    const thread = readModel.threads.find((entry) => entry.id === "thread-1");
+    expect(thread).toBeDefined();
+    if (!thread) return;
     expect(thread.session?.status).toBe("running");
     expect(thread.session?.activeTurnId).toBe("turn-warning");
-    expect(thread.session?.lastError).toBeNull();
+    expect(thread.session?.lastError).toBe("Reconnecting... 2/5");
+    expect(thread.session?.retrying).toBe(true);
+    expect(
+      thread.activities.some(
+        (activity: ProviderRuntimeTestActivity) =>
+          activity.id === "evt-warning-runtime" && activity.kind === "runtime.warning",
+      ),
+    ).toBe(true);
   });
 
   it("maps session/thread lifecycle and item.started into session/activity projections", async () => {

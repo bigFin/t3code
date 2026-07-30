@@ -87,7 +87,10 @@ const ProjectionThreadActivityDbRowSchema = ProjectionThreadActivity.mapFields(
     sequence: Schema.NullOr(NonNegativeInt),
   }),
 );
-const ProjectionThreadSessionDbRowSchema = ProjectionThreadSession;
+const ProjectionThreadSessionDbRowSchema = Schema.Struct({
+  ...ProjectionThreadSession.fields,
+  retrying: Schema.Number,
+});
 const ProjectionCheckpointDbRowSchema = ProjectionCheckpoint.mapFields(
   Struct.assign({
     files: Schema.fromJsonString(Schema.Array(OrchestrationCheckpointFile)),
@@ -266,6 +269,7 @@ function mapSessionRow(
     runtimeMode: row.runtimeMode,
     activeTurnId: row.activeTurnId,
     lastError: row.lastError,
+    ...(row.retrying ? { retrying: true } : {}),
     updatedAt: row.updatedAt,
   };
 }
@@ -546,6 +550,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           runtime_mode AS "runtimeMode",
           active_turn_id AS "activeTurnId",
           last_error AS "lastError",
+          retrying,
           updated_at AS "updatedAt"
         FROM projection_thread_sessions
         ORDER BY thread_id ASC
@@ -567,6 +572,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           sessions.runtime_mode AS "runtimeMode",
           sessions.active_turn_id AS "activeTurnId",
           sessions.last_error AS "lastError",
+          sessions.retrying,
           sessions.updated_at AS "updatedAt"
         FROM projection_thread_sessions sessions
         INNER JOIN projection_threads threads
@@ -592,6 +598,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           sessions.runtime_mode AS "runtimeMode",
           sessions.active_turn_id AS "activeTurnId",
           sessions.last_error AS "lastError",
+          sessions.retrying,
           sessions.updated_at AS "updatedAt"
         FROM projection_thread_sessions sessions
         INNER JOIN projection_threads threads
@@ -983,6 +990,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           runtime_mode AS "runtimeMode",
           active_turn_id AS "activeTurnId",
           last_error AS "lastError",
+          retrying,
           updated_at AS "updatedAt"
         FROM projection_thread_sessions
         WHERE thread_id = ${threadId}
@@ -1290,6 +1298,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                   runtimeMode: row.runtimeMode,
                   activeTurnId: row.activeTurnId,
                   lastError: row.lastError,
+                  ...(row.retrying ? { retrying: true } : {}),
                   updatedAt: row.updatedAt,
                 });
               }
