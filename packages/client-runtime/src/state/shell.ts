@@ -197,6 +197,11 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
       yield* applyItem({ kind: "snapshot", snapshot: httpSnapshot.value });
     }
   });
+  const foregroundResubscriptions = Option.match(wakeups, {
+    onNone: () => Stream.never,
+    onSome: (service) =>
+      service.changes.pipe(Stream.filter((reason) => reason === "application-active-probe")),
+  });
   yield* Stream.fromQueue(reconciliationRequests).pipe(
     Stream.runForEach(() => reconcileSnapshot()),
     Effect.forkScoped,
@@ -245,6 +250,7 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
       {
         onExpectedFailure: (cause) => setStreamError(Cause.squash(cause)),
         retryExpectedFailureAfter: "250 millis",
+        resubscribe: foregroundResubscriptions,
       },
     ).pipe(Stream.runForEach(applyItem)),
   );

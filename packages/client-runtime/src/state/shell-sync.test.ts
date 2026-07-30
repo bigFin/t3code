@@ -318,6 +318,23 @@ describe("environment shell synchronization", () => {
       expect(yield* Ref.get(loaderCalls)).toBe(2);
       expect(yield* Ref.get(subscriptionCount)).toBe(1);
       expect((yield* SubscriptionRef.get(shellState)).status).toBe("live");
+
+      yield* Queue.offer(wakeups, "application-active-probe");
+      for (let attempt = 0; attempt < 100; attempt += 1) {
+        if ((yield* Ref.get(subscriptionCount)) >= 2 && (yield* Ref.get(loaderCalls)) >= 3) {
+          break;
+        }
+        yield* Effect.yieldNow;
+      }
+      expect(yield* Ref.get(loaderCalls)).toBe(3);
+      expect(yield* Ref.get(subscriptionCount)).toBe(2);
+
+      yield* Queue.offer(wakeups, "application-active-reconnect");
+      for (let attempt = 0; attempt < 10; attempt += 1) {
+        yield* Effect.yieldNow;
+      }
+      expect(yield* Ref.get(loaderCalls)).toBe(3);
+      expect(yield* Ref.get(subscriptionCount)).toBe(2);
     }),
   );
 });
