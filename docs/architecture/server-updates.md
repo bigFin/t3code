@@ -1,8 +1,8 @@
 # Server Update Architecture
 
-T3 Code can update a connected server to the exact version of the client that detected version
-drift. This path exists primarily for remote environments, where the user may not have a terminal
-open on the server machine.
+T3 Code can update an older connected server to the exact version of the client that detected
+version drift. It never uses this path to downgrade a newer server. This path exists primarily for
+remote environments, where the user may not have a terminal open on the server machine.
 
 The feature has three boundaries:
 
@@ -14,19 +14,22 @@ The feature has three boundaries:
 
 `ExecutionEnvironmentDescriptor` includes the server version and an optional
 `capabilities.serverSelfUpdate` value. The client compares that version with `APP_VERSION` after
-loading server config.
+loading server config. A server update action is offered only when the server is older. When the
+client is older, the UI directs the user to update and relaunch that client instead of attempting
+to downgrade the newer server.
 
 The optional capability is intentionally backward compatible. An older server does not know about
 the field, so a missing value means the client must offer a manual relaunch instead of sending an
 unknown RPC.
 
-The shared `ServerUpdateAction` is rendered in both user-facing version-drift surfaces:
+The shared `ServerUpdateAction` can be rendered in both user-facing version-drift surfaces when the
+server is the older side:
 
 - the conversation banner in `ChatView`;
 - primary and saved environment rows in **Settings** → **Connections**.
 
-Both surfaces target the client's exact version. When the reconnected server reports that version,
-the mismatch and action disappear.
+Server update actions target the client's exact version. When the reconnected server reports that
+version, the mismatch and action disappear.
 
 ## Capability Selection
 
@@ -48,18 +51,21 @@ bring the old version back.
 
 ```mermaid
 flowchart TD
-    A[Client detects different versions] --> B{Advertised update path}
-    B -->|desktop-managed| C[Update desktop app on server machine]
-    B -->|missing| D[Copy exact manual relaunch command]
-    B -->|boot-service or respawn| E[server.updateServer]
-    E --> F[Install exact t3 version in pinned runtime]
-    F --> G[Run version preflight]
-    G -->|fails| H[Remove failed runtime and keep current server]
-    G -->|passes| I{Handoff method}
-    I -->|boot-service| J[Rewrite and restart T3 systemd unit]
-    I -->|respawn| K[Start delayed replacement and exit current process]
-    J --> L[Client reconnects]
-    K --> L
+    A[Client detects different versions] --> B{Which side is older?}
+    B -->|client| C[Update and relaunch this client]
+    B -->|unknown| D[Show neutral sync guidance]
+    B -->|server| E{Advertised update path}
+    E -->|desktop-managed| F[Update desktop app on server machine]
+    E -->|missing| G[Copy exact manual relaunch command]
+    E -->|boot-service or respawn| H[server.updateServer]
+    H --> I[Install exact t3 version in pinned runtime]
+    I --> J[Run version preflight]
+    J -->|fails| K[Remove failed runtime and keep current server]
+    J -->|passes| L{Handoff method}
+    L -->|boot-service| M[Rewrite and restart T3 systemd unit]
+    L -->|respawn| N[Start delayed replacement and exit current process]
+    M --> O[Client reconnects]
+    N --> O
 ```
 
 `server.updateServer` requires the environment's `orchestration:operate` authorization scope. Its

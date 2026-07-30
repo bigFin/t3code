@@ -109,6 +109,8 @@ import { useUiStateStore } from "~/uiStateStore";
 import {
   resolveServerConfigVersionMismatch,
   resolveServerSelfUpdateCapability,
+  shouldOfferServerUpdate,
+  versionMismatchGuidance,
 } from "~/versionSkew";
 import { hasCloudPublicConfig } from "~/cloud/publicConfig";
 import { useCloudLinkController } from "~/cloud/useCloudLinkController";
@@ -1430,14 +1432,21 @@ function SavedBackendListRow({
               <p className="flex items-center gap-1 text-warning text-xs">
                 <TriangleAlertIcon className="size-3.5 shrink-0" />
                 Version drift: client {versionMismatch.clientVersion}, server{" "}
-                {versionMismatch.serverVersion}.
+                {versionMismatch.serverVersion}.{" "}
+                {versionMismatchGuidance(
+                  versionMismatch,
+                  resolveServerSelfUpdateCapability(environment.serverConfig),
+                  `${environment.label} server`,
+                )}
               </p>
-              <ServerUpdateAction
-                environmentId={environmentId}
-                serverLabel={`${environment.label} server`}
-                selfUpdate={resolveServerSelfUpdateCapability(environment.serverConfig)}
-                targetVersion={versionMismatch.clientVersion}
-              />
+              {shouldOfferServerUpdate(versionMismatch) ? (
+                <ServerUpdateAction
+                  environmentId={environmentId}
+                  serverLabel={`${environment.label} server`}
+                  selfUpdate={resolveServerSelfUpdateCapability(environment.serverConfig)}
+                  targetVersion={versionMismatch.clientVersion}
+                />
+              ) : null}
             </div>
           ) : null}
           {environment.connection.error ? (
@@ -2987,15 +2996,20 @@ export function ConnectionsSettings() {
                   <span className="flex items-center gap-1 text-warning">
                     <TriangleAlertIcon className="size-3.5 shrink-0" />
                     Client {primaryVersionMismatch.clientVersion}, server{" "}
-                    {primaryVersionMismatch.serverVersion}. Sync them if RPC calls or reconnects
-                    fail.
+                    {primaryVersionMismatch.serverVersion}.{" "}
+                    {versionMismatchGuidance(
+                      primaryVersionMismatch,
+                      resolveServerSelfUpdateCapability(primaryServerConfig),
+                      `${primaryEnvironment?.label ?? "this"} server`,
+                    )}
                   </span>
                 }
                 control={
-                  primaryEnvironmentId !== null ? (
+                  primaryEnvironmentId !== null &&
+                  shouldOfferServerUpdate(primaryVersionMismatch) ? (
                     <ServerUpdateAction
                       environmentId={primaryEnvironmentId}
-                      serverLabel={primaryEnvironment?.label ?? "this server"}
+                      serverLabel={`${primaryEnvironment?.label ?? "this"} server`}
                       selfUpdate={resolveServerSelfUpdateCapability(primaryServerConfig)}
                       targetVersion={primaryVersionMismatch.clientVersion}
                     />

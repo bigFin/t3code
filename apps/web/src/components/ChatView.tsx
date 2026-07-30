@@ -304,7 +304,8 @@ import {
   isVersionMismatchDismissed,
   resolveServerConfigVersionMismatch,
   resolveServerSelfUpdateCapability,
-  serverUpdateGuidance,
+  shouldOfferServerUpdate,
+  versionMismatchGuidance,
 } from "../versionSkew";
 import { useAssetUrls } from "../assets/assetUrls";
 
@@ -1941,12 +1942,17 @@ function ChatViewContent(props: ChatViewProps) {
           <>
             Client {versionMismatch.clientVersion} is connected to {versionMismatchServerLabel}{" "}
             {versionMismatch.serverVersion}.{" "}
-            {serverUpdateGuidance(versionMismatchSelfUpdate, versionMismatchServerLabel)}
+            {versionMismatchGuidance(
+              versionMismatch,
+              versionMismatchSelfUpdate,
+              versionMismatchServerLabel,
+            )}
           </>
         ),
-        // The desktop-managed guidance is already the description; the action
-        // slot would only repeat it.
+        // Only an older server can be updated from here. Desktop-managed
+        // guidance is already in the description, so an action would repeat it.
         actions:
+          !shouldOfferServerUpdate(versionMismatch) ||
           versionMismatchSelfUpdate === "desktop-managed" ? undefined : (
             <ServerUpdateAction
               environmentId={versionMismatchEnvironmentId}

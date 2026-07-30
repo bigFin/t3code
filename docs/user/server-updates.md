@@ -1,7 +1,8 @@
 # Keeping T3 Code in Sync
 
 The T3 Code web or desktop app and the server it connects to work best when they use the same
-version. If they do not match, T3 Code shows a warning with the right update option for that server.
+version. If they do not match, T3 Code identifies which side is older and shows the appropriate
+update guidance.
 
 ## Where to Find the Update
 
@@ -22,13 +23,17 @@ The update does not remove saved threads, settings, or project files.
 
 ## Choose the Action You See
 
+If the client is older, update and relaunch T3 Code on the device showing the warning. T3 Code does
+not downgrade a newer remote server to match an older client.
+
 | Action                     | What to do                                                                                                                                                                  |
 | -------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Update server**          | Select the button and leave T3 Code open. It prepares the matching version, restarts the server, and reconnects automatically. This can take several minutes.               |
 | **Update the desktop app** | Open the T3 Code desktop app on the machine that runs the server and install the app update there. Reopen it if needed.                                                     |
 | **Copy update command**    | Copy the command, open a terminal on the server machine, stop the current T3 Code server, and relaunch it with the copied command and any startup options you normally use. |
 
-The available action depends on how that server was started. T3 Code does not update connected
+Server update actions only appear when the server is older than the client. The available action
+depends on how that server was started. T3 Code does not update connected
 servers silently in the background.
 
 If the server uses the T3 Code background service, you can also update it directly on the host:

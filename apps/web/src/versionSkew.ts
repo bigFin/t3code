@@ -1,4 +1,5 @@
 import type { EnvironmentId, ServerConfig, ServerSelfUpdateCapability } from "@t3tools/contracts";
+import { compareSemverVersions, parseSemver } from "@t3tools/shared/semver";
 import * as Schema from "effect/Schema";
 
 import { APP_VERSION } from "./branding";
@@ -7,8 +8,11 @@ import { getLocalStorageItem, setLocalStorageItem } from "./hooks/useLocalStorag
 export interface VersionMismatch {
   readonly clientVersion: string;
   readonly serverVersion: string;
+  readonly direction: VersionMismatchDirection;
   readonly hint: string;
 }
+
+export type VersionMismatchDirection = "client-older" | "server-older" | "unknown";
 
 export const VERSION_MISMATCH_DISMISSALS_STORAGE_KEY = "t3code:version-mismatch-dismissals:v1";
 
@@ -21,6 +25,34 @@ type VersionMismatchDismissals = typeof VersionMismatchDismissalsSchema.Type;
 function normalizeVersion(version: string | null | undefined): string | null {
   const trimmed = version?.trim();
   return trimmed && trimmed.length > 0 ? trimmed : null;
+}
+
+export function resolveVersionMismatchDirection(
+  clientVersion: string,
+  serverVersion: string,
+): VersionMismatchDirection {
+  if (!parseSemver(clientVersion) || !parseSemver(serverVersion)) {
+    return "unknown";
+  }
+  const comparison = compareSemverVersions(clientVersion, serverVersion);
+  if (comparison < 0) {
+    return "client-older";
+  }
+  if (comparison > 0) {
+    return "server-older";
+  }
+  return "unknown";
+}
+
+function versionMismatchHint(direction: VersionMismatchDirection): string {
+  switch (direction) {
+    case "client-older":
+      return "Version mismatch. Update and relaunch this T3 Code client; the connected server is newer.";
+    case "server-older":
+      return "Version mismatch. Update the connected server to the client version.";
+    case "unknown":
+      return "Version mismatch. Sync the client and server to the same T3 Code version.";
+  }
 }
 
 export function resolveVersionMismatch(
@@ -36,10 +68,15 @@ export function resolveVersionMismatch(
     return null;
   }
 
+  const direction = resolveVersionMismatchDirection(
+    normalizedClientVersion,
+    normalizedServerVersion,
+  );
   return {
     clientVersion: normalizedClientVersion,
     serverVersion: normalizedServerVersion,
-    hint: "Version mismatch. Try syncing the client and server to the same T3 Code version.",
+    direction,
+    hint: versionMismatchHint(direction),
   };
 }
 
@@ -77,6 +114,25 @@ export function serverUpdateGuidance(
     default:
       return `Relaunch the ${serverLabel} with the copied command to sync them.`;
   }
+}
+
+export function versionMismatchGuidance(
+  mismatch: VersionMismatch,
+  capability: ServerSelfUpdateCapability | null,
+  serverLabel: string,
+): string {
+  switch (mismatch.direction) {
+    case "client-older":
+      return `This client is older than the ${serverLabel}. Update and relaunch T3 Code on this device; the newer server will not be downgraded.`;
+    case "server-older":
+      return serverUpdateGuidance(capability, serverLabel);
+    case "unknown":
+      return `Sync this client and the ${serverLabel} to the same T3 Code version.`;
+  }
+}
+
+export function shouldOfferServerUpdate(mismatch: VersionMismatch): boolean {
+  return mismatch.direction === "server-older";
 }
 
 export function buildVersionMismatchDismissalKey(
