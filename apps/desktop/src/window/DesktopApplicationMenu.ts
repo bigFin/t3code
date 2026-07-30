@@ -170,7 +170,9 @@ export const make = Effect.gen(function* () {
                 },
                 { type: "separator" as const },
               ]),
-          { role: environment.platform === "darwin" ? "close" : "quit" },
+          environment.platform === "darwin"
+            ? { role: "close" }
+            : { role: "quit", accelerator: "CmdOrCtrl+Q" },
         ],
       },
       { role: "editMenu" },

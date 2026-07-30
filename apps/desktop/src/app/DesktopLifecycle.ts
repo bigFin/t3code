@@ -2,6 +2,7 @@
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
@@ -36,6 +37,11 @@ export type DesktopLifecycleRuntimeServices =
   | ElectronApp.ElectronApp
   | ElectronTheme.ElectronTheme;
 
+export interface DesktopRelaunchTarget {
+  readonly execPath: string;
+  readonly args: ReadonlyArray<string>;
+}
+
 /**
  * @effect-expect-leaking DesktopEnvironment | DesktopShutdown | DesktopState | DesktopWindow | ElectronApp | ElectronTheme
  */
@@ -44,6 +50,7 @@ export class DesktopLifecycle extends Context.Service<
   {
     readonly relaunch: (
       reason: string,
+      target?: DesktopRelaunchTarget,
     ) => Effect.Effect<void, never, DesktopLifecycleRuntimeServices>;
     readonly register: Effect.Effect<void, never, Scope.Scope | DesktopLifecycleRuntimeServices>;
   }
@@ -56,6 +63,18 @@ const {
 } = makeComponentLogger("desktop-lifecycle");
 
 const DESKTOP_SHUTDOWN_TIMEOUT_MS = 10_000;
+const DESKTOP_LAUNCH_IDENTITY_VERSION = 1;
+
+const DesktopLaunchIdentity = Schema.Struct({
+  type: Schema.Literal("t3code-desktop-launch"),
+  version: Schema.Literal(DESKTOP_LAUNCH_IDENTITY_VERSION),
+  appPath: Schema.String,
+  execPath: Schema.String,
+  args: Schema.Array(Schema.String),
+});
+type DesktopLaunchIdentity = typeof DesktopLaunchIdentity.Type;
+
+const decodeDesktopLaunchIdentity = Schema.decodeUnknownOption(DesktopLaunchIdentity);
 
 export function shouldQuitAfterLastWindowCloses(platform: NodeJS.Platform): boolean {
   // Keep the Linux desktop/backend process alive after the compositor closes
@@ -207,43 +226,91 @@ function quitFromSignal(
   });
 }
 
+const relaunch = Effect.fn("desktop.lifecycle.relaunch")(function* (
+  reason: string,
+  target?: DesktopRelaunchTarget,
+) {
+  const electronApp = yield* ElectronApp.ElectronApp;
+  const environment = yield* DesktopEnvironment.DesktopEnvironment;
+  const state = yield* DesktopState.DesktopState;
+  yield* logLifecycleInfo("desktop relaunch requested", { reason });
+  yield* Effect.gen(function* () {
+    yield* Effect.yieldNow;
+    const wasQuitting = yield* Ref.getAndSet(state.quitting, true);
+    if (wasQuitting) return;
+    yield* requestDesktopShutdownAndWait();
+    if (environment.isDevelopment && target === undefined) {
+      yield* electronApp.exit(75);
+      return;
+    }
+    yield* electronApp.relaunch({
+      execPath: target?.execPath ?? process.execPath,
+      args: [...(target?.args ?? process.argv.slice(1))],
+    });
+    yield* electronApp.exit(0);
+  }).pipe(
+    Effect.catchCause((cause) => {
+      const error = new DesktopLifecycleRelaunchError({ reason, cause });
+      return logLifecycleError(error.message, { error });
+    }),
+    Effect.forkDetach,
+    Effect.asVoid,
+  );
+});
+
 export const make = DesktopLifecycle.of({
-  relaunch: Effect.fn("desktop.lifecycle.relaunch")(function* (reason) {
-    const electronApp = yield* ElectronApp.ElectronApp;
-    const environment = yield* DesktopEnvironment.DesktopEnvironment;
-    const state = yield* DesktopState.DesktopState;
-    yield* logLifecycleInfo("desktop relaunch requested", { reason });
-    yield* Effect.gen(function* () {
-      yield* Effect.yieldNow;
-      yield* Ref.set(state.quitting, true);
-      yield* requestDesktopShutdownAndWait();
-      if (environment.isDevelopment) {
-        yield* electronApp.exit(75);
-        return;
-      }
-      yield* electronApp.relaunch({
-        execPath: process.execPath,
-        args: process.argv.slice(1),
-      });
-      yield* electronApp.exit(0);
-    }).pipe(
-      Effect.catchCause((cause) => {
-        const error = new DesktopLifecycleRelaunchError({ reason, cause });
-        return logLifecycleError(error.message, { error });
-      }),
-      Effect.forkDetach,
-      Effect.asVoid,
-    );
-  }),
+  relaunch,
   register: Effect.gen(function* () {
     const desktopWindow = yield* DesktopWindow.DesktopWindow;
     const electronApp = yield* ElectronApp.ElectronApp;
     const electronTheme = yield* ElectronTheme.ElectronTheme;
     const environment = yield* DesktopEnvironment.DesktopEnvironment;
+    const metadata = yield* electronApp.metadata.pipe(Effect.orDie);
     const context = yield* Effect.context<DesktopLifecycleRuntimeServices>();
     const runEffect = Effect.runPromiseWith(context);
+    const launchIdentity: DesktopLaunchIdentity = {
+      type: "t3code-desktop-launch",
+      version: DESKTOP_LAUNCH_IDENTITY_VERSION,
+      appPath: metadata.appPath,
+      execPath: process.execPath,
+      args: process.argv.slice(1),
+    };
     let quitAllowed = false;
     let updaterQuitAllowed = false;
+
+    if (!(yield* electronApp.requestSingleInstanceLock(launchIdentity))) {
+      yield* electronApp.quit;
+      return yield* Effect.interrupt;
+    }
+
+    yield* electronApp.on(
+      "second-instance",
+      (
+        _event: Electron.Event,
+        _argv: ReadonlyArray<string>,
+        _workingDirectory: string,
+        additionalData: unknown,
+      ) => {
+        const incomingIdentity = decodeDesktopLaunchIdentity(additionalData);
+        if (
+          Option.isNone(incomingIdentity) ||
+          incomingIdentity.value.appPath === launchIdentity.appPath
+        ) {
+          void runEffect(
+            desktopWindow.activate.pipe(Effect.withSpan("desktop.lifecycle.secondInstance")),
+          );
+          return;
+        }
+
+        void runEffect(
+          relaunch("desktop-package-handoff", {
+            execPath: incomingIdentity.value.execPath,
+            args: incomingIdentity.value.args,
+          }).pipe(Effect.withSpan("desktop.lifecycle.secondInstance")),
+        );
+      },
+    );
+
     yield* electronTheme.onUpdated(() => {
       void runEffect(
         desktopWindow.syncAppearance.pipe(Effect.withSpan("desktop.lifecycle.themeUpdated")),

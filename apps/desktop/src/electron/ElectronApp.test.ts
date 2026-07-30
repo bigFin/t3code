@@ -92,6 +92,7 @@ describe("ElectronApp", () => {
     quitMock.mockClear();
     relaunchMock.mockClear();
     removeListenerMock.mockClear();
+    requestSingleInstanceLockMock.mockClear();
     setPathMock.mockClear();
   });
 
@@ -161,6 +162,20 @@ describe("ElectronApp", () => {
 
       assert.deepEqual(onMock.mock.calls, [["activate", listener]]);
       assert.deepEqual(removeListenerMock.mock.calls, [["activate", listener]]);
+    }).pipe(Effect.provide(ElectronApp.layer)),
+  );
+
+  it.effect("forwards launch identity when acquiring the instance lock", () =>
+    Effect.gen(function* () {
+      const electronApp = yield* ElectronApp.ElectronApp;
+      const launchIdentity = {
+        type: "t3code-desktop-launch",
+        version: 1,
+        appPath: "/nix/store/t3code/apps/desktop",
+      };
+
+      assert.isTrue(yield* electronApp.requestSingleInstanceLock(launchIdentity));
+      assert.deepEqual(requestSingleInstanceLockMock.mock.calls, [[launchIdentity]]);
     }).pipe(Effect.provide(ElectronApp.layer)),
   );
 

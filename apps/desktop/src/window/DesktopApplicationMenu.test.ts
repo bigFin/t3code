@@ -39,7 +39,7 @@ const electronAppLayer = Layer.succeed(ElectronApp.ElectronApp, {
   setName: () => Effect.void,
   setAboutPanelOptions: () => Effect.void,
   setAppUserModelId: () => Effect.void,
-  requestSingleInstanceLock: Effect.succeed(true),
+  requestSingleInstanceLock: () => Effect.succeed(true),
   getAppMetrics: Effect.succeed([]),
   isDefaultProtocolClient: () => Effect.succeed(false),
   setAsDefaultProtocolClient: () => Effect.succeed(true),
@@ -128,6 +128,9 @@ describe("DesktopApplicationMenu", () => {
       }
       const settingsItem = fileMenu.submenu.find((item) => item.label === "Settings...");
       assert.isDefined(settingsItem);
+      const quitItem = fileMenu.submenu.find((item) => item.role === "quit");
+      assert.isDefined(quitItem);
+      assert.equal(quitItem.accelerator, "CmdOrCtrl+Q");
       const settingsClick = settingsItem.click;
       if (typeof settingsClick !== "function") {
         throw new Error("Expected Settings menu item to have a click handler.");

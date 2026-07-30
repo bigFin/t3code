@@ -4,12 +4,9 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
-import * as Scope from "effect/Scope";
 
 import { clerkFrontendApiHostnameFromPublishableKey } from "@t3tools/shared/relayAuth";
-import * as ElectronApp from "../electron/ElectronApp.ts";
 import * as ElectronProtocol from "../electron/ElectronProtocol.ts";
-import * as DesktopWindow from "../window/DesktopWindow.ts";
 import * as DesktopEnvironment from "./DesktopEnvironment.ts";
 
 declare const __T3CODE_BUILD_CLERK_PUBLISHABLE_KEY__: string | undefined;
@@ -40,16 +37,9 @@ export class DesktopClerkBridgeCleanupError extends Schema.TaggedErrorClass<Desk
   }
 }
 
-export class DesktopClerk extends Context.Service<
-  DesktopClerk,
-  {
-    readonly configure: Effect.Effect<
-      void,
-      never,
-      ElectronApp.ElectronApp | DesktopWindow.DesktopWindow | Scope.Scope
-    >;
-  }
->()("@t3tools/desktop/app/DesktopClerk") {}
+export class DesktopClerk extends Context.Service<DesktopClerk, Record<never, never>>()(
+  "@t3tools/desktop/app/DesktopClerk",
+) {}
 
 export function resolveDesktopClerkFrontendApiHostname(
   publishableKey: string | undefined,
@@ -105,23 +95,7 @@ export const make = Effect.gen(function* () {
       }).pipe(Effect.orDie),
   );
 
-  return DesktopClerk.of({
-    configure: Effect.gen(function* () {
-      const electronApp = yield* ElectronApp.ElectronApp;
-      const desktopWindow = yield* DesktopWindow.DesktopWindow;
-      const context = yield* Effect.context<DesktopWindow.DesktopWindow>();
-      const runPromise = Effect.runPromiseWith(context);
-
-      if (!(yield* electronApp.requestSingleInstanceLock)) {
-        yield* electronApp.quit;
-        return yield* Effect.interrupt;
-      }
-
-      yield* electronApp.on("second-instance", () => {
-        void runPromise(desktopWindow.activate);
-      });
-    }).pipe(Effect.withSpan("desktop.clerk.configure")),
-  });
+  return DesktopClerk.of({});
 });
 
 export const layer = Layer.effect(DesktopClerk, make);
