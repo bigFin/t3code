@@ -45,6 +45,7 @@ import {
   DEFAULT_INTERACTION_MODE,
   DEFAULT_RUNTIME_MODE,
   type Project,
+  type SidebarThreadSummary,
   type Thread,
 } from "../types";
 
@@ -717,11 +718,15 @@ describe("sortThreadsForSidebarV2", () => {
     createdAt: string;
     updatedAt?: string;
     latestTurn?: OrchestrationLatestTurn | null;
+    latestUserMessageAt?: string | null;
+    session?: SidebarThreadSummary["session"];
   }) => ({
     id: input.id,
     createdAt: input.createdAt,
     updatedAt: input.updatedAt ?? input.createdAt,
     latestTurn: input.latestTurn ?? null,
+    latestUserMessageAt: input.latestUserMessageAt ?? null,
+    session: input.session ?? null,
   });
 
   it("orders by creation time, newest first, ignoring activity", () => {
@@ -769,7 +774,105 @@ describe("sortThreadsForSidebarV2", () => {
     expect(sorted.map((thread) => thread.id)).toEqual(["older-thread", "newer-thread"]);
   });
 
-  it("falls back to update and creation times when no completed response exists", () => {
+  it("promotes the newest working, failed, completed, or user activity", () => {
+    const sorted = sortThreadsForSidebarV2(
+      [
+        sortable({
+          id: "completed",
+          createdAt: "2026-03-09T08:00:00.000Z",
+          latestTurn: makeLatestTurn({
+            assistantMessageId: "message-completed",
+            completedAt: "2026-03-09T12:30:00.000Z",
+          }),
+        }),
+        sortable({
+          id: "failed",
+          createdAt: "2026-03-09T08:00:00.000Z",
+          latestTurn: makeLatestTurn({
+            assistantMessageId: null,
+            state: "error",
+            completedAt: "2026-03-09T12:40:00.000Z",
+          }),
+          session: {
+            threadId: ThreadId.make("failed"),
+            status: "error",
+            providerName: "Codex",
+            providerInstanceId: ProviderInstanceId.make("codex"),
+            runtimeMode: DEFAULT_RUNTIME_MODE,
+            activeTurnId: null,
+            lastError: "failed",
+            updatedAt: "2026-03-09T12:40:00.000Z",
+          },
+        }),
+        sortable({
+          id: "working",
+          createdAt: "2026-03-09T08:00:00.000Z",
+          latestTurn: makeLatestTurn({
+            assistantMessageId: null,
+            state: "running",
+            startedAt: "2026-03-09T12:50:00.000Z",
+            completedAt: null,
+          }),
+          session: {
+            threadId: ThreadId.make("working"),
+            status: "running",
+            providerName: "Codex",
+            providerInstanceId: ProviderInstanceId.make("codex"),
+            runtimeMode: DEFAULT_RUNTIME_MODE,
+            activeTurnId: "turn-1" as never,
+            lastError: null,
+            updatedAt: "2026-03-09T12:50:00.000Z",
+          },
+        }),
+        sortable({
+          id: "user",
+          createdAt: "2026-03-09T08:00:00.000Z",
+          latestUserMessageAt: "2026-03-09T13:00:00.000Z",
+        }),
+      ],
+      "last_response_at",
+    );
+
+    expect(sorted.map((thread) => thread.id)).toEqual(["user", "working", "failed", "completed"]);
+  });
+
+  it("does not let an older completed response mask a newer session transition", () => {
+    const sorted = sortThreadsForSidebarV2(
+      [
+        sortable({
+          id: "newer-session",
+          createdAt: "2026-03-09T08:00:00.000Z",
+          latestTurn: makeLatestTurn({
+            assistantMessageId: "message-old",
+            completedAt: "2026-03-09T10:00:00.000Z",
+          }),
+          session: {
+            threadId: ThreadId.make("newer-session"),
+            status: "error",
+            providerName: "Codex",
+            providerInstanceId: ProviderInstanceId.make("codex"),
+            runtimeMode: DEFAULT_RUNTIME_MODE,
+            activeTurnId: null,
+            lastError: "connection failed",
+            updatedAt: "2026-03-09T12:30:00.000Z",
+          },
+        }),
+        sortable({
+          id: "newer-response",
+          createdAt: "2026-03-09T08:00:00.000Z",
+          latestTurn: makeLatestTurn({
+            assistantMessageId: "message-new",
+            completedAt: "2026-03-09T12:00:00.000Z",
+          }),
+        }),
+      ],
+      "last_response_at",
+    );
+
+    expect(sorted.map((thread) => thread.id)).toEqual(["newer-session", "newer-response"]);
+  });
+
+  it("falls back to update and creation times when no lifecycle activity exists", () => {
     const sorted = sortThreadsForSidebarV2(
       [
         sortable({
@@ -780,10 +883,6 @@ describe("sortThreadsForSidebarV2", () => {
           id: "updated",
           createdAt: "2026-03-09T08:00:00.000Z",
           updatedAt: "2026-03-09T12:00:00.000Z",
-          latestTurn: makeLatestTurn({
-            assistantMessageId: null,
-            completedAt: "2026-03-09T12:30:00.000Z",
-          }),
         }),
       ],
       "last_response_at",

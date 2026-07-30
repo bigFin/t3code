@@ -543,29 +543,44 @@ export function firstValidTimestamp(
   return null;
 }
 
-type SidebarV2SortInput = {
-  readonly createdAt: string;
-  readonly id: string;
-  readonly latestTurn: SidebarThreadSummary["latestTurn"];
-  readonly updatedAt: string;
-};
+type SidebarV2SortInput = Pick<
+  SidebarThreadSummary,
+  "createdAt" | "latestTurn" | "latestUserMessageAt" | "session" | "updatedAt"
+> & { readonly id: string };
+
+function latestValidTimestampMs(...candidates: ReadonlyArray<string | null | undefined>): number {
+  let latestMs = 0;
+  for (const candidate of candidates) {
+    if (candidate == null) continue;
+    const parsed = Date.parse(candidate);
+    if (!Number.isNaN(parsed) && parsed > latestMs) {
+      latestMs = parsed;
+    }
+  }
+  return latestMs;
+}
 
 function resolveSidebarV2SortTimestampMs(
   thread: SidebarV2SortInput,
   sortOrder: SidebarV2ThreadSortOrder,
 ): number {
   if (sortOrder === "last_response_at") {
-    const turn = thread.latestTurn;
-    const completedResponseAt =
-      turn?.state === "completed" && turn.assistantMessageId !== null ? turn.completedAt : null;
-    return firstValidTimestampMs(completedResponseAt, thread.updatedAt, thread.createdAt);
+    return latestValidTimestampMs(
+      thread.latestUserMessageAt,
+      thread.latestTurn?.requestedAt,
+      thread.latestTurn?.startedAt,
+      thread.latestTurn?.completedAt,
+      thread.session?.updatedAt,
+      thread.updatedAt,
+      thread.createdAt,
+    );
   }
   return parseTimestampMs(thread.createdAt);
 }
 
 // The default v2 sort is static creation order: activity does not reorder
-// cards. The opt-in response sort intentionally promotes a card when its
-// latest completed assistant response lands.
+// cards. The opt-in activity sort keeps its persisted legacy value but
+// promotes every meaningful turn/session transition, not only completions.
 export function sortThreadsForSidebarV2<T extends SidebarV2SortInput>(
   threads: readonly T[],
   sortOrder: SidebarV2ThreadSortOrder = "created_at",

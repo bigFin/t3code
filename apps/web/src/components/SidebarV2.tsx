@@ -2630,7 +2630,7 @@ export default function SidebarV2() {
                 data-testid="sidebar-v2-thread-sort"
               >
                 <SelectValue>
-                  {sidebarV2ThreadSortOrder === "last_response_at" ? "Last response" : "Created"}
+                  {sidebarV2ThreadSortOrder === "last_response_at" ? "Recent activity" : "Created"}
                 </SelectValue>
               </SelectTrigger>
               <SelectPopup align="end" alignItemWithTrigger={false}>
@@ -2638,7 +2638,7 @@ export default function SidebarV2() {
                   Creation time
                 </SelectItem>
                 <SelectItem hideIndicator value="last_response_at">
-                  Last response received
+                  Recent activity
                 </SelectItem>
               </SelectPopup>
             </Select>
