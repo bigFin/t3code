@@ -13,6 +13,8 @@ import {
   isContextMenuPointerDown,
   isTrailingDoubleClick,
   orderItemsByPreferredIds,
+  resolveLatestCompletedThread,
+  resolveNextWorkingThread,
   resolveProjectStatusIndicator,
   resolveSidebarStageBadgeLabel,
   resolveThreadRowClassName,
@@ -202,13 +204,16 @@ describe("resolveSidebarStageBadgeLabel", () => {
 });
 
 function makeLatestTurn(overrides?: {
+  assistantMessageId?: string | null;
   completedAt?: string | null;
+  state?: OrchestrationLatestTurn["state"];
   startedAt?: string | null;
 }): OrchestrationLatestTurn {
   return {
     turnId: "turn-1" as never,
-    state: "completed",
-    assistantMessageId: null,
+    state: overrides?.state ?? "completed",
+    assistantMessageId:
+      overrides?.assistantMessageId !== undefined ? (overrides.assistantMessageId as never) : null,
     requestedAt: "2026-03-09T10:00:00.000Z",
     startedAt:
       overrides?.startedAt !== undefined ? overrides.startedAt : "2026-03-09T10:00:00.000Z",
@@ -655,9 +660,16 @@ describe("resolveSidebarV2Status", () => {
 });
 
 describe("sortThreadsForSidebarV2", () => {
-  const sortable = (input: { id: string; createdAt: string }) => ({
+  const sortable = (input: {
+    id: string;
+    createdAt: string;
+    updatedAt?: string;
+    latestTurn?: OrchestrationLatestTurn | null;
+  }) => ({
     id: input.id,
     createdAt: input.createdAt,
+    updatedAt: input.updatedAt ?? input.createdAt,
+    latestTurn: input.latestTurn ?? null,
   });
 
   it("orders by creation time, newest first, ignoring activity", () => {
@@ -677,6 +689,146 @@ describe("sortThreadsForSidebarV2", () => {
     ]);
 
     expect(sorted.map((thread) => thread.id)).toEqual(["a", "b"]);
+  });
+
+  it("orders by the latest completed assistant response when requested", () => {
+    const sorted = sortThreadsForSidebarV2(
+      [
+        sortable({
+          id: "newer-thread",
+          createdAt: "2026-03-09T12:00:00.000Z",
+          latestTurn: makeLatestTurn({
+            assistantMessageId: "message-older",
+            completedAt: "2026-03-09T12:05:00.000Z",
+          }),
+        }),
+        sortable({
+          id: "older-thread",
+          createdAt: "2026-03-09T08:00:00.000Z",
+          latestTurn: makeLatestTurn({
+            assistantMessageId: "message-newer",
+            completedAt: "2026-03-09T12:30:00.000Z",
+          }),
+        }),
+      ],
+      "last_response_at",
+    );
+
+    expect(sorted.map((thread) => thread.id)).toEqual(["older-thread", "newer-thread"]);
+  });
+
+  it("falls back to update and creation times when no completed response exists", () => {
+    const sorted = sortThreadsForSidebarV2(
+      [
+        sortable({
+          id: "created-only",
+          createdAt: "2026-03-09T11:00:00.000Z",
+        }),
+        sortable({
+          id: "updated",
+          createdAt: "2026-03-09T08:00:00.000Z",
+          updatedAt: "2026-03-09T12:00:00.000Z",
+          latestTurn: makeLatestTurn({
+            assistantMessageId: null,
+            completedAt: "2026-03-09T12:30:00.000Z",
+          }),
+        }),
+      ],
+      "last_response_at",
+    );
+
+    expect(sorted.map((thread) => thread.id)).toEqual(["updated", "created-only"]);
+  });
+});
+
+describe("targeted thread navigation", () => {
+  const runningSession = {
+    threadId: ThreadId.make("thread-running"),
+    status: "running" as const,
+    providerName: "Codex",
+    providerInstanceId: ProviderInstanceId.make("codex"),
+    runtimeMode: DEFAULT_RUNTIME_MODE,
+    activeTurnId: "turn-1" as never,
+    lastError: null,
+    updatedAt: "2026-03-09T10:00:00.000Z",
+  };
+  const navigationThread = (input: {
+    id: string;
+    completedAt?: string | null;
+    assistantMessageId?: string | null;
+    state?: OrchestrationLatestTurn["state"];
+    session?: typeof runningSession | null;
+    hasPendingApprovals?: boolean;
+    hasPendingUserInput?: boolean;
+  }) => ({
+    id: input.id,
+    latestTurn:
+      input.completedAt === undefined
+        ? null
+        : makeLatestTurn({
+            assistantMessageId:
+              input.assistantMessageId !== undefined ? input.assistantMessageId : "message-1",
+            completedAt: input.completedAt,
+            ...(input.state !== undefined ? { state: input.state } : {}),
+          }),
+    session: input.session ?? null,
+    hasPendingApprovals: input.hasPendingApprovals ?? false,
+    hasPendingUserInput: input.hasPendingUserInput ?? false,
+  });
+
+  it("finds the most recently completed assistant response", () => {
+    const latest = resolveLatestCompletedThread([
+      navigationThread({
+        id: "older",
+        completedAt: "2026-03-09T10:00:00.000Z",
+      }),
+      navigationThread({
+        id: "newer",
+        completedAt: "2026-03-09T11:00:00.000Z",
+      }),
+      navigationThread({
+        id: "interrupted",
+        completedAt: "2026-03-09T12:00:00.000Z",
+        state: "interrupted",
+      }),
+      navigationThread({
+        id: "no-assistant-message",
+        assistantMessageId: null,
+        completedAt: "2026-03-09T13:00:00.000Z",
+      }),
+    ]);
+
+    expect(latest?.id).toBe("newer");
+  });
+
+  it("cycles only through working threads and wraps", () => {
+    const threads = [
+      navigationThread({ id: "working-a", session: runningSession }),
+      navigationThread({
+        id: "blocked",
+        session: runningSession,
+        hasPendingUserInput: true,
+      }),
+      navigationThread({
+        id: "working-b",
+        session: { ...runningSession, threadId: ThreadId.make("working-b") },
+      }),
+    ];
+
+    expect(
+      resolveNextWorkingThread({
+        threads,
+        currentThreadKey: "working-a",
+        getThreadKey: (thread) => thread.id,
+      })?.id,
+    ).toBe("working-b");
+    expect(
+      resolveNextWorkingThread({
+        threads,
+        currentThreadKey: "working-b",
+        getThreadKey: (thread) => thread.id,
+      })?.id,
+    ).toBe("working-a");
   });
 });
 

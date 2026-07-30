@@ -1,6 +1,10 @@
 import * as React from "react";
 import type { ContextMenuItem } from "@t3tools/contracts";
-import type { SidebarProjectSortOrder, SidebarThreadSortOrder } from "@t3tools/contracts/settings";
+import type {
+  SidebarProjectSortOrder,
+  SidebarThreadSortOrder,
+  SidebarV2ThreadSortOrder,
+} from "@t3tools/contracts/settings";
 import {
   getThreadSortTimestamp,
   sortThreads,
@@ -424,6 +428,59 @@ export function resolveSidebarV2Status(thread: SidebarV2StatusInput): SidebarV2S
   return "ready";
 }
 
+type LatestCompletedThreadInput = {
+  readonly id: string;
+  readonly latestTurn: SidebarThreadSummary["latestTurn"];
+};
+
+export function resolveLatestCompletedThread<T extends LatestCompletedThreadInput>(
+  threads: readonly T[],
+): T | null {
+  let latestThread: T | null = null;
+  let latestCompletedAtMs = Number.NEGATIVE_INFINITY;
+
+  for (const thread of threads) {
+    const turn = thread.latestTurn;
+    if (
+      turn?.state !== "completed" ||
+      turn.assistantMessageId === null ||
+      turn.completedAt === null
+    ) {
+      continue;
+    }
+    const completedAtMs = Date.parse(turn.completedAt);
+    if (Number.isNaN(completedAtMs)) continue;
+    if (
+      completedAtMs > latestCompletedAtMs ||
+      (completedAtMs === latestCompletedAtMs &&
+        latestThread !== null &&
+        thread.id.localeCompare(latestThread.id) < 0)
+    ) {
+      latestThread = thread;
+      latestCompletedAtMs = completedAtMs;
+    }
+  }
+
+  return latestThread;
+}
+
+export function resolveNextWorkingThread<T extends SidebarV2StatusInput>(input: {
+  threads: readonly T[];
+  currentThreadKey: string | null;
+  getThreadKey: (thread: T) => string;
+}): T | null {
+  const workingThreads = input.threads.filter(
+    (thread) => resolveSidebarV2Status(thread) === "working",
+  );
+  if (workingThreads.length === 0) return null;
+
+  const currentIndex =
+    input.currentThreadKey === null
+      ? -1
+      : workingThreads.findIndex((thread) => input.getThreadKey(thread) === input.currentThreadKey);
+  return workingThreads[(currentIndex + 1) % workingThreads.length] ?? null;
+}
+
 /** NaN-safe Date.parse for sort comparators: a malformed timestamp must not
     poison the whole ordering, so it sinks to the epoch instead. */
 export function parseTimestampMs(isoDate: string): number {
@@ -457,17 +514,37 @@ export function firstValidTimestamp(
   return null;
 }
 
-// v2 sort: static creation order, newest thread on top. Activity NEVER
-// reorders the list — a row holds its position from open until settled, so
-// the screen only moves at lifecycle transitions. Status (including pending
-// approval) is carried by each card's edge strip, not by position.
-export function sortThreadsForSidebarV2<
-  T extends { readonly id: string; readonly createdAt: string },
->(threads: readonly T[]): T[] {
+type SidebarV2SortInput = {
+  readonly createdAt: string;
+  readonly id: string;
+  readonly latestTurn: SidebarThreadSummary["latestTurn"];
+  readonly updatedAt: string;
+};
+
+function resolveSidebarV2SortTimestampMs(
+  thread: SidebarV2SortInput,
+  sortOrder: SidebarV2ThreadSortOrder,
+): number {
+  if (sortOrder === "last_response_at") {
+    const turn = thread.latestTurn;
+    const completedResponseAt =
+      turn?.state === "completed" && turn.assistantMessageId !== null ? turn.completedAt : null;
+    return firstValidTimestampMs(completedResponseAt, thread.updatedAt, thread.createdAt);
+  }
+  return parseTimestampMs(thread.createdAt);
+}
+
+// The default v2 sort is static creation order: activity does not reorder
+// cards. The opt-in response sort intentionally promotes a card when its
+// latest completed assistant response lands.
+export function sortThreadsForSidebarV2<T extends SidebarV2SortInput>(
+  threads: readonly T[],
+  sortOrder: SidebarV2ThreadSortOrder = "created_at",
+): T[] {
   return [...threads].toSorted(
     (left, right) =>
-      parseTimestampMs(right.createdAt) - parseTimestampMs(left.createdAt) ||
-      left.id.localeCompare(right.id),
+      resolveSidebarV2SortTimestampMs(right, sortOrder) -
+        resolveSidebarV2SortTimestampMs(left, sortOrder) || left.id.localeCompare(right.id),
   );
 }
 

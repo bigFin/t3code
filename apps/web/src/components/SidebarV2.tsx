@@ -112,6 +112,8 @@ import {
   isTrailingDoubleClick,
   orderItemsByPreferredIds,
   resolveAdjacentThreadId,
+  resolveLatestCompletedThread,
+  resolveNextWorkingThread,
   resolveSettledTimestamp,
   resolveSidebarV2Status,
   resolveWorkingStartedAt,
@@ -1061,6 +1063,7 @@ export default function SidebarV2() {
   const autoSettleAfterDays = useClientSettings((s) => s.sidebarAutoSettleAfterDays);
   const confirmThreadDelete = useClientSettings((s) => s.confirmThreadDelete);
   const sidebarProjectSortOrder = useClientSettings((s) => s.sidebarProjectSortOrder);
+  const sidebarV2ThreadSortOrder = useClientSettings((s) => s.sidebarV2ThreadSortOrder);
   const projectGroupingSettings = useClientSettings(selectProjectGroupingSettings);
   const { settleThread, unsettleThread, snoozeThread, unsnoozeThread, deleteThread } =
     useThreadActions();
@@ -1440,6 +1443,16 @@ export default function SidebarV2() {
   // merging, no optimistic holds. Archived threads remain hidden here —
   // archive keeps its original "remove from sidebar" meaning.
   const serverConfigs = useAtomValue(environmentServerConfigsAtom);
+  const navigableThreads = useMemo(
+    () =>
+      threads.filter(
+        (thread) =>
+          thread.archivedAt === null &&
+          (scopedProjectKeys === null ||
+            scopedProjectKeys.has(`${thread.environmentId}:${thread.projectId}`)),
+      ),
+    [scopedProjectKeys, threads],
+  );
   const { activeThreads, snoozedThreads, settledThreads, snoozeNow } = useMemo(() => {
     const now = `${nowMinute}:00.000Z`;
     // Snooze classification uses a REAL clock, not the quantized minute:
@@ -1448,16 +1461,10 @@ export default function SidebarV2() {
     // memo exactly at the next wake boundary.
     void snoozeWakeTick;
     const preciseNow = new Date().toISOString();
-    const visible = threads.filter(
-      (thread) =>
-        thread.archivedAt === null &&
-        (scopedProjectKeys === null ||
-          scopedProjectKeys.has(`${thread.environmentId}:${thread.projectId}`)),
-    );
     const active: EnvironmentThreadShell[] = [];
     const snoozed: EnvironmentThreadShell[] = [];
     const settled: EnvironmentThreadShell[] = [];
-    for (const thread of visible) {
+    for (const thread of navigableThreads) {
       // Threads on servers without the settlement capability (old server,
       // or descriptor not loaded yet) never classify as settled: the user
       // could neither un-settle nor pin them, so auto-settling them would
@@ -1483,7 +1490,7 @@ export default function SidebarV2() {
       }
     }
     return {
-      activeThreads: sortThreadsForSidebarV2(active),
+      activeThreads: sortThreadsForSidebarV2(active, sidebarV2ThreadSortOrder),
       // Soonest wake first: "what comes back next" is the shelf's question.
       snoozedThreads: snoozed.toSorted(
         (left, right) =>
@@ -1496,11 +1503,11 @@ export default function SidebarV2() {
   }, [
     autoSettleAfterDays,
     changeRequestStateByKey,
+    navigableThreads,
     nowMinute,
-    scopedProjectKeys,
     serverConfigs,
+    sidebarV2ThreadSortOrder,
     snoozeWakeTick,
-    threads,
   ]);
 
   // Arm a timeout for the earliest upcoming wake so the shelf empties the
@@ -2260,6 +2267,29 @@ export default function SidebarV2() {
         );
         return;
       }
+      if (command === "thread.latestCompleted") {
+        const targetThread = resolveLatestCompletedThread(navigableThreads);
+        navigateToThreadKey(
+          targetThread
+            ? scopedThreadKey(scopeThreadRef(targetThread.environmentId, targetThread.id))
+            : null,
+        );
+        return;
+      }
+      if (command === "thread.nextWorking") {
+        const targetThread = resolveNextWorkingThread({
+          threads: navigableThreads,
+          currentThreadKey: routeThreadKey,
+          getThreadKey: (thread) =>
+            scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
+        });
+        navigateToThreadKey(
+          targetThread
+            ? scopedThreadKey(scopeThreadRef(targetThread.environmentId, targetThread.id))
+            : null,
+        );
+        return;
+      }
       const jumpIndex = threadJumpIndexFromCommand(command ?? "");
       if (jumpIndex === null) return;
       navigateToThreadKey(orderedThreadKeys[jumpIndex] ?? null);
@@ -2269,6 +2299,7 @@ export default function SidebarV2() {
   }, [
     keybindings,
     navigateToThread,
+    navigableThreads,
     orderedThreadKeys,
     routeTerminalOpen,
     routeThreadKey,

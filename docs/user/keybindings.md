@@ -33,7 +33,11 @@ See the full schema for more details: [`packages/contracts/src/keybindings.ts`](
   { "key": "mod+n", "command": "chat.new", "when": "!terminalFocus" },
   { "key": "mod+shift+o", "command": "chat.new", "when": "!terminalFocus" },
   { "key": "mod+shift+n", "command": "chat.newLocal", "when": "!terminalFocus" },
-  { "key": "mod+o", "command": "editor.openFavorite" }
+  { "key": "mod+o", "command": "editor.openFavorite" },
+  { "key": "mod+shift+[", "command": "thread.previous" },
+  { "key": "mod+shift+]", "command": "thread.next" },
+  { "key": "mod+alt+[", "command": "thread.latestCompleted" },
+  { "key": "mod+alt+]", "command": "thread.nextWorking" }
 ]
 ```
 
@@ -67,6 +71,10 @@ Invalid rules are ignored. Invalid config files are ignored. Warnings are logged
 - `chat.new`: create a new chat thread preserving the active thread's branch/worktree state
 - `chat.newLocal`: create a new chat thread for the active project in a new environment (local/worktree determined by app settings (default `local`))
 - `editor.openFavorite`: open current project/worktree in the last-used editor
+- `thread.previous`: open the previous rendered sidebar thread
+- `thread.next`: open the next rendered sidebar thread
+- `thread.latestCompleted`: open the thread with the most recently completed assistant response
+- `thread.nextWorking`: cycle through threads whose agents are actively working
 - `script.{id}.run`: run a project script by id (for example `script.test.run`)
 
 ### Key Syntax

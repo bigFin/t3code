@@ -1,6 +1,10 @@
 "use client";
 
-import { scopeProjectRef, scopeThreadRef } from "@t3tools/client-runtime/environment";
+import {
+  scopeProjectRef,
+  scopeThreadRef,
+  scopedThreadKey,
+} from "@t3tools/client-runtime/environment";
 import {
   canPreloadBrowsePath,
   createBrowseNavigationCoordinator,
@@ -28,10 +32,12 @@ import {
   ArrowDownIcon,
   ArrowLeftIcon,
   ArrowUpIcon,
+  CircleCheckIcon,
   CornerLeftUpIcon,
   FolderIcon,
   FolderPlusIcon,
   LinkIcon,
+  LoaderCircleIcon,
   MessageSquareIcon,
   SettingsIcon,
   SquarePenIcon,
@@ -104,7 +110,12 @@ import {
   ITEM_ICON_CLASS,
   RECENT_THREAD_LIMIT,
 } from "./CommandPalette.logic";
-import { orderItemsByPreferredIds, sortLogicalProjectsForSidebar } from "./Sidebar.logic";
+import {
+  orderItemsByPreferredIds,
+  resolveLatestCompletedThread,
+  resolveNextWorkingThread,
+  sortLogicalProjectsForSidebar,
+} from "./Sidebar.logic";
 import { resolveEnvironmentOptionLabel } from "./BranchToolbar.logic";
 import { CommandPaletteResults } from "./CommandPaletteResults";
 import { AzureDevOpsIcon, BitbucketIcon, GitHubIcon, GitLabIcon } from "./Icons";
@@ -716,6 +727,25 @@ function OpenCommandPaletteDialog(props: {
   );
 
   const activeThreadId = activeThread?.id;
+  const navigableThreads = useMemo(
+    () => threads.filter((thread) => thread.archivedAt === null),
+    [threads],
+  );
+  const latestCompletedThread = useMemo(
+    () => resolveLatestCompletedThread(navigableThreads),
+    [navigableThreads],
+  );
+  const nextWorkingThread = useMemo(
+    () =>
+      resolveNextWorkingThread({
+        threads: navigableThreads,
+        currentThreadKey: activeThread
+          ? scopedThreadKey(scopeThreadRef(activeThread.environmentId, activeThread.id))
+          : null,
+        getThreadKey: (thread) => scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
+      }),
+    [activeThread, navigableThreads],
+  );
   const currentProjectEnvironmentId =
     activeThread?.environmentId ?? activeDraftThread?.environmentId ?? null;
   const currentProjectId = activeThread?.projectId ?? activeDraftThread?.projectId ?? null;
@@ -1271,6 +1301,46 @@ function OpenCommandPaletteDialog(props: {
       groups: [{ value: "projects", label: "Projects", items: projectThreadItems }],
     });
   }
+
+  actionItems.push({
+    kind: "action",
+    value: "action:latest-completed-thread",
+    searchTerms: ["latest completed thread", "last response", "assistant response", "done"],
+    title: "Jump to latest completed thread",
+    description: latestCompletedThread?.title ?? "No completed assistant response yet",
+    icon: <CircleCheckIcon className={ITEM_ICON_CLASS} />,
+    shortcutCommand: "thread.latestCompleted",
+    disabled: latestCompletedThread === null,
+    run: async () => {
+      if (!latestCompletedThread) return;
+      await navigate({
+        to: "/$environmentId/$threadId",
+        params: buildThreadRouteParams(
+          scopeThreadRef(latestCompletedThread.environmentId, latestCompletedThread.id),
+        ),
+      });
+    },
+  });
+
+  actionItems.push({
+    kind: "action",
+    value: "action:next-working-thread",
+    searchTerms: ["next working thread", "cycle active threads", "running", "in progress"],
+    title: "Cycle to next working thread",
+    description: nextWorkingThread?.title ?? "No threads are actively working",
+    icon: <LoaderCircleIcon className={ITEM_ICON_CLASS} />,
+    shortcutCommand: "thread.nextWorking",
+    disabled: nextWorkingThread === null,
+    run: async () => {
+      if (!nextWorkingThread) return;
+      await navigate({
+        to: "/$environmentId/$threadId",
+        params: buildThreadRouteParams(
+          scopeThreadRef(nextWorkingThread.environmentId, nextWorkingThread.id),
+        ),
+      });
+    },
+  });
 
   actionItems.push({
     kind: "action",

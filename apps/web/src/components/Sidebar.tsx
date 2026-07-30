@@ -173,13 +173,15 @@ import {
   archiveSelectedThreadEntries,
   buildMultiSelectThreadContextMenuItems,
   getSidebarThreadIdsToPrewarm,
-  resolveAdjacentThreadId,
   isContextMenuPointerDown,
   isTrailingDoubleClick,
+  orderItemsByPreferredIds,
+  resolveAdjacentThreadId,
+  resolveLatestCompletedThread,
+  resolveNextWorkingThread,
   resolveProjectStatusIndicator,
   resolveThreadRowClassName,
   resolveThreadStatusPill,
-  orderItemsByPreferredIds,
   shouldClearThreadSelectionOnMouseDown,
   sortProjectsForSidebar,
   useThreadJumpHintVisibility,
@@ -3434,6 +3436,27 @@ export default function Sidebar() {
         navigateToThread(scopeThreadRef(targetThread.environmentId, targetThread.id));
         return;
       }
+      if (command === "thread.latestCompleted") {
+        const targetThread = resolveLatestCompletedThread(visibleThreads);
+        if (!targetThread) return;
+        event.preventDefault();
+        event.stopPropagation();
+        navigateToThread(scopeThreadRef(targetThread.environmentId, targetThread.id));
+        return;
+      }
+      if (command === "thread.nextWorking") {
+        const targetThread = resolveNextWorkingThread({
+          threads: visibleThreads,
+          currentThreadKey: routeThreadKey,
+          getThreadKey: (thread) =>
+            scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
+        });
+        if (!targetThread) return;
+        event.preventDefault();
+        event.stopPropagation();
+        navigateToThread(scopeThreadRef(targetThread.environmentId, targetThread.id));
+        return;
+      }
 
       const jumpIndex = threadJumpIndexFromCommand(command ?? "");
       if (jumpIndex === null) {
@@ -3468,6 +3491,7 @@ export default function Sidebar() {
     routeThreadKey,
     sidebarThreadByKey,
     threadJumpThreadKeys,
+    visibleThreads,
   ]);
 
   useEffect(() => {

@@ -71,7 +71,19 @@ describe("ClientSettings sidebar v2", () => {
   it("defaults the beta off with a three-day auto-settle threshold", () => {
     const settings = decodeClientSettings({});
     expect(settings.sidebarV2Enabled).toBe(false);
+    expect(settings.sidebarV2ThreadSortOrder).toBe("created_at");
     expect(settings.sidebarAutoSettleAfterDays).toBe(3);
+  });
+
+  it("accepts the response-recency sort for sidebar v2", () => {
+    expect(
+      decodeClientSettings({ sidebarV2ThreadSortOrder: "last_response_at" })
+        .sidebarV2ThreadSortOrder,
+    ).toBe("last_response_at");
+    expect(
+      decodeClientSettingsPatch({ sidebarV2ThreadSortOrder: "last_response_at" })
+        .sidebarV2ThreadSortOrder,
+    ).toBe("last_response_at");
   });
 
   it("treats settings written before the beta had a per-channel default as unconfigured", () => {

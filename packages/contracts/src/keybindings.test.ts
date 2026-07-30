@@ -82,6 +82,18 @@ it.effect("parses keybinding rules", () =>
       command: "thread.previous",
     });
     assert.strictEqual(parsedThreadPrevious.command, "thread.previous");
+
+    const parsedLatestCompleted = yield* decode(KeybindingRule, {
+      key: "mod+alt+[",
+      command: "thread.latestCompleted",
+    });
+    assert.strictEqual(parsedLatestCompleted.command, "thread.latestCompleted");
+
+    const parsedNextWorking = yield* decode(KeybindingRule, {
+      key: "mod+alt+]",
+      command: "thread.nextWorking",
+    });
+    assert.strictEqual(parsedNextWorking.command, "thread.nextWorking");
   }),
 );
 
