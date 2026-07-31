@@ -1052,8 +1052,6 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           status: "stopped",
           runtimePayload: {
             activeTurnId: null,
-            lastRuntimeEvent: "provider.stopAll",
-            lastRuntimeEventAt: yield* nowIso,
           },
         });
       }),

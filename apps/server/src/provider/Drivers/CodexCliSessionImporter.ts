@@ -594,6 +594,41 @@ export function shouldInterruptStaleCodexCliSession(
   );
 }
 
+export function isDetachedCodexCliMirrorSession(
+  binding: ProviderRuntimeBinding | undefined,
+  session: { readonly status: string } | null | undefined,
+): boolean {
+  return (
+    binding?.provider === CODEX_DRIVER &&
+    !isLiveCodexBinding(binding) &&
+    session !== null &&
+    session !== undefined &&
+    session.status !== "starting" &&
+    session.status !== "running"
+  );
+}
+
+export function shouldInspectInterruptedCodexCliMirror(
+  binding: ProviderRuntimeBinding | undefined,
+  session: { readonly status: string } | null | undefined,
+): boolean {
+  return (
+    isDetachedCodexCliMirrorSession(binding, session) &&
+    (session?.status === "interrupted" || session?.status === "error")
+  );
+}
+
+export function shouldProbeCodexCliRolloutOwner(input: {
+  readonly rolloutPath: string | undefined;
+  readonly staleActiveTurnId: string | null;
+  readonly hasDetachedMirrorSession: boolean;
+}): boolean {
+  return (
+    input.rolloutPath !== undefined &&
+    (input.staleActiveTurnId !== null || input.hasDetachedMirrorSession)
+  );
+}
+
 type CodexCliStaleSessionResolution =
   | { readonly status: "preserve" }
   | { readonly status: "ready"; readonly lastError: string | null }
@@ -619,6 +654,7 @@ interface PreparedCodexCliThreadImport {
   readonly existingThread: Option.Option<OrchestrationThreadShell>;
   readonly projectedThread: OrchestrationThreadShell | undefined;
   readonly staleSession: NonNullable<OrchestrationThreadShell["session"]> | undefined;
+  readonly detachedMirrorSession: NonNullable<OrchestrationThreadShell["session"]> | undefined;
   readonly importIsCurrent: boolean;
   readonly rolloutPath: string | undefined;
 }
@@ -1232,12 +1268,25 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
         projectedThread?.session !== null
           ? projectedThread?.session
           : undefined;
+      const detachedMirrorSession =
+        isDetachedCodexCliMirrorSession(existingBinding, projectedThread?.session) &&
+        projectedThread?.session !== null
+          ? projectedThread?.session
+          : undefined;
+      const shouldInspectCurrentMirror = shouldInspectInterruptedCodexCliMirror(
+        existingBinding,
+        projectedThread?.session,
+      );
       const importIsCurrent = isCurrentCodexCliImport(existingBinding, listedThread);
       // Currentness is persisted independently of the active thread projection.
       // Archived threads are intentionally absent from active shell queries and
       // must not replay their complete transcripts on every periodic scan.
       if (
-        shouldSkipCurrentCodexCliImport(existingBinding, listedThread, staleSession !== undefined)
+        shouldSkipCurrentCodexCliImport(
+          existingBinding,
+          listedThread,
+          staleSession !== undefined || shouldInspectCurrentMirror,
+        )
       ) {
         metrics.skippedCurrentCount += 1;
         return undefined;
@@ -1250,6 +1299,7 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
         existingThread,
         projectedThread,
         staleSession,
+        detachedMirrorSession,
         importIsCurrent,
         rolloutPath: yield* resolveRolloutPath(
           target,
@@ -1294,6 +1344,39 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
       });
     });
 
+    const setMirroredSessionRunning = Effect.fn(
+      "CodexCliSessionImporter.setMirroredSessionRunning",
+    )(function* (
+      threadId: ThreadId,
+      session: NonNullable<OrchestrationThreadShell["session"]>,
+      activeTurnId: TurnId,
+    ) {
+      const recoveredAt = DateTime.formatIso(yield* DateTime.now);
+      yield* orchestrationEngine.dispatch({
+        type: "thread.session.set",
+        commandId: stableCommandId(
+          "session-mirror-running",
+          threadId,
+          activeTurnId,
+          session.updatedAt,
+        ),
+        threadId,
+        session: {
+          ...session,
+          status: "running",
+          activeTurnId,
+          lastError: null,
+          retrying: false,
+          updatedAt: recoveredAt,
+        },
+        createdAt: recoveredAt,
+      });
+      yield* Effect.logInfo("codex.cli-import.mirror-session-running", {
+        threadId,
+        activeTurnId,
+      });
+    });
+
     const importThread = Effect.fn("CodexCliSessionImporter.importThread")(function* (
       target: CodexDiscoveryTarget,
       client: CodexClient.CodexAppServerClient["Service"],
@@ -1309,6 +1392,7 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
         existingThread,
         projectedThread,
         staleSession,
+        detachedMirrorSession,
         importIsCurrent,
         rolloutPath,
       } = prepared;
@@ -1328,10 +1412,7 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
                 staleActiveTurnId,
               );
             });
-      const rolloutIsOpen =
-        rolloutPath !== undefined &&
-        staleActiveTurnId !== null &&
-        openRolloutPaths.has(rolloutPath);
+      const rolloutIsOpen = rolloutPath !== undefined && openRolloutPaths.has(rolloutPath);
       const rolloutIsRecent = isRecentCodexCliActivity(listedThread.updatedAt, nowMillis);
       if (
         shouldPreserveCurrentOpenCodexCliImport({
@@ -1541,6 +1622,47 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
             rolloutTerminalEvidence.state,
           );
         }
+      } else if (detachedMirrorSession !== undefined) {
+        const upstreamTurn = thread.turns.at(-1);
+        if (upstreamTurn !== undefined) {
+          const mirrorTerminalEvidence =
+            rolloutPath === undefined
+              ? NO_CODEX_ROLLOUT_TERMINAL_EVIDENCE
+              : yield* Effect.gen(function* () {
+                  metrics.rolloutTailReadCount += 1;
+                  return yield* readCodexRolloutTerminalEvidence(
+                    fileSystem,
+                    rolloutPath,
+                    upstreamTurn.id,
+                  );
+                });
+          const resolution = resolveStaleCodexCliSession({
+            rolloutIsOpen,
+            rolloutIsRecent,
+            rolloutHasFinalResponse: mirrorTerminalEvidence.finalMessage !== null,
+            rolloutTerminalState: mirrorTerminalEvidence.state,
+            upstreamTurn,
+          });
+
+          if (resolution.status === "preserve") {
+            recoveringLive = true;
+            yield* setMirroredSessionRunning(
+              threadId,
+              detachedMirrorSession,
+              TurnId.make(upstreamTurn.id),
+            );
+          } else if (
+            detachedMirrorSession.status !== resolution.status ||
+            detachedMirrorSession.lastError !== resolution.lastError
+          ) {
+            yield* settleStaleSession(
+              threadId,
+              detachedMirrorSession,
+              resolution,
+              mirrorTerminalEvidence.state,
+            );
+          }
+        }
       }
 
       // A periodic scan must never downgrade a T3-owned session that is
@@ -1647,9 +1769,12 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
 
           const openRolloutCandidates = new Set(
             preparedImports.flatMap((prepared) =>
-              prepared.staleSession?.activeTurnId !== null &&
-              prepared.staleSession?.activeTurnId !== undefined &&
-              prepared.rolloutPath !== undefined
+              prepared.rolloutPath !== undefined &&
+              shouldProbeCodexCliRolloutOwner({
+                rolloutPath: prepared.rolloutPath,
+                staleActiveTurnId: prepared.staleSession?.activeTurnId ?? null,
+                hasDetachedMirrorSession: prepared.detachedMirrorSession !== undefined,
+              })
                 ? [prepared.rolloutPath]
                 : [],
             ),

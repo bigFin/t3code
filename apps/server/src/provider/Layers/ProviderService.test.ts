@@ -751,6 +751,24 @@ it.effect(
         resumeSessionAt: "assistant-message-1",
         turnCount: 1,
       };
+      const importedThreadId = asThreadId("thread-imported-detached");
+
+      yield* Effect.gen(function* () {
+        const repository = yield* ProviderSessionRuntime.ProviderSessionRuntimeRepository;
+        yield* repository.upsert({
+          threadId: importedThreadId,
+          providerName: "codex",
+          providerInstanceId: codexInstanceId,
+          adapterKey: "codex",
+          runtimeMode: "full-access",
+          status: "stopped",
+          lastSeenAt: "2026-01-01T00:00:00.000Z",
+          resumeCursor: { threadId: importedThreadId },
+          runtimePayload: {
+            importedFrom: "codex-cli",
+          },
+        });
+      }).pipe(Effect.provide(runtimeRepositoryLayer));
 
       const startedSession = yield* Effect.gen(function* () {
         const provider = yield* ProviderService.ProviderService;
@@ -773,14 +791,39 @@ it.effect(
 
       const persistedAfterStopAll = yield* Effect.gen(function* () {
         const repository = yield* ProviderSessionRuntime.ProviderSessionRuntimeRepository;
-        return yield* repository.getByThreadId({
-          threadId: startedSession.threadId,
-        });
+        return {
+          started: yield* repository.getByThreadId({
+            threadId: startedSession.threadId,
+          }),
+          imported: yield* repository.getByThreadId({
+            threadId: importedThreadId,
+          }),
+        };
       }).pipe(Effect.provide(runtimeRepositoryLayer));
-      assert.equal(Option.isSome(persistedAfterStopAll), true);
-      if (Option.isSome(persistedAfterStopAll)) {
-        assert.equal(persistedAfterStopAll.value.status, "stopped");
-        assert.deepEqual(persistedAfterStopAll.value.resumeCursor, updatedResumeCursor);
+      assert.equal(Option.isSome(persistedAfterStopAll.started), true);
+      if (Option.isSome(persistedAfterStopAll.started)) {
+        assert.equal(persistedAfterStopAll.started.value.status, "stopped");
+        assert.deepEqual(persistedAfterStopAll.started.value.resumeCursor, updatedResumeCursor);
+        const runtimePayload = persistedAfterStopAll.started.value.runtimePayload;
+        assert.equal(
+          runtimePayload !== null &&
+            typeof runtimePayload === "object" &&
+            !Array.isArray(runtimePayload) &&
+            "lastRuntimeEvent" in runtimePayload &&
+            runtimePayload.lastRuntimeEvent === "provider.stopAll",
+          true,
+        );
+      }
+      assert.equal(Option.isSome(persistedAfterStopAll.imported), true);
+      if (Option.isSome(persistedAfterStopAll.imported)) {
+        assert.equal(persistedAfterStopAll.imported.value.status, "stopped");
+        assert.deepEqual(persistedAfterStopAll.imported.value.resumeCursor, {
+          threadId: importedThreadId,
+        });
+        assert.deepEqual(persistedAfterStopAll.imported.value.runtimePayload, {
+          importedFrom: "codex-cli",
+          activeTurnId: null,
+        });
       }
 
       const secondCodex = makeFakeCodexAdapter();

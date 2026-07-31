@@ -17,6 +17,7 @@ import {
   collectCodexCliRolloutMessages,
   isCodexRolloutPathWithinSessionsRoot,
   isCurrentCodexCliImport,
+  isDetachedCodexCliMirrorSession,
   isDifferentlyKeyedCodexCliOwnerBinding,
   isImportableCodexInteractiveThread,
   isLiveCodexBinding,
@@ -25,8 +26,10 @@ import {
   reconcileCodexCliImportedMessages,
   resolveCodexCliImportBinding,
   resolveStaleCodexCliSession,
+  shouldInspectInterruptedCodexCliMirror,
   shouldInterruptStaleCodexCliSession,
   shouldPreserveCurrentOpenCodexCliImport,
+  shouldProbeCodexCliRolloutOwner,
   shouldReconcileCurrentCodexCliSessionWithoutRead,
   shouldSkipCurrentCodexCliImport,
 } from "./CodexCliSessionImporter.ts";
@@ -521,6 +524,86 @@ describe("CodexCliSessionImporter transcript conversion", () => {
       ),
     ).toBe(false);
     expect(shouldInterruptStaleCodexCliSession(undefined, null)).toBe(false);
+  });
+
+  it("rechecks interrupted imported mirrors so live CLI work can recover their status", () => {
+    const importedBinding = {
+      threadId: ThreadId.make("019codex-thread"),
+      provider: ProviderDriverKind.make("codex"),
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      status: "stopped" as const,
+      runtimeMode: "full-access" as const,
+      runtimePayload: {
+        importedFrom: "codex-cli",
+      },
+    };
+
+    expect(isDetachedCodexCliMirrorSession(importedBinding, { status: "ready" })).toBe(true);
+    expect(isDetachedCodexCliMirrorSession(importedBinding, { status: "interrupted" })).toBe(true);
+    expect(shouldInspectInterruptedCodexCliMirror(importedBinding, { status: "interrupted" })).toBe(
+      true,
+    );
+    expect(shouldInspectInterruptedCodexCliMirror(importedBinding, { status: "error" })).toBe(true);
+    expect(shouldInspectInterruptedCodexCliMirror(importedBinding, { status: "ready" })).toBe(
+      false,
+    );
+    expect(
+      shouldInspectInterruptedCodexCliMirror(
+        {
+          ...importedBinding,
+          runtimePayload: {
+            importedFrom: "t3",
+          },
+        },
+        { status: "interrupted" },
+      ),
+    ).toBe(true);
+    expect(
+      shouldInspectInterruptedCodexCliMirror(
+        {
+          ...importedBinding,
+          provider: ProviderDriverKind.make("claudeAgent"),
+        },
+        { status: "interrupted" },
+      ),
+    ).toBe(false);
+    expect(
+      shouldInspectInterruptedCodexCliMirror(
+        { ...importedBinding, status: "running" },
+        { status: "interrupted" },
+      ),
+    ).toBe(false);
+  });
+
+  it("probes rollout ownership for detached mirrors without a projected active turn", () => {
+    expect(
+      shouldProbeCodexCliRolloutOwner({
+        rolloutPath: "/tmp/rollout.jsonl",
+        staleActiveTurnId: null,
+        hasDetachedMirrorSession: true,
+      }),
+    ).toBe(true);
+    expect(
+      shouldProbeCodexCliRolloutOwner({
+        rolloutPath: "/tmp/rollout.jsonl",
+        staleActiveTurnId: "turn-1",
+        hasDetachedMirrorSession: false,
+      }),
+    ).toBe(true);
+    expect(
+      shouldProbeCodexCliRolloutOwner({
+        rolloutPath: "/tmp/rollout.jsonl",
+        staleActiveTurnId: null,
+        hasDetachedMirrorSession: false,
+      }),
+    ).toBe(false);
+    expect(
+      shouldProbeCodexCliRolloutOwner({
+        rolloutPath: undefined,
+        staleActiveTurnId: null,
+        hasDetachedMirrorSession: true,
+      }),
+    ).toBe(false);
   });
 
   it("reconciles stale projected work against the live rollout and upstream turn", () => {

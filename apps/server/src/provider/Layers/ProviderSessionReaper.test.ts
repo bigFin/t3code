@@ -396,6 +396,81 @@ describe("ProviderSessionReaper", () => {
     });
   });
 
+  it("interrupts an active turn whose runtime was stopped during server shutdown", async () => {
+    const threadId = ThreadId.make("thread-reaper-shutdown-active-turn");
+    const turnId = TurnId.make("turn-reaper-shutdown-active");
+    const providerInstanceId = ProviderInstanceId.make("codex");
+    const now = "2026-01-01T00:00:00.000Z";
+    const harness = await createHarness({
+      readModel: makeReadModel([
+        {
+          id: threadId,
+          session: {
+            threadId,
+            status: "running",
+            providerName: "codex",
+            runtimeMode: "full-access",
+            activeTurnId: turnId,
+            lastError: null,
+            updatedAt: now,
+          },
+        },
+      ]),
+    });
+    const repository = await runtime!.runPromise(
+      Effect.service(ProviderSessionRuntime.ProviderSessionRuntimeRepository),
+    );
+
+    await runtime!.runPromise(
+      repository.upsert({
+        threadId,
+        providerName: "codex",
+        providerInstanceId,
+        adapterKey: "codex",
+        runtimeMode: "full-access",
+        status: "stopped",
+        lastSeenAt: "2026-04-14T00:00:00.000Z",
+        resumeCursor: {
+          opaque: "resume-shutdown-active-turn",
+        },
+        runtimePayload: {
+          activeTurnId: null,
+          lastRuntimeEvent: "provider.stopAll",
+          lastRuntimeEventAt: "2026-04-14T00:00:01.000Z",
+        },
+      }),
+    );
+
+    const reaper = await runtime!.runPromise(Effect.service(ProviderSessionReaper));
+    scope = await runtime!.runPromise(Scope.make("sequential"));
+    await runtime!.runPromise(reaper.start().pipe(Scope.provide(scope)));
+
+    expect(harness.stopSession).not.toHaveBeenCalled();
+    expect(harness.dispatchedCommands).toEqual([
+      expect.objectContaining({
+        type: "thread.session.set",
+        threadId,
+        commandId: expect.stringContaining("provider-session-reaper:startup-interrupted"),
+        session: expect.objectContaining({
+          status: "interrupted",
+          activeTurnId: null,
+          retrying: false,
+          lastError:
+            "The T3 server restarted while this turn was running. T3 recovered the available transcript. Send a message to continue.",
+        }),
+      }),
+    ]);
+    const remaining = Option.getOrThrow(
+      await runtime!.runPromise(repository.getByThreadId({ threadId })),
+    );
+    expect(remaining.status).toBe("stopped");
+    expect(remaining.resumeCursor).toEqual({ opaque: "resume-shutdown-active-turn" });
+    expect(remaining.runtimePayload).toMatchObject({
+      activeTurnId: null,
+      lastRuntimeEvent: "provider.session.orphaned-on-startup",
+    });
+  });
+
   it("keeps an active projected turn when the matching provider runtime is live", async () => {
     const threadId = ThreadId.make("thread-reaper-live-active-turn");
     const turnId = TurnId.make("turn-reaper-live-active");

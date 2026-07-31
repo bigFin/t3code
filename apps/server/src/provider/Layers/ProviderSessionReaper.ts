@@ -10,7 +10,10 @@ import * as Schedule from "effect/Schedule";
 
 import { OrchestrationEngineService } from "../../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../../orchestration/Services/ProjectionSnapshotQuery.ts";
-import { ProviderSessionDirectory } from "../Services/ProviderSessionDirectory.ts";
+import {
+  ProviderSessionDirectory,
+  type ProviderRuntimeBindingWithMetadata,
+} from "../Services/ProviderSessionDirectory.ts";
 import {
   ProviderSessionReaper,
   type ProviderSessionReaperShape,
@@ -25,6 +28,18 @@ const RESTART_INTERRUPTION_MESSAGE =
 export interface ProviderSessionReaperLiveOptions {
   readonly inactivityThresholdMs?: number;
   readonly sweepIntervalMs?: number;
+}
+
+function wasStoppedByServerShutdown(binding: ProviderRuntimeBindingWithMetadata): boolean {
+  const runtimePayload = binding.runtimePayload;
+  return (
+    binding.status === "stopped" &&
+    runtimePayload !== null &&
+    typeof runtimePayload === "object" &&
+    !Array.isArray(runtimePayload) &&
+    "lastRuntimeEvent" in runtimePayload &&
+    runtimePayload.lastRuntimeEvent === "provider.stopAll"
+  );
 }
 
 const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =>
@@ -68,22 +83,37 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
         }
 
         const bindings = yield* directory.listBindings();
-        const orphanedBindings = bindings.filter((binding) => {
-          if (binding.status !== "starting" && binding.status !== "running") {
-            return false;
-          }
+        const orphanedCandidates = bindings.filter((binding) => {
           if (binding.providerInstanceId === undefined) {
             return false;
           }
-          return !liveThreadIdsByInstance.get(binding.providerInstanceId)?.has(binding.threadId);
+          if (liveThreadIdsByInstance.get(binding.providerInstanceId)?.has(binding.threadId)) {
+            return false;
+          }
+          return (
+            binding.status === "starting" ||
+            binding.status === "running" ||
+            wasStoppedByServerShutdown(binding)
+          );
+        });
+        if (orphanedCandidates.length === 0) {
+          return;
+        }
+
+        const threadShells = yield* projectionSnapshotQuery.getThreadShellsByIds(
+          orphanedCandidates.map((binding) => binding.threadId),
+        );
+        const orphanedBindings = orphanedCandidates.filter((binding) => {
+          if (!wasStoppedByServerShutdown(binding)) {
+            return true;
+          }
+          const session = threadShells.get(binding.threadId)?.session;
+          return session?.status === "starting" || session?.status === "running";
         });
         if (orphanedBindings.length === 0) {
           return;
         }
 
-        const threadShells = yield* projectionSnapshotQuery.getThreadShellsByIds(
-          orphanedBindings.map((binding) => binding.threadId),
-        );
         const reconciledAt = DateTime.formatIso(yield* DateTime.now);
         const reconcileOrphanedSession = Effect.fn(
           "ProviderSessionReaper.reconcileOrphanedSession",
@@ -154,6 +184,7 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
           orphanedCount: orphanedBindings.length,
           reconciledCount,
           interruptedCount,
+          shutdownStoppedCount: orphanedBindings.filter(wasStoppedByServerShutdown).length,
         });
       },
     );
