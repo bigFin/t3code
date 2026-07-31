@@ -24,6 +24,7 @@ import {
   reconcileCodexCliImportedMessages,
   resolveStaleCodexCliSession,
   shouldInterruptStaleCodexCliSession,
+  shouldPreserveCurrentOpenCodexCliImport,
   shouldSkipCurrentCodexCliImport,
 } from "./CodexCliSessionImporter.ts";
 
@@ -777,6 +778,82 @@ describe("CodexCliSessionImporter transcript conversion", () => {
         makeThread(),
         false,
       ),
+    ).toBe(false);
+  });
+
+  it("preserves unchanged open CLI turns without rereading their transcripts", () => {
+    const binding = {
+      threadId: ThreadId.make("019codex-thread"),
+      provider: ProviderDriverKind.make("codex"),
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      status: "stopped" as const,
+      runtimeMode: "full-access" as const,
+      runtimePayload: {
+        importedFrom: "codex-cli",
+        codexCliImportVersion: 2,
+        codexCliUpdatedAt: 1_700_000_002,
+      },
+    };
+    const input = {
+      binding,
+      listedThread: makeThread(),
+      staleActiveTurnId: "turn-2",
+      rolloutIsOpen: true,
+      rolloutTerminalEvidence: {
+        state: null,
+        finalMessage: null,
+        completedAt: null,
+      },
+    } as const;
+
+    expect(shouldPreserveCurrentOpenCodexCliImport(input)).toBe(true);
+    expect(
+      shouldPreserveCurrentOpenCodexCliImport({
+        ...input,
+        listedThread: { ...input.listedThread, updatedAt: 1_700_000_003 },
+      }),
+    ).toBe(false);
+    expect(
+      shouldPreserveCurrentOpenCodexCliImport({
+        ...input,
+        staleActiveTurnId: null,
+      }),
+    ).toBe(false);
+    expect(
+      shouldPreserveCurrentOpenCodexCliImport({
+        ...input,
+        rolloutIsOpen: false,
+      }),
+    ).toBe(false);
+    expect(
+      shouldPreserveCurrentOpenCodexCliImport({
+        ...input,
+        rolloutTerminalEvidence: {
+          state: "completed",
+          finalMessage: null,
+          completedAt: 1_700_000_003,
+        },
+      }),
+    ).toBe(false);
+    expect(
+      shouldPreserveCurrentOpenCodexCliImport({
+        ...input,
+        rolloutTerminalEvidence: {
+          state: "interrupted",
+          finalMessage: null,
+          completedAt: null,
+        },
+      }),
+    ).toBe(false);
+    expect(
+      shouldPreserveCurrentOpenCodexCliImport({
+        ...input,
+        rolloutTerminalEvidence: {
+          state: null,
+          finalMessage: "Recovered final response.",
+          completedAt: null,
+        },
+      }),
     ).toBe(false);
   });
 

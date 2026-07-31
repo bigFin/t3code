@@ -763,6 +763,22 @@ export function shouldSkipCurrentCodexCliImport(
   return isCurrentCodexCliImport(binding, listedThread) && !hasStaleSession;
 }
 
+export function shouldPreserveCurrentOpenCodexCliImport(input: {
+  readonly binding: ProviderRuntimeBinding | undefined;
+  readonly listedThread: CodexListedThread;
+  readonly staleActiveTurnId: string | null;
+  readonly rolloutIsOpen: boolean;
+  readonly rolloutTerminalEvidence: CodexCliRolloutTerminalEvidence;
+}): boolean {
+  return (
+    isCurrentCodexCliImport(input.binding, input.listedThread) &&
+    input.staleActiveTurnId !== null &&
+    input.rolloutIsOpen &&
+    input.rolloutTerminalEvidence.state === null &&
+    input.rolloutTerminalEvidence.finalMessage === null
+  );
+}
+
 export function isImportableCodexInteractiveThread(thread: CodexListedThread): boolean {
   return (
     !thread.ephemeral &&
@@ -980,11 +996,6 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
         return "skipped" satisfies CodexCliThreadImportResult;
       }
 
-      const response = yield* client.request("thread/read", {
-        threadId: listedThread.id,
-        includeTurns: true,
-      });
-      const thread = response.thread;
       const rolloutPath = yield* Effect.gen(function* () {
         if (realSessionsRoot === undefined) {
           return undefined;
@@ -1029,6 +1040,34 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
               completedAt: null,
             } satisfies CodexCliRolloutTerminalEvidence)
           : yield* readCodexRolloutTerminalEvidence(fileSystem, rolloutPath, staleActiveTurnId);
+      const rolloutIsOpen =
+        rolloutPath !== undefined && staleActiveTurnId !== null
+          ? (yield* collectOpenCodexRolloutPaths(fileSystem, path, new Set([rolloutPath]))).has(
+              rolloutPath,
+            )
+          : false;
+      if (
+        shouldPreserveCurrentOpenCodexCliImport({
+          binding: existingBinding,
+          listedThread,
+          staleActiveTurnId,
+          rolloutIsOpen,
+          rolloutTerminalEvidence,
+        })
+      ) {
+        yield* Effect.logInfo("codex.cli-import.recovering-live-session", {
+          threadId,
+          activeTurnId: staleActiveTurnId,
+          providerThreadId: listedThread.id,
+        });
+        return "recovering-live" satisfies CodexCliThreadImportResult;
+      }
+
+      const response = yield* client.request("thread/read", {
+        threadId: listedThread.id,
+        includeTurns: true,
+      });
+      const thread = response.thread;
       const appServerMessages = collectCodexCliImportedMessages(thread);
       const recoveredMessages =
         appServerMessages.length > 0
@@ -1162,12 +1201,6 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
           staleActiveTurnId === null
             ? undefined
             : thread.turns.find((turn) => turn.id === staleActiveTurnId);
-        const rolloutIsOpen =
-          rolloutPath !== undefined && staleActiveTurnId !== null
-            ? (yield* collectOpenCodexRolloutPaths(fileSystem, path, new Set([rolloutPath]))).has(
-                rolloutPath,
-              )
-            : false;
         const resolution = resolveStaleCodexCliSession({
           rolloutIsOpen,
           rolloutHasFinalResponse: rolloutTerminalEvidence.finalMessage !== null,
