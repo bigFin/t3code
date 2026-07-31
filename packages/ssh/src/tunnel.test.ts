@@ -214,6 +214,7 @@ describe("ssh tunnel scripts", () => {
     );
     assert.include(buildRemoteLaunchScript(), "runtime.serverVersion");
     assert.include(buildRemoteLaunchScript(), 'if [ "$VERSION_DECISION" != "reuse" ]; then');
+    assert.include(buildRemoteLaunchScript(), 'comparison >= 0 ? "upgrade" : "reuse"');
     assert.include(buildRemoteLaunchScript(), "RUNNER_CHANGED=0");
     assert.include(buildRemoteLaunchScript(), 'rm -f "$RUNNER_NEXT"');
     assert.isBelow(

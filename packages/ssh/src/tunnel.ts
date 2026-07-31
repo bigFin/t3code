@@ -264,7 +264,7 @@ function buildRemoteVersionDecisionScript(): string {
 const desired = process.argv[2] ?? "";
 const current = process.argv[3] ?? "";
 const comparison = compareRemoteT3Versions(desired, current);
-process.stdout.write(comparison === null ? "unknown" : comparison > 0 ? "upgrade" : "reuse");`;
+process.stdout.write(comparison === null ? "unknown" : comparison >= 0 ? "upgrade" : "reuse");`;
 }
 
 function buildRemoteNodeEngineCheckScript(): string {
