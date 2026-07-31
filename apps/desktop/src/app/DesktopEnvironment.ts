@@ -60,6 +60,7 @@ export class DesktopEnvironment extends Context.Service<
     readonly devServerUrl: Option.Option<URL>;
     readonly devRemoteT3ServerEntryPath: Option.Option<string>;
     readonly remoteT3PackageArchivePath: Option.Option<string>;
+    readonly desktopLauncherPath: Option.Option<string>;
     readonly configuredBackendPort: Option.Option<number>;
     readonly commitHashOverride: Option.Option<string>;
     readonly otlpTracesUrl: Option.Option<string>;
@@ -209,6 +210,7 @@ const make = Effect.fn("desktop.environment.make")(function* (
     devServerUrl,
     devRemoteT3ServerEntryPath: config.devRemoteT3ServerEntryPath,
     remoteT3PackageArchivePath: config.remoteT3PackageArchivePath,
+    desktopLauncherPath: config.desktopLauncherPath,
     configuredBackendPort: config.configuredBackendPort,
     commitHashOverride: config.commitHashOverride,
     otlpTracesUrl: config.otlpTracesUrl,

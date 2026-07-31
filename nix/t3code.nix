@@ -1,16 +1,16 @@
-{ lib
-, symlinkJoin
-, makeBinaryWrapper
-, enableCodex ? false
-, codex
-, enableGitHub ? true
-, gh
-, enableGit ? true
-, git
-, customCssPath ? null
-, transparentWindow ? false
-, t3code-unwrapped
-,
+{
+  lib,
+  symlinkJoin,
+  makeBinaryWrapper,
+  enableCodex ? false,
+  codex,
+  enableGitHub ? true,
+  gh,
+  enableGit ? true,
+  git,
+  customCssPath ? null,
+  transparentWindow ? false,
+  t3code-unwrapped,
 }:
 
 let
@@ -26,27 +26,26 @@ symlinkJoin {
   paths = [ t3code-unwrapped ];
   nativeBuildInputs = [ makeBinaryWrapper ];
 
-  postBuild = lib.optionalString
-    (runtimePackages != [ ] || customCssPath != null || transparentWindow)
-    ''
-      for program in "$out/bin"/*; do
-        wrapperArgs=()
-        ${lib.optionalString (runtimePackages != [ ]) ''
-          wrapperArgs+=(--prefix PATH : ${lib.escapeShellArg (lib.makeBinPath runtimePackages)})
+  postBuild = ''
+    for program in "$out/bin"/*; do
+      wrapperArgs=()
+      ${lib.optionalString (runtimePackages != [ ]) ''
+        wrapperArgs+=(--prefix PATH : ${lib.escapeShellArg (lib.makeBinPath runtimePackages)})
+      ''}
+      if [ "$(basename "$program")" = t3code-desktop ]; then
+        wrapperArgs+=(--set T3CODE_DESKTOP_LAUNCHER_PATH "$out/bin/t3code-desktop")
+        ${lib.optionalString (customCssPath != null) ''
+          wrapperArgs+=(--set T3CODE_CUSTOM_CSS ${lib.escapeShellArg customCssPath})
         ''}
-        ${lib.optionalString (customCssPath != null || transparentWindow) ''
-          if [ "$(basename "$program")" = t3code-desktop ]; then
-            ${lib.optionalString (customCssPath != null) ''
-              wrapperArgs+=(--set T3CODE_CUSTOM_CSS ${lib.escapeShellArg customCssPath})
-            ''}
-            ${lib.optionalString transparentWindow ''
-              wrapperArgs+=(--set T3CODE_DESKTOP_TRANSPARENT_WINDOW true)
-            ''}
-          fi
+        ${lib.optionalString transparentWindow ''
+          wrapperArgs+=(--set T3CODE_DESKTOP_TRANSPARENT_WINDOW true)
         ''}
+      fi
+      if [ "''${#wrapperArgs[@]}" -gt 0 ]; then
         wrapProgram "$program" "''${wrapperArgs[@]}"
-      done
-    '';
+      fi
+    done
+  '';
 
   passthru.unwrapped = t3code-unwrapped;
   meta = t3code-unwrapped.meta;

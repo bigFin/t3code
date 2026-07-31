@@ -42,6 +42,7 @@ export const DesktopConfig = Config.all({
   transparentWindow: optionalBoolean("T3CODE_DESKTOP_TRANSPARENT_WINDOW"),
   devRemoteT3ServerEntryPath: trimmedString("T3CODE_DEV_REMOTE_T3_SERVER_ENTRY_PATH"),
   remoteT3PackageArchivePath: trimmedString("T3CODE_REMOTE_T3_PACKAGE_ARCHIVE"),
+  desktopLauncherPath: trimmedString("T3CODE_DESKTOP_LAUNCHER_PATH"),
   configuredBackendPort: Config.port("T3CODE_PORT").pipe(Config.option),
   commitHashOverride: trimmedString("T3CODE_COMMIT_HASH"),
   desktopLanHostOverride: trimmedString("T3CODE_DESKTOP_LAN_HOST"),

@@ -42,6 +42,26 @@ export interface DesktopRelaunchTarget {
   readonly args: ReadonlyArray<string>;
 }
 
+export function resolveDesktopRelaunchTarget(input: {
+  readonly configuredLauncherPath: Option.Option<string>;
+  readonly processExecPath: string;
+  readonly processArgv: ReadonlyArray<string>;
+  readonly appPath: string;
+}): DesktopRelaunchTarget {
+  if (Option.isNone(input.configuredLauncherPath)) {
+    return {
+      execPath: input.processExecPath,
+      args: input.processArgv.slice(1),
+    };
+  }
+
+  const appPathIndex = input.processArgv.indexOf(input.appPath, 1);
+  return {
+    execPath: input.configuredLauncherPath.value,
+    args: input.processArgv.slice(appPathIndex === -1 ? 1 : appPathIndex + 1),
+  };
+}
+
 /**
  * @effect-expect-leaking DesktopEnvironment | DesktopShutdown | DesktopState | DesktopWindow | ElectronApp | ElectronTheme
  */
@@ -243,9 +263,17 @@ const relaunch = Effect.fn("desktop.lifecycle.relaunch")(function* (
       yield* electronApp.exit(75);
       return;
     }
+    const resolvedTarget =
+      target ??
+      resolveDesktopRelaunchTarget({
+        configuredLauncherPath: environment.desktopLauncherPath,
+        processExecPath: process.execPath,
+        processArgv: process.argv,
+        appPath: environment.appPath,
+      });
     yield* electronApp.relaunch({
-      execPath: target?.execPath ?? process.execPath,
-      args: [...(target?.args ?? process.argv.slice(1))],
+      execPath: resolvedTarget.execPath,
+      args: [...resolvedTarget.args],
     });
     yield* electronApp.exit(0);
   }).pipe(
@@ -268,12 +296,18 @@ export const make = DesktopLifecycle.of({
     const metadata = yield* electronApp.metadata.pipe(Effect.orDie);
     const context = yield* Effect.context<DesktopLifecycleRuntimeServices>();
     const runEffect = Effect.runPromiseWith(context);
+    const relaunchTarget = resolveDesktopRelaunchTarget({
+      configuredLauncherPath: environment.desktopLauncherPath,
+      processExecPath: process.execPath,
+      processArgv: process.argv,
+      appPath: metadata.appPath,
+    });
     const launchIdentity: DesktopLaunchIdentity = {
       type: "t3code-desktop-launch",
       version: DESKTOP_LAUNCH_IDENTITY_VERSION,
       appPath: metadata.appPath,
-      execPath: process.execPath,
-      args: process.argv.slice(1),
+      execPath: relaunchTarget.execPath,
+      args: relaunchTarget.args,
     };
     let quitAllowed = false;
     let updaterQuitAllowed = false;

@@ -2,6 +2,7 @@ import { assert, describe, it, vi } from "@effect/vitest";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 
 import type * as Electron from "electron";
@@ -23,6 +24,7 @@ const makeLifecycleTestLayer = (options: {
   readonly exit?: (code: number) => Effect.Effect<void>;
   readonly quit?: Effect.Effect<void>;
   readonly relaunch?: (options: Electron.RelaunchOptions) => Effect.Effect<void>;
+  readonly desktopLauncherPath?: string;
   readonly requestSingleInstanceLock?: (
     additionalData?: Readonly<Record<string, unknown>>,
   ) => Effect.Effect<boolean>;
@@ -96,6 +98,11 @@ const makeLifecycleTestLayer = (options: {
   const environmentLayer = Layer.succeed(DesktopEnvironment.DesktopEnvironment, {
     platform: "linux",
     isDevelopment: false,
+    appPath: options.appPath ?? "/nix/store/current-t3code/apps/desktop",
+    desktopLauncherPath:
+      options.desktopLauncherPath === undefined
+        ? Option.none()
+        : Option.some(options.desktopLauncherPath),
   } as DesktopEnvironment.DesktopEnvironment["Service"]);
 
   const desktopShutdownLayer = Layer.succeed(DesktopShutdown.DesktopShutdown, {
@@ -189,6 +196,44 @@ describe("DesktopLifecycle", () => {
     assert.equal(DesktopLifecycle.shouldQuitAfterLastWindowCloses("win32"), true);
   });
 
+  it("routes packaged relaunches through the configured launcher", () => {
+    assert.deepEqual(
+      DesktopLifecycle.resolveDesktopRelaunchTarget({
+        configuredLauncherPath: Option.some("/nix/store/t3code/bin/t3code-desktop"),
+        processExecPath: "/nix/store/electron/bin/electron",
+        processArgv: [
+          "/nix/store/electron/bin/electron",
+          "--password-store=gnome-libsecret",
+          "/nix/store/t3code/apps/desktop",
+          "t3code://pair?token=not-logged",
+        ],
+        appPath: "/nix/store/t3code/apps/desktop",
+      }),
+      {
+        execPath: "/nix/store/t3code/bin/t3code-desktop",
+        args: ["t3code://pair?token=not-logged"],
+      },
+    );
+  });
+
+  it("preserves Electron relaunch behavior without a configured launcher", () => {
+    assert.deepEqual(
+      DesktopLifecycle.resolveDesktopRelaunchTarget({
+        configuredLauncherPath: Option.none(),
+        processExecPath: "/Applications/T3 Code.app/Contents/MacOS/T3 Code",
+        processArgv: [
+          "/Applications/T3 Code.app/Contents/MacOS/T3 Code",
+          "t3code://pair?token=not-logged",
+        ],
+        appPath: "/Applications/T3 Code.app/Contents/Resources/app.asar",
+      }),
+      {
+        execPath: "/Applications/T3 Code.app/Contents/MacOS/T3 Code",
+        args: ["t3code://pair?token=not-logged"],
+      },
+    );
+  });
+
   it.effect("activates the resident package when a matching instance launches", () =>
     Effect.gen(function* () {
       const appListeners = new Map<string, AppListener>();
@@ -200,6 +245,7 @@ describe("DesktopLifecycle", () => {
       const layer = makeLifecycleTestLayer({
         appListeners,
         activate: Deferred.succeed(activated, undefined).pipe(Effect.asVoid),
+        desktopLauncherPath: "/nix/store/current-t3code/bin/t3code-desktop",
         relaunch,
         requestSingleInstanceLock,
       });
@@ -213,7 +259,7 @@ describe("DesktopLifecycle", () => {
             type: "t3code-desktop-launch",
             version: 1,
             appPath: "/nix/store/current-t3code/apps/desktop",
-            execPath: process.execPath,
+            execPath: "/nix/store/current-t3code/bin/t3code-desktop",
             args: process.argv.slice(1),
           });
 
@@ -397,6 +443,8 @@ describe("DesktopLifecycle", () => {
       const environmentLayer = Layer.succeed(DesktopEnvironment.DesktopEnvironment, {
         platform,
         isDevelopment: false,
+        appPath: "/nix/store/current-t3code/apps/desktop",
+        desktopLauncherPath: Option.none(),
       } as DesktopEnvironment.DesktopEnvironment["Service"]);
 
       const layer = DesktopLifecycle.layer.pipe(
