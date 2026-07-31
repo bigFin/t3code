@@ -6,13 +6,15 @@ export type ConnectionWakeup =
   | "application-active"
   | "application-active-probe"
   | "application-active-reconnect"
+  | "connection-watchdog-probe"
   | "credentials-changed";
 
 export function isApplicationActiveWakeup(reason: ConnectionWakeup): boolean {
   return (
     reason === "application-active" ||
     reason === "application-active-probe" ||
-    reason === "application-active-reconnect"
+    reason === "application-active-reconnect" ||
+    reason === "connection-watchdog-probe"
   );
 }
 

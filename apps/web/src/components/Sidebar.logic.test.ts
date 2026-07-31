@@ -17,6 +17,7 @@ import {
   resolveLatestCompletedThread,
   resolveNextWorkingThread,
   resolveProjectStatusIndicator,
+  resolveSidebarV2AttentionDetail,
   resolveSidebarStageBadgeLabel,
   resolveSidebarV2CompactAttention,
   resolveThreadRowClassName,
@@ -642,7 +643,11 @@ describe("resolveSidebarV2Status", () => {
     updatedAt: "2026-03-09T10:00:00.000Z",
   };
 
-  const idle = { hasPendingApprovals: false, hasPendingUserInput: false };
+  const idle = {
+    hasPendingApprovals: false,
+    hasPendingUserInput: false,
+    latestTurn: null,
+  };
 
   it("prioritizes approval over a running session", () => {
     expect(resolveSidebarV2Status({ ...idle, hasPendingApprovals: true, session })).toBe(
@@ -681,43 +686,188 @@ describe("resolveSidebarV2Status", () => {
     ).toBe("retrying");
   });
 
+  it("reports disconnected instead of stale in-flight work while the environment is unavailable", () => {
+    expect(
+      resolveSidebarV2Status(
+        {
+          ...idle,
+          session: { ...session, retrying: true, lastError: "Server overloaded" },
+        },
+        { environmentUnavailable: true },
+      ),
+    ).toBe("disconnected");
+    expect(
+      resolveSidebarV2Status(
+        { ...idle, hasPendingApprovals: true, session },
+        { environmentUnavailable: true },
+      ),
+    ).toBe("approval");
+    expect(
+      resolveSidebarV2Status(
+        { ...idle, hasPendingUserInput: true, session },
+        { environmentUnavailable: true },
+      ),
+    ).toBe("input");
+  });
+
+  it("reports interrupted after live work but before terminal failure", () => {
+    const interruptedTurn = makeLatestTurn({
+      state: "interrupted",
+      completedAt: "2026-03-09T10:05:00.000Z",
+    });
+    expect(
+      resolveSidebarV2Status({
+        ...idle,
+        latestTurn: interruptedTurn,
+        session: { ...session, status: "interrupted" as const },
+      }),
+    ).toBe("interrupted");
+    expect(
+      resolveSidebarV2Status({
+        ...idle,
+        latestTurn: interruptedTurn,
+        session: { ...session, status: "running" as const },
+      }),
+    ).toBe("working");
+    expect(
+      resolveSidebarV2Status({
+        ...idle,
+        latestTurn: interruptedTurn,
+        session: { ...session, status: "error" as const, lastError: "boom" },
+      }),
+    ).toBe("interrupted");
+  });
+
   it("reports failed only while the session status is error", () => {
     expect(
       resolveSidebarV2Status({
         ...idle,
+        latestTurn: null,
         session: { ...session, status: "error" as const, lastError: "boom" },
       }),
     ).toBe("failed");
     expect(
       resolveSidebarV2Status({
         ...idle,
+        latestTurn: null,
         session: { ...session, status: "stopped" as const, lastError: "persisted" },
       }),
     ).toBe("ready");
     expect(
       resolveSidebarV2Status({
         ...idle,
+        latestTurn: null,
         session: { ...session, status: "ready" as const, lastError: "persisted" },
       }),
     ).toBe("ready");
   });
 
   it("defaults to ready with no session", () => {
-    expect(resolveSidebarV2Status({ ...idle, session: null })).toBe("ready");
+    expect(resolveSidebarV2Status({ ...idle, latestTurn: null, session: null })).toBe("ready");
   });
 });
 
 describe("resolveSidebarV2CompactAttention", () => {
   it("keeps an unread completion visible after the row becomes compact", () => {
-    expect(resolveSidebarV2CompactAttention({ isUnread: true, isWoke: false })).toBe("done");
+    expect(
+      resolveSidebarV2CompactAttention({
+        isInterrupted: false,
+        isUnread: true,
+        isWoke: false,
+      }),
+    ).toBe("done");
   });
 
   it("prioritizes a fresh wake over an unread completion", () => {
-    expect(resolveSidebarV2CompactAttention({ isUnread: true, isWoke: true })).toBe("woke");
+    expect(
+      resolveSidebarV2CompactAttention({
+        isInterrupted: false,
+        isUnread: true,
+        isWoke: true,
+      }),
+    ).toBe("woke");
+  });
+
+  it("prioritizes interrupted attention over wake and completion labels", () => {
+    expect(
+      resolveSidebarV2CompactAttention({
+        isInterrupted: true,
+        isUnread: true,
+        isWoke: true,
+      }),
+    ).toBe("interrupted");
   });
 
   it("returns no attention state for a read compact row", () => {
-    expect(resolveSidebarV2CompactAttention({ isUnread: false, isWoke: false })).toBeNull();
+    expect(
+      resolveSidebarV2CompactAttention({
+        isInterrupted: false,
+        isUnread: false,
+        isWoke: false,
+      }),
+    ).toBeNull();
+  });
+});
+
+describe("resolveSidebarV2AttentionDetail", () => {
+  const base = {
+    hasPendingApprovals: false,
+    hasPendingUserInput: false,
+    latestTurn: makeLatestTurn({ state: "interrupted" }),
+    session: {
+      threadId: ThreadId.make("thread-1"),
+      status: "interrupted" as const,
+      providerName: "Codex",
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      runtimeMode: DEFAULT_RUNTIME_MODE,
+      activeTurnId: null,
+      lastError: "Host restarted",
+      updatedAt: "2026-03-09T10:05:00.000Z",
+    },
+  };
+
+  it("labels interruption details as Interrupted rather than Error", () => {
+    expect(resolveSidebarV2AttentionDetail(base)).toEqual({
+      status: "interrupted",
+      text: "Interrupted — needs attention: Host restarted",
+    });
+    expect(resolveSidebarV2AttentionDetail({ ...base, session: null })).toEqual({
+      status: "interrupted",
+      text: "Interrupted — needs attention",
+    });
+  });
+
+  it("labels stale in-flight work as disconnected while the environment is unavailable", () => {
+    expect(
+      resolveSidebarV2AttentionDetail(
+        {
+          ...base,
+          latestTurn: null,
+          session: { ...base.session, status: "running" },
+        },
+        { environmentUnavailable: true },
+      ),
+    ).toEqual({
+      status: "disconnected",
+      text: "Disconnected — connection to this environment was lost",
+    });
+  });
+
+  it("preserves retrying priority over an interrupted latest turn", () => {
+    expect(
+      resolveSidebarV2AttentionDetail({
+        ...base,
+        session: {
+          ...base.session,
+          status: "running",
+          retrying: true,
+          lastError: "Backoff",
+        },
+      }),
+    ).toEqual({
+      status: "retrying",
+      text: "Retrying: Backoff",
+    });
   });
 });
 
@@ -1193,6 +1343,24 @@ describe("resolveThreadStatusPill", () => {
     ).toMatchObject({ label: "Retrying", pulse: true });
   });
 
+  it("shows disconnected instead of stale in-flight work while the environment is unavailable", () => {
+    expect(
+      resolveThreadStatusPill({
+        thread: baseThread,
+        environmentUnavailable: true,
+      }),
+    ).toMatchObject({ label: "Disconnected", pulse: false });
+    expect(
+      resolveThreadStatusPill({
+        thread: {
+          ...baseThread,
+          hasPendingApprovals: true,
+        },
+        environmentUnavailable: true,
+      }),
+    ).toMatchObject({ label: "Pending Approval", pulse: false });
+  });
+
   it("shows capacity limited for a terminal capacity error", () => {
     expect(
       resolveThreadStatusPill({
@@ -1207,6 +1375,35 @@ describe("resolveThreadStatusPill", () => {
         },
       }),
     ).toMatchObject({ label: "Capacity Limited", pulse: false });
+  });
+
+  it("shows interrupted as non-pulsing attention after live states", () => {
+    const interruptedTurn = makeLatestTurn({ state: "interrupted" });
+    expect(
+      resolveThreadStatusPill({
+        thread: {
+          ...baseThread,
+          latestTurn: interruptedTurn,
+          session: {
+            ...baseThread.session,
+            status: "interrupted",
+            activeTurnId: null,
+          },
+        },
+      }),
+    ).toMatchObject({
+      label: "Interrupted",
+      colorClass: expect.stringContaining("orange"),
+      pulse: false,
+    });
+    expect(
+      resolveThreadStatusPill({
+        thread: {
+          ...baseThread,
+          latestTurn: interruptedTurn,
+        },
+      }),
+    ).toMatchObject({ label: "Working", pulse: true });
   });
 
   it("shows plan ready when a settled plan turn has a proposed plan ready for follow-up", () => {
@@ -1330,6 +1527,25 @@ describe("resolveProjectStatusIndicator", () => {
         },
       ]),
     ).toMatchObject({ label: "Plan Ready", dotClass: "bg-violet-500" });
+  });
+
+  it("surfaces interrupted attention ahead of lower-priority settled states", () => {
+    expect(
+      resolveProjectStatusIndicator([
+        {
+          label: "Completed",
+          colorClass: "text-emerald-600",
+          dotClass: "bg-emerald-500",
+          pulse: false,
+        },
+        {
+          label: "Interrupted",
+          colorClass: "text-orange-700",
+          dotClass: "bg-orange-500",
+          pulse: false,
+        },
+      ]),
+    ).toMatchObject({ label: "Interrupted", dotClass: "bg-orange-500", pulse: false });
   });
 });
 

@@ -158,6 +158,18 @@ see [Keeping T3 Code in Sync](./updating.md).
 On a Linux host, you can keep the server running after logout and manage it independently of the
 connection method. See [Running T3 Code in the Background](./background-service.md).
 
+## Recovering After a Remote Host Restart
+
+When a remote host disappears without closing its connection cleanly, a visible web or desktop
+client checks the connection about once a minute. If the server does not respond, T3 Code marks the
+environment as reconnecting and replaces stale in-flight **Working** or **Retrying** labels with
+**Disconnected**. These checks pause while the app is hidden and do not poll each thread.
+
+When the host and T3 server return, the client reconnects automatically. T3 Code does not send a
+message or automatically resume an agent turn. If the server restarted while a turn was active, the
+recovered thread is marked **Interrupted** with the transcript available up to the last persisted
+event. Open the thread and send a message when you are ready to continue.
+
 ## How Pairing Works
 
 The remote device does not need a long-lived secret up front.

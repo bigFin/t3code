@@ -1,6 +1,7 @@
 import type { StatusTone } from "../../components/StatusPill";
 import type { OrchestrationLatestTurn, OrchestrationSession } from "@t3tools/contracts";
 import { classifyThreadFailure } from "@t3tools/client-runtime/state/thread-failure";
+import { isThreadInterrupted } from "@t3tools/client-runtime/state/thread-settled";
 import { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
 
 export function threadSortValue(thread: EnvironmentThreadShell): number {
@@ -14,6 +15,7 @@ export type ThreadStatusKind =
   | "working"
   | "connecting"
   | "retrying"
+  | "interrupted"
   | "capacity-limited"
   | "error"
   | "plan-ready";
@@ -109,6 +111,18 @@ export function resolveThreadStatus(
       iconColor: "#0a84ff",
       iconBackground: "rgba(10,132,255,0.22)",
       pulse: true,
+    };
+  }
+
+  if (isThreadInterrupted(thread)) {
+    return {
+      kind: "interrupted",
+      label: "Interrupted",
+      pillClassName: "bg-orange-500/12 dark:bg-orange-500/16",
+      textClassName: "text-orange-700 dark:text-orange-300",
+      iconColor: "#ff9f0a",
+      iconBackground: "rgba(255,159,10,0.22)",
+      pulse: false,
     };
   }
 

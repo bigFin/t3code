@@ -450,6 +450,7 @@ export const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThr
       ...thread,
       lastVisitedAt,
     },
+    environmentUnavailable: environment?.connection.phase !== "connected",
   });
   const pr = resolveThreadPr({
     threadBranch: thread.branch,
@@ -1056,6 +1057,7 @@ const SidebarProjectThreadList = memo(function SidebarProjectThreadList(
 
 interface SidebarProjectItemProps {
   project: SidebarProjectSnapshot;
+  unavailableEnvironmentIds: ReadonlySet<string>;
   isThreadListExpanded: boolean;
   activeRouteThreadKey: string | null;
   newThreadShortcutLabel: string | null;
@@ -1076,6 +1078,7 @@ interface SidebarProjectItemProps {
 const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjectItemProps) {
   const {
     project,
+    unavailableEnvironmentIds,
     isThreadListExpanded,
     activeRouteThreadKey,
     newThreadShortcutLabel,
@@ -1253,6 +1256,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
           ...thread,
           ...(lastVisitedAt !== null && lastVisitedAt !== undefined ? { lastVisitedAt } : {}),
         },
+        environmentUnavailable: unavailableEnvironmentIds.has(thread.environmentId),
       });
     };
     const visibleProjectThreads = sortThreads(
@@ -1269,7 +1273,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
       projectStatus,
       visibleProjectThreads,
     };
-  }, [projectThreads, threadLastVisitedAts, threadSortOrder]);
+  }, [projectThreads, threadLastVisitedAts, threadSortOrder, unavailableEnvironmentIds]);
   const pinnedCollapsedThread = useMemo(() => {
     const activeThreadKey = activeRouteThreadKey ?? undefined;
     if (!activeThreadKey || projectExpanded) {
@@ -1305,6 +1309,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
           ...thread,
           ...(lastVisitedAt !== null && lastVisitedAt !== undefined ? { lastVisitedAt } : {}),
         },
+        environmentUnavailable: unavailableEnvironmentIds.has(thread.environmentId),
       });
     };
     const hasOverflowingThreads = visibleProjectThreads.length > sidebarThreadPreviewCount;
@@ -1342,6 +1347,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
     projectThreads,
     sidebarThreadPreviewCount,
     threadLastVisitedAts,
+    unavailableEnvironmentIds,
     visibleProjectThreads,
   ]);
 
@@ -2747,6 +2753,7 @@ interface SidebarProjectsContentProps {
   archiveThread: ReturnType<typeof useThreadActions>["archiveThread"];
   deleteThread: ReturnType<typeof useThreadActions>["deleteThread"];
   sortedProjects: readonly SidebarProjectSnapshot[];
+  unavailableEnvironmentIds: ReadonlySet<string>;
   expandedThreadListsByProject: ReadonlySet<string>;
   activeRouteProjectKey: string | null;
   routeThreadKey: string | null;
@@ -2787,6 +2794,7 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
     archiveThread,
     deleteThread,
     sortedProjects,
+    unavailableEnvironmentIds,
     expandedThreadListsByProject,
     activeRouteProjectKey,
     routeThreadKey,
@@ -2924,6 +2932,7 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
                     {(dragHandleProps) => (
                       <SidebarProjectItem
                         project={project}
+                        unavailableEnvironmentIds={unavailableEnvironmentIds}
                         isThreadListExpanded={expandedThreadListsByProject.has(project.projectKey)}
                         activeRouteThreadKey={
                           activeRouteProjectKey === project.projectKey ? routeThreadKey : null
@@ -2956,6 +2965,7 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
               <SidebarProjectListRow
                 key={project.projectKey}
                 project={project}
+                unavailableEnvironmentIds={unavailableEnvironmentIds}
                 isThreadListExpanded={expandedThreadListsByProject.has(project.projectKey)}
                 activeRouteThreadKey={
                   activeRouteProjectKey === project.projectKey ? routeThreadKey : null
@@ -3045,6 +3055,15 @@ export default function Sidebar() {
     () =>
       new Map(
         environments.map((environment) => [environment.environmentId, environment.label] as const),
+      ),
+    [environments],
+  );
+  const unavailableEnvironmentIds = useMemo(
+    () =>
+      new Set(
+        environments
+          .filter((environment) => environment.connection.phase !== "connected")
+          .map((environment) => environment.environmentId),
       ),
     [environments],
   );
@@ -3643,6 +3662,7 @@ export default function Sidebar() {
             archiveThread={archiveThread}
             deleteThread={deleteThread}
             sortedProjects={sortedProjects}
+            unavailableEnvironmentIds={unavailableEnvironmentIds}
             expandedThreadListsByProject={expandedThreadListsByProject}
             activeRouteProjectKey={activeRouteProjectKey}
             routeThreadKey={routeThreadKey}

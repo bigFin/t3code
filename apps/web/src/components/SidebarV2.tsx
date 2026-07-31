@@ -36,6 +36,7 @@ import {
   TerminalIcon,
   Trash2Icon,
   Undo2Icon,
+  WifiOffIcon,
 } from "lucide-react";
 import {
   memo,
@@ -118,6 +119,7 @@ import {
   resolveLatestCompletedThread,
   resolveNextWorkingThread,
   resolveSettledTimestamp,
+  resolveSidebarV2AttentionDetail,
   resolveSidebarV2CompactAttention,
   resolveSidebarV2Status,
   resolveWorkingStartedAt,
@@ -236,6 +238,7 @@ function terminalProcessLabel(count: number): string {
 
 function SidebarV2ThreadTooltip({
   thread,
+  environmentUnavailable,
   projectTitle,
   projectCwd,
   environmentLabel,
@@ -247,6 +250,7 @@ function SidebarV2ThreadTooltip({
   terminalProcessCount,
 }: {
   thread: SidebarThreadSummary;
+  environmentUnavailable: boolean;
   projectTitle: string | null;
   projectCwd: string | null;
   environmentLabel: string | null;
@@ -260,6 +264,8 @@ function SidebarV2ThreadTooltip({
   terminalStatus: TerminalStatusIndicator | null;
   terminalProcessCount: number;
 }) {
+  const attentionDetail = resolveSidebarV2AttentionDetail(thread, { environmentUnavailable });
+
   return (
     <TooltipPopup
       side="right"
@@ -324,21 +330,19 @@ function SidebarV2ThreadTooltip({
               </div>
             </div>
           ) : null}
-          {thread.session?.lastError ? (
+          {attentionDetail !== null ? (
             <div
               className={cn(
                 "flex min-w-0 items-center gap-2",
-                thread.session.retrying
+                attentionDetail.status === "retrying" ||
+                  attentionDetail.status === "interrupted" ||
+                  attentionDetail.status === "disconnected"
                   ? "text-amber-700 dark:text-amber-300"
                   : "text-red-600 dark:text-red-400",
               )}
             >
               <CircleAlertIcon className="size-3 shrink-0 stroke-current" />
-              <div className="min-w-0 truncate">
-                {thread.session.retrying
-                  ? `Retrying: ${thread.session.lastError}`
-                  : `${classifyThreadFailure(thread.session.lastError) === "capacity" ? "Capacity limited — needs attention" : "Error — needs attention"}: ${thread.session.lastError}`}
-              </div>
+              <div className="min-w-0 truncate">{attentionDetail.text}</div>
             </div>
           ) : null}
         </div>
@@ -419,6 +423,7 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
   jumpLabel: string | null;
   currentEnvironmentId: string | null;
   environmentLabel: string | null;
+  environmentUnavailable: boolean;
   projectCwd: string | null;
   projectTitle: string | null;
   providerEntryByInstanceId: ReadonlyMap<string, ProviderInstanceEntry>;
@@ -475,7 +480,9 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
   // Same semantics as v1 (never-visited counts as read): flipping the beta
   // flag must not light up every historical thread as unread.
   const isUnread = hasUnseenCompletion({ ...thread, lastVisitedAt });
-  const status = resolveSidebarV2Status(thread);
+  const status = resolveSidebarV2Status(thread, {
+    environmentUnavailable: props.environmentUnavailable,
+  });
   // A woken thread reappears at its original position (the sort is
   // deliberately static), so the pill has to carry the weight. Snoozing is
   // an explicit act, so unlike Done, a never-visited woke thread still
@@ -485,7 +492,11 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
   const lastVisitedDate = lastVisitedAt === undefined ? null : parseTimestampDate(lastVisitedAt);
   const wokeAtDate = props.wokeAt === null ? null : parseTimestampDate(props.wokeAt);
   const isWoke = wokeAtDate !== null && (lastVisitedDate === null || lastVisitedDate < wokeAtDate);
-  const compactAttention = resolveSidebarV2CompactAttention({ isUnread, isWoke });
+  const compactAttention = resolveSidebarV2CompactAttention({
+    isInterrupted: status === "interrupted",
+    isUnread,
+    isWoke,
+  });
   // In-flight rows (working, or waiting on approval/input) fade as a whole:
   // there is nothing for the user to do yet, so prominence is reserved for
   // rows that need a human — done (unread), read-but-unsettled, failed, and
@@ -515,40 +526,52 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
             className:
               "animate-sidebar-working-text text-sky-600 motion-reduce:animate-none dark:text-sky-400",
           }
-        : status === "approval"
+        : status === "disconnected"
           ? {
-              label: "Approval",
-              icon: null,
+              label: "Disconnected",
+              icon: "disconnected" as const,
               className: "text-amber-700 dark:text-amber-300",
             }
-          : status === "input"
+          : status === "approval"
             ? {
-                label: "Input",
+                label: "Approval",
                 icon: null,
-                className: "text-indigo-600 dark:text-indigo-300",
+                className: "text-amber-700 dark:text-amber-300",
               }
-            : status === "failed"
+            : status === "input"
               ? {
-                  label:
-                    classifyThreadFailure(thread.session?.lastError) === "capacity"
-                      ? "Capacity limited"
-                      : "Error",
+                  label: "Input",
                   icon: null,
-                  className: "text-red-700 dark:text-red-300",
+                  className: "text-indigo-600 dark:text-indigo-300",
                 }
-              : isWoke
+              : status === "interrupted"
                 ? {
-                    label: "Woke",
-                    icon: "woke" as const,
-                    className: "text-amber-700 dark:text-amber-300",
+                    label: "Interrupted",
+                    icon: "interrupted" as const,
+                    className: "text-orange-700 dark:text-orange-300",
                   }
-                : isUnread
+                : status === "failed"
                   ? {
-                      label: "Done",
-                      icon: "done" as const,
-                      className: "text-emerald-700 dark:text-emerald-300",
+                      label:
+                        classifyThreadFailure(thread.session?.lastError) === "capacity"
+                          ? "Capacity limited"
+                          : "Error",
+                      icon: null,
+                      className: "text-red-700 dark:text-red-300",
                     }
-                  : null;
+                  : isWoke
+                    ? {
+                        label: "Woke",
+                        icon: "woke" as const,
+                        className: "text-amber-700 dark:text-amber-300",
+                      }
+                    : isUnread
+                      ? {
+                          label: "Done",
+                          icon: "done" as const,
+                          className: "text-emerald-700 dark:text-emerald-300",
+                        }
+                      : null;
 
   const gitCwd = thread.worktreePath ?? props.projectCwd;
   const gitStatus = useEnvironmentQuery(
@@ -597,6 +620,7 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
       projectTitle={props.projectTitle}
       projectCwd={props.projectCwd}
       environmentLabel={props.environmentLabel}
+      environmentUnavailable={props.environmentUnavailable}
       driverKind={driverKind}
       modelInstanceId={modelInstanceId}
       modelLabel={modelLabel}
@@ -760,7 +784,7 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
                 ? "text-foreground"
                 : shouldRecede
                   ? "text-muted-foreground/80"
-                  : status === "failed"
+                  : status === "failed" || status === "interrupted"
                     ? "text-foreground/95"
                     : "text-foreground/90",
             )
@@ -864,6 +888,15 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
                   // last touched — the return ticket is the row's whole story.
                   <span className="text-xs text-blue-600 tabular-nums dark:text-blue-400">
                     {props.snoozeWakeLabelText}
+                  </span>
+                ) : compactAttention === "interrupted" ? (
+                  <span
+                    role="status"
+                    aria-label="Interrupted"
+                    className="inline-flex items-center gap-1 text-xs font-medium text-orange-700 dark:text-orange-300"
+                  >
+                    <CircleAlertIcon aria-hidden className="size-3" />
+                    Interrupted
                   </span>
                 ) : compactAttention === "woke" ? (
                   // A wake can land straight in the settled tail (e.g. PR
@@ -1000,6 +1033,10 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
                     >
                       {topStatus.icon === "working" ? (
                         <CircleDashedIcon aria-hidden className="size-4 shrink-0" />
+                      ) : topStatus.icon === "disconnected" ? (
+                        <WifiOffIcon aria-hidden className="size-4 shrink-0" />
+                      ) : topStatus.icon === "interrupted" ? (
+                        <CircleAlertIcon aria-hidden className="size-4 shrink-0" />
                       ) : topStatus.icon === "done" ? (
                         <CircleCheckIcon aria-hidden className="size-4 shrink-0" />
                       ) : topStatus.icon === "woke" ? (
@@ -1209,6 +1246,15 @@ export default function SidebarV2() {
     () =>
       new Map(
         environments.map((environment) => [environment.environmentId, environment.label] as const),
+      ),
+    [environments],
+  );
+  const unavailableEnvironmentIds = useMemo(
+    () =>
+      new Set(
+        environments
+          .filter((environment) => environment.connection.phase !== "connected")
+          .map((environment) => environment.environmentId),
       ),
     [environments],
   );
@@ -2730,6 +2776,7 @@ export default function SidebarV2() {
                       jumpLabel={showJumpHints ? (jumpLabelByKey.get(threadKey) ?? null) : null}
                       currentEnvironmentId={primaryEnvironmentId}
                       environmentLabel={environmentLabelById.get(thread.environmentId) ?? null}
+                      environmentUnavailable={unavailableEnvironmentIds.has(thread.environmentId)}
                       projectCwd={
                         projectCwdByKey.get(`${thread.environmentId}:${thread.projectId}`) ?? null
                       }

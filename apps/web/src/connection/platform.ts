@@ -60,6 +60,7 @@ import {
   readDesktopSecondaryBootstrapsResult,
   type DesktopSecondaryBootstrapsRead,
 } from "./desktopLocal";
+import { startApplicationActiveWakeups } from "./applicationActiveWakeups";
 import { connectionStorageLayer } from "./storage";
 
 let nextObservedRpcRequestId = 0;
@@ -91,30 +92,43 @@ const connectivityLayer = Connectivity.layer({
   ),
 });
 
-const wakeupsLayer = Wakeups.layer({
-  changes: Stream.merge(
-    Stream.callback<"application-active">((queue) =>
-      Effect.acquireRelease(
-        Effect.sync(() => {
-          const listener = () => {
-            if (document.visibilityState === "visible") {
-              Queue.offerUnsafe(queue, "application-active");
-            }
-          };
-          document.addEventListener("visibilitychange", listener);
-          return listener;
-        }),
-        (listener) =>
-          Effect.sync(() => {
-            document.removeEventListener("visibilitychange", listener);
-          }),
-      ).pipe(Effect.asVoid),
-    ),
-    managedRelayAccountChanges(appAtomRegistry).pipe(
-      Stream.map(() => "credentials-changed" as const),
-    ),
-  ),
-});
+const wakeupsLayer = Layer.effect(
+  Wakeups.ConnectionWakeups,
+  Effect.gen(function* () {
+    const changes = yield* Stream.merge(
+      Stream.callback<"application-active" | "connection-watchdog-probe">((queue) =>
+        Effect.acquireRelease(
+          Effect.sync(() =>
+            startApplicationActiveWakeups(
+              {
+                isVisible: () => document.visibilityState === "visible",
+                addVisibilityChangeListener: (listener) => {
+                  document.addEventListener("visibilitychange", listener);
+                },
+                removeVisibilityChangeListener: (listener) => {
+                  document.removeEventListener("visibilitychange", listener);
+                },
+                setInterval: (listener, intervalMs) => window.setInterval(listener, intervalMs),
+                clearInterval: (intervalId) => {
+                  window.clearInterval(intervalId);
+                },
+              },
+              (wakeup) => {
+                Queue.offerUnsafe(queue, wakeup);
+              },
+            ),
+          ),
+          (cleanup) => Effect.sync(cleanup),
+        ).pipe(Effect.asVoid),
+      ),
+      managedRelayAccountChanges(appAtomRegistry).pipe(
+        Stream.map(() => "credentials-changed" as const),
+      ),
+    ).pipe(Stream.share({ capacity: "unbounded" }));
+
+    return Wakeups.make({ changes });
+  }),
+);
 
 function clientMetadata() {
   const desktop = window.desktopBridge !== undefined;

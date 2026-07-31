@@ -6,6 +6,7 @@ import type {
   SidebarV2ThreadSortOrder,
 } from "@t3tools/contracts/settings";
 import { classifyThreadFailure } from "@t3tools/client-runtime/state/thread-failure";
+import { isThreadInterrupted } from "@t3tools/client-runtime/state/thread-settled";
 import {
   getThreadSortTimestamp,
   sortThreads,
@@ -123,7 +124,9 @@ export interface ThreadStatusPill {
     | "Working"
     | "Connecting"
     | "Retrying"
+    | "Disconnected"
     | "Capacity Limited"
+    | "Interrupted"
     | "Error"
     | "Completed"
     | "Pending Approval"
@@ -135,8 +138,10 @@ export interface ThreadStatusPill {
 }
 
 const THREAD_STATUS_PRIORITY: Record<ThreadStatusPill["label"], number> = {
-  Error: 7,
-  "Capacity Limited": 7,
+  Error: 8,
+  "Capacity Limited": 8,
+  Interrupted: 7,
+  Disconnected: 6,
   "Pending Approval": 5,
   "Awaiting Input": 4,
   Retrying: 3,
@@ -425,26 +430,46 @@ export function resolveThreadRowClassName(input: {
 }
 
 // ── Sidebar v2 status model ─────────────────────────────────────────
-// Six visual states, three colors: color is reserved for "act now"
-// (approval), "in motion" (working/retrying), and "broken" (failed). Ready is the
-// unlabeled resting state — the agent stopped and is waiting on the user,
-// whether it finished, asked a question, or proposed a plan.
+// Seven visual states: color is reserved for "act now" (approval/input),
+// "in motion" (working/retrying), and terminal attention
+// (interrupted/failed). Ready is the unlabeled resting state — the agent
+// stopped and is waiting on the user, whether it finished, asked a question,
+// or proposed a plan.
 // Unread completion is tracked separately: it describes whether a ready
 // thread needs attention, not what the thread is currently doing.
-export type SidebarV2Status = "approval" | "input" | "retrying" | "working" | "failed" | "ready";
-export type SidebarV2CompactAttention = "woke" | "done" | null;
+export type SidebarV2Status =
+  | "approval"
+  | "input"
+  | "disconnected"
+  | "retrying"
+  | "working"
+  | "interrupted"
+  | "failed"
+  | "ready";
+export type SidebarV2CompactAttention = "interrupted" | "woke" | "done" | null;
 
 type SidebarV2StatusInput = Pick<
   SidebarThreadSummary,
-  "hasPendingApprovals" | "hasPendingUserInput" | "session"
+  "hasPendingApprovals" | "hasPendingUserInput" | "latestTurn" | "session"
 >;
 
-export function resolveSidebarV2Status(thread: SidebarV2StatusInput): SidebarV2Status {
+export function resolveSidebarV2Status(
+  thread: SidebarV2StatusInput,
+  options: { readonly environmentUnavailable?: boolean } = {},
+): SidebarV2Status {
   if (thread.hasPendingApprovals) {
     return "approval";
   }
   if (thread.hasPendingUserInput) {
     return "input";
+  }
+  if (
+    options.environmentUnavailable === true &&
+    (thread.session?.retrying === true ||
+      thread.session?.status === "running" ||
+      thread.session?.status === "starting")
+  ) {
+    return "disconnected";
   }
   if (thread.session?.retrying === true) {
     return "retrying";
@@ -452,16 +477,58 @@ export function resolveSidebarV2Status(thread: SidebarV2StatusInput): SidebarV2S
   if (thread.session?.status === "running" || thread.session?.status === "starting") {
     return "working";
   }
+  if (isThreadInterrupted(thread)) {
+    return "interrupted";
+  }
   if (thread.session?.status === "error") {
     return "failed";
   }
   return "ready";
 }
 
+export function resolveSidebarV2AttentionDetail(
+  thread: SidebarV2StatusInput,
+  options: { readonly environmentUnavailable?: boolean } = {},
+): {
+  status: "disconnected" | "retrying" | "interrupted" | "failed";
+  text: string;
+} | null {
+  const status = resolveSidebarV2Status(thread, options);
+  if (status === "disconnected") {
+    return {
+      status,
+      text: "Disconnected — connection to this environment was lost",
+    };
+  }
+  if (status === "retrying") {
+    return {
+      status,
+      text: thread.session?.lastError ? `Retrying: ${thread.session.lastError}` : "Retrying",
+    };
+  }
+  if (status === "interrupted") {
+    return {
+      status,
+      text: thread.session?.lastError
+        ? `Interrupted — needs attention: ${thread.session.lastError}`
+        : "Interrupted — needs attention",
+    };
+  }
+  if (thread.session?.lastError) {
+    return {
+      status: "failed",
+      text: `${classifyThreadFailure(thread.session.lastError) === "capacity" ? "Capacity limited — needs attention" : "Error — needs attention"}: ${thread.session.lastError}`,
+    };
+  }
+  return null;
+}
+
 export function resolveSidebarV2CompactAttention(input: {
+  isInterrupted: boolean;
   isUnread: boolean;
   isWoke: boolean;
 }): SidebarV2CompactAttention {
+  if (input.isInterrupted) return "interrupted";
   if (input.isWoke) return "woke";
   if (input.isUnread) return "done";
   return null;
@@ -671,8 +738,9 @@ export function formatWorkingDurationLabel(elapsedMs: number): string {
 
 export function resolveThreadStatusPill(input: {
   thread: ThreadStatusInput;
+  environmentUnavailable?: boolean;
 }): ThreadStatusPill | null {
-  const { thread } = input;
+  const { environmentUnavailable = false, thread } = input;
 
   if (thread.hasPendingApprovals) {
     return {
@@ -688,6 +756,20 @@ export function resolveThreadStatusPill(input: {
       label: "Awaiting Input",
       colorClass: "text-indigo-600 dark:text-indigo-300/90",
       dotClass: "bg-indigo-500 dark:bg-indigo-300/90",
+      pulse: false,
+    };
+  }
+
+  if (
+    environmentUnavailable &&
+    (thread.session?.retrying === true ||
+      thread.session?.status === "running" ||
+      thread.session?.status === "starting")
+  ) {
+    return {
+      label: "Disconnected",
+      colorClass: "text-amber-700 dark:text-amber-300/90",
+      dotClass: "bg-amber-500 dark:bg-amber-300/90",
       pulse: false,
     };
   }
@@ -716,6 +798,15 @@ export function resolveThreadStatusPill(input: {
       colorClass: "text-sky-600 dark:text-sky-300/80",
       dotClass: "bg-sky-500 dark:bg-sky-300/80",
       pulse: true,
+    };
+  }
+
+  if (isThreadInterrupted(thread)) {
+    return {
+      label: "Interrupted",
+      colorClass: "text-orange-700 dark:text-orange-300/90",
+      dotClass: "bg-orange-500 dark:bg-orange-300/90",
+      pulse: false,
     };
   }
 

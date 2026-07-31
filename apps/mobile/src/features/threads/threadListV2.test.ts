@@ -89,6 +89,48 @@ describe("resolveThreadListV2Status", () => {
     expect(resolveThreadListV2Status(thread)).toBe("approval");
   });
 
+  it("surfaces interrupted sessions and turns after higher-priority live states", () => {
+    const interruptedTurn = {
+      turnId: TurnId.make("turn-interrupted"),
+      state: "interrupted" as const,
+      requestedAt: NOW,
+      startedAt: NOW,
+      completedAt: NOW,
+      assistantMessageId: null,
+    };
+    const interrupted = makeThread({
+      id: ThreadId.make("interrupted"),
+      title: "Interrupted",
+      latestTurn: interruptedTurn,
+      session: {
+        threadId: ThreadId.make("interrupted"),
+        status: "interrupted",
+        providerName: "Codex",
+        providerInstanceId: ProviderInstanceId.make("codex"),
+        runtimeMode: "full-access",
+        activeTurnId: null,
+        lastError: "Host restarted",
+        updatedAt: NOW,
+      },
+    });
+
+    expect(resolveThreadListV2Status(interrupted)).toBe("interrupted");
+    expect(resolveThreadListV2Status({ ...interrupted, session: null })).toBe("interrupted");
+    expect(
+      resolveThreadListV2Status({
+        ...interrupted,
+        session: { ...interrupted.session!, status: "running", retrying: undefined },
+      }),
+    ).toBe("working");
+    expect(
+      resolveThreadListV2Status({
+        ...interrupted,
+        session: { ...interrupted.session!, status: "running", retrying: true },
+      }),
+    ).toBe("retrying");
+    expect(resolveThreadListV2Status({ ...interrupted, hasPendingUserInput: true })).toBe("input");
+  });
+
   it("resolves ready for quiescent threads", () => {
     expect(resolveThreadListV2Status(makeThread({ id: ThreadId.make("t"), title: "t" }))).toBe(
       "ready",
@@ -135,6 +177,35 @@ describe("buildThreadListV2Items", () => {
     // thread is BACK in the card block and the snoozed one is gone.
     expect(layout.items.map((item) => item.thread.id)).toEqual(["active", "woken"]);
     expect(layout.snoozedCount).toBe(1);
+  });
+
+  it("wakes a snoozed thread when a fresh interruption needs attention", () => {
+    const layout = buildThreadListV2Items({
+      threads: [
+        makeThread({
+          id: ThreadId.make("interrupted"),
+          title: "Interrupted",
+          snoozedUntil: "2026-06-03T09:00:00.000Z",
+          snoozedAt: "2026-06-01T12:00:00.000Z",
+          session: {
+            threadId: ThreadId.make("interrupted"),
+            status: "interrupted",
+            providerName: "Codex",
+            providerInstanceId: ProviderInstanceId.make("codex"),
+            runtimeMode: "full-access",
+            activeTurnId: null,
+            lastError: "Host restarted",
+            updatedAt: "2026-06-01T13:00:00.000Z",
+          },
+        }),
+      ],
+      environmentId: null,
+      searchQuery: "",
+      now: NOW,
+    });
+
+    expect(layout.items.map((item) => item.thread.id)).toEqual(["interrupted"]);
+    expect(layout.snoozedCount).toBe(0);
   });
 
   it("classifies snooze with the second-precise clock and reports the next wake", () => {

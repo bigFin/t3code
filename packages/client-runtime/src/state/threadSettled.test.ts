@@ -11,6 +11,7 @@ import {
   canSettle,
   effectiveSettled,
   hasQueuedTurnStart,
+  isThreadInterrupted,
   threadLastActivityAt,
   type ChangeRequestStateLike,
 } from "./threadSettled.ts";
@@ -88,6 +89,36 @@ describe("threadLastActivityAt", () => {
 
     expect(threadLastActivityAt(withActivity)).toBe("2026-04-06T00:00:00.000Z");
     expect(threadLastActivityAt(shell)).toBeNull();
+  });
+});
+
+describe("isThreadInterrupted", () => {
+  it("recognizes either an interrupted session or interrupted latest turn", () => {
+    const shell = makeShell({ activityAt: FRESH });
+    expect(
+      isThreadInterrupted({
+        ...shell,
+        session: {
+          threadId: shell.id,
+          status: "interrupted",
+          providerName: "Codex",
+          runtimeMode: "full-access",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: NOW,
+        },
+      }),
+    ).toBe(true);
+    expect(
+      isThreadInterrupted({
+        ...shell,
+        latestTurn: {
+          ...shell.latestTurn!,
+          state: "interrupted",
+        },
+      }),
+    ).toBe(true);
+    expect(isThreadInterrupted(shell)).toBe(false);
   });
 });
 

@@ -18,8 +18,9 @@ const PAST_WAKE = "2026-04-10T10:00:00.000Z";
 function makeShell(input: {
   readonly snoozedUntil?: string | null;
   readonly snoozedAt?: string | null;
-  readonly sessionStatus?: "starting" | "running" | "ready" | "error";
+  readonly sessionStatus?: "starting" | "running" | "ready" | "interrupted" | "error";
   readonly pending?: "approval" | "user-input";
+  readonly turnState?: "completed" | "interrupted";
   readonly turnCompletedAt?: string | null;
 }): ThreadSnoozeShell {
   const threadId = ThreadId.make("thread-1");
@@ -37,7 +38,12 @@ function makeShell(input: {
             providerName: "Codex",
             runtimeMode: "full-access",
             activeTurnId: null,
-            lastError: input.sessionStatus === "error" ? "boom" : null,
+            lastError:
+              input.sessionStatus === "error"
+                ? "boom"
+                : input.sessionStatus === "interrupted"
+                  ? "host restarted"
+                  : null,
             updatedAt: "2026-04-10T11:00:00.000Z",
           },
     latestTurn:
@@ -45,7 +51,7 @@ function makeShell(input: {
         ? null
         : {
             turnId: TurnId.make("turn-1"),
-            state: "completed",
+            state: input.turnState ?? "completed",
             requestedAt: SNOOZED_AT,
             startedAt: null,
             completedAt: input.turnCompletedAt,
@@ -91,6 +97,37 @@ describe("effectiveSnoozed", () => {
         now: NOW,
       }),
     ).toBe(false);
+  });
+
+  it("wakes early on an interruption that happened after the snooze", () => {
+    expect(
+      effectiveSnoozed(makeShell({ snoozedUntil: FUTURE_WAKE, sessionStatus: "interrupted" }), {
+        now: NOW,
+      }),
+    ).toBe(false);
+    expect(
+      effectiveSnoozed(
+        makeShell({
+          snoozedUntil: FUTURE_WAKE,
+          turnState: "interrupted",
+          turnCompletedAt: "2026-04-10T10:30:00.000Z",
+        }),
+        { now: NOW },
+      ),
+    ).toBe(false);
+  });
+
+  it("stays snoozed when the interruption predates the snooze", () => {
+    expect(
+      effectiveSnoozed(
+        makeShell({
+          snoozedUntil: FUTURE_WAKE,
+          sessionStatus: "interrupted",
+          snoozedAt: "2026-04-10T11:30:00.000Z",
+        }),
+        { now: NOW },
+      ),
+    ).toBe(true);
   });
 
   it("stays snoozed when the failure predates the snooze — the user saw it", () => {
@@ -139,7 +176,7 @@ describe("threadRaisedHandWhileSnoozed", () => {
     expect(threadRaisedHandWhileSnoozed(makeShell({ snoozedUntil: FUTURE_WAKE }))).toBe(false);
   });
 
-  it("is true for approvals, input, and failures", () => {
+  it("is true for approvals, input, failures, and interruptions", () => {
     expect(
       threadRaisedHandWhileSnoozed(makeShell({ snoozedUntil: FUTURE_WAKE, pending: "approval" })),
     ).toBe(true);
@@ -149,6 +186,11 @@ describe("threadRaisedHandWhileSnoozed", () => {
     expect(
       threadRaisedHandWhileSnoozed(
         makeShell({ snoozedUntil: FUTURE_WAKE, sessionStatus: "error" }),
+      ),
+    ).toBe(true);
+    expect(
+      threadRaisedHandWhileSnoozed(
+        makeShell({ snoozedUntil: FUTURE_WAKE, sessionStatus: "interrupted" }),
       ),
     ).toBe(true);
   });
@@ -220,6 +262,24 @@ describe("threadWokeAt", () => {
         now: NOW,
       }),
     ).toBe("2026-04-10T11:00:00.000Z");
+  });
+
+  it("reports the interruption edge for an early interrupted wake", () => {
+    expect(
+      threadWokeAt(makeShell({ snoozedUntil: FUTURE_WAKE, sessionStatus: "interrupted" }), {
+        now: NOW,
+      }),
+    ).toBe("2026-04-10T11:00:00.000Z");
+    expect(
+      threadWokeAt(
+        makeShell({
+          snoozedUntil: FUTURE_WAKE,
+          turnState: "interrupted",
+          turnCompletedAt: "2026-04-10T10:30:00.000Z",
+        }),
+        { now: NOW },
+      ),
+    ).toBe("2026-04-10T10:30:00.000Z");
   });
 
   it("keeps the early wake authoritative after the scheduled time passes", () => {

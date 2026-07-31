@@ -1021,6 +1021,30 @@ describe("EnvironmentSupervisor", () => {
     }).pipe(Effect.provide(TestClock.layer())),
   );
 
+  it.effect("reconnects when a visible application watchdog probe fails", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness({
+        probe: (attempt) =>
+          attempt === 1 ? Effect.fail(transient("The live session is stale.")) : Effect.void,
+      });
+      const supervisor = yield* EnvironmentSupervisor.make(TARGET_ENTRY, {
+        initiallyDesired: true,
+      }).pipe(Effect.provide(harness.dependencies));
+
+      yield* awaitState(supervisor.state, (state) => state.phase === "connected");
+      yield* harness.wake("connection-watchdog-probe");
+      yield* awaitState(supervisor.state, (state) => state.phase === "backoff");
+      yield* TestClock.adjust("1 second");
+      yield* eventuallyState(
+        supervisor.state,
+        (state) => state.phase === "connected" && state.generation === 2,
+      );
+
+      expect(yield* Ref.get(harness.sessionCount)).toBe(2);
+      expect(yield* Ref.get(harness.releaseCount)).toBe(1);
+    }).pipe(Effect.provide(TestClock.layer())),
+  );
+
   it.effect("reconnects after consecutive foreground liveness probe failures", () =>
     Effect.gen(function* () {
       const probeCount = yield* Ref.make(0);

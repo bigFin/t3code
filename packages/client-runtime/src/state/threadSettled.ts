@@ -4,6 +4,34 @@ export type ChangeRequestStateLike = "open" | "closed" | "merged";
 
 const DAY_MS = 24 * 60 * 60 * 1_000;
 
+export function isThreadInterrupted(
+  shell: Pick<OrchestrationThreadShell, "latestTurn" | "session">,
+): boolean {
+  return shell.session?.status === "interrupted" || shell.latestTurn?.state === "interrupted";
+}
+
+function threadInterruptedAt(
+  shell: Pick<OrchestrationThreadShell, "latestTurn" | "session">,
+): string | null {
+  const candidates = [
+    shell.session?.status === "interrupted" ? shell.session.updatedAt : null,
+    shell.latestTurn?.state === "interrupted" ? shell.latestTurn.completedAt : null,
+  ];
+  let latest: string | null = null;
+  let latestTimestamp = Number.NEGATIVE_INFINITY;
+
+  for (const candidate of candidates) {
+    if (candidate === null || candidate === undefined) continue;
+    const timestamp = Date.parse(candidate);
+    if (!Number.isNaN(timestamp) && timestamp > latestTimestamp) {
+      latest = candidate;
+      latestTimestamp = timestamp;
+    }
+  }
+
+  return latest;
+}
+
 export function threadLastActivityAt(shell: OrchestrationThreadShell): string | null {
   const candidates = [
     shell.latestUserMessageAt,
@@ -109,8 +137,9 @@ export type ThreadSnoozeShell = Pick<
 /**
  * A snoozed thread "raises its hand" when something happens that outranks
  * the user's snooze: the agent is blocked on them (approval / user input),
- * the session failed, or a run completed after the snooze was set — the
- * v1 taste of event-based snooze ("something happened" wakes early).
+ * the session failed or was interrupted, or a run completed after the snooze
+ * was set — the v1 taste of event-based snooze ("something happened" wakes
+ * early).
  * Raising a hand never clears the server-side snooze fields; it only stops
  * the thread from CLASSIFYING as snoozed, exactly like blocked work and
  * effectiveSettled.
@@ -124,6 +153,13 @@ export function threadRaisedHandWhileSnoozed(shell: ThreadSnoozeShell): boolean 
   if (
     shell.session?.status === "error" &&
     (shell.snoozedAt == null || Date.parse(shell.session.updatedAt) > Date.parse(shell.snoozedAt))
+  ) {
+    return true;
+  }
+  const interruptedAt = threadInterruptedAt(shell);
+  if (
+    interruptedAt !== null &&
+    (shell.snoozedAt == null || Date.parse(interruptedAt) > Date.parse(shell.snoozedAt))
   ) {
     return true;
   }
@@ -200,6 +236,13 @@ export function threadWokeAt(
   // indicator the user already cleared by visiting (snoozedUntil is newer
   // than that visit's lastVisitedAt).
   if (threadRaisedHandWhileSnoozed(shell)) {
+    const interruptedAt = threadInterruptedAt(shell);
+    if (
+      interruptedAt !== null &&
+      (shell.snoozedAt == null || Date.parse(interruptedAt) > Date.parse(shell.snoozedAt))
+    ) {
+      return interruptedAt;
+    }
     if (
       shell.snoozedAt != null &&
       shell.latestTurn?.state === "completed" &&

@@ -45,6 +45,7 @@ const STATUS_LABEL_BY_STATUS: Partial<
   input: { label: "Input", className: "text-indigo-600 dark:text-indigo-300" },
   retrying: { label: "Retrying", className: "text-amber-700 dark:text-amber-300" },
   working: { label: "Working", className: "text-sky-600 dark:text-sky-400" },
+  interrupted: { label: "Interrupted", className: "text-orange-700 dark:text-orange-300" },
   failed: { label: "Failed", className: "text-red-700 dark:text-red-300" },
 };
 
@@ -388,7 +389,8 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
         </View>
       ) : null}
       <View className="mt-1 flex-row items-center gap-2">
-        {(status === "failed" || status === "retrying") && thread.session?.lastError ? (
+        {(status === "failed" || status === "retrying" || status === "interrupted") &&
+        thread.session?.lastError ? (
           <Text
             className={cn(
               "flex-1 text-xs",
@@ -396,7 +398,9 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
                 ? "text-user-bubble-foreground-muted"
                 : status === "retrying"
                   ? "text-amber-700/80 dark:text-amber-300/80"
-                  : "text-red-600/80 dark:text-red-400/80",
+                  : status === "interrupted"
+                    ? "text-orange-700/80 dark:text-orange-300/80"
+                    : "text-red-600/80 dark:text-red-400/80",
             )}
             numberOfLines={1}
           >
@@ -558,11 +562,17 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
           <Text
             className={cn(
               "text-sm tabular-nums",
-              selected ? "text-user-bubble-foreground-muted" : "text-foreground-tertiary",
+              selected
+                ? "text-user-bubble-foreground-muted"
+                : status === "interrupted"
+                  ? statusLabel?.className
+                  : "text-foreground-tertiary",
             )}
             style={{ fontFamily: MONO_FONT }}
           >
-            {relativeTime(thread.latestUserMessageAt ?? thread.updatedAt ?? thread.createdAt)}
+            {status === "interrupted"
+              ? statusLabel?.label
+              : relativeTime(thread.latestUserMessageAt ?? thread.updatedAt ?? thread.createdAt)}
           </Text>
         </View>
       </Pressable>

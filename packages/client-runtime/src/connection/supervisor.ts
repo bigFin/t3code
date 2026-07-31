@@ -428,13 +428,17 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
             // replaces that lease and starts a fresh attempt without backoff.
             return true;
           }
-          if (next.reason === "application-active" || next.reason === "application-active-probe") {
+          if (
+            next.reason === "application-active" ||
+            next.reason === "application-active-probe" ||
+            next.reason === "connection-watchdog-probe"
+          ) {
             const probe = yield* lease.session.probe.pipe(
               Effect.timeoutOrElse({
                 duration:
-                  next.reason === "application-active-probe"
-                    ? MOBILE_CONNECTION_PROBE_TIMEOUT
-                    : CONNECTION_PROBE_TIMEOUT,
+                  next.reason === "application-active"
+                    ? CONNECTION_PROBE_TIMEOUT
+                    : MOBILE_CONNECTION_PROBE_TIMEOUT,
                 orElse: () =>
                   Effect.fail(
                     new ConnectionTransientError({

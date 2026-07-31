@@ -1,4 +1,8 @@
-import { effectiveSettled, effectiveSnoozed } from "@t3tools/client-runtime/state/thread-settled";
+import {
+  effectiveSettled,
+  effectiveSnoozed,
+  isThreadInterrupted,
+} from "@t3tools/client-runtime/state/thread-settled";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
 import { threadSearchMatchKey } from "@t3tools/client-runtime/state/thread-search";
 import type { EnvironmentId, ProjectId } from "@t3tools/contracts";
@@ -9,11 +13,18 @@ import type { PendingNewTask } from "../../state/use-pending-new-tasks";
  * Thread List v2 model, ported from the web sidebar v2
  * (apps/web/src/components/Sidebar.logic.ts + SidebarV2.tsx).
  *
- * Five visual states, three colors: color is reserved for "act now"
- * (approval), "in motion" (working/retrying), and "broken" (failed). Ready is the
- * unlabeled resting state.
+ * Seven visual states: color is reserved for "act now" (approval/input),
+ * "in motion" (working/retrying), and terminal attention
+ * (interrupted/failed). Ready is the unlabeled resting state.
  */
-export type ThreadListV2Status = "approval" | "input" | "retrying" | "working" | "failed" | "ready";
+export type ThreadListV2Status =
+  | "approval"
+  | "input"
+  | "retrying"
+  | "working"
+  | "interrupted"
+  | "failed"
+  | "ready";
 
 // Settled-tail paging: recent history is the common lookup; the deep tail
 // stays behind an explicit Show more. Shared by the compact Home list and
@@ -42,7 +53,10 @@ export function resolveThreadListV2Enabled(input: {
 }
 
 export function resolveThreadListV2Status(
-  thread: Pick<EnvironmentThreadShell, "hasPendingApprovals" | "hasPendingUserInput" | "session">,
+  thread: Pick<
+    EnvironmentThreadShell,
+    "hasPendingApprovals" | "hasPendingUserInput" | "latestTurn" | "session"
+  >,
 ): ThreadListV2Status {
   if (thread.hasPendingApprovals) {
     return "approval";
@@ -55,6 +69,9 @@ export function resolveThreadListV2Status(
   }
   if (thread.session?.status === "running" || thread.session?.status === "starting") {
     return "working";
+  }
+  if (isThreadInterrupted(thread)) {
+    return "interrupted";
   }
   if (thread.session?.status === "error") {
     return "failed";

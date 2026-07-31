@@ -80,6 +80,12 @@ Wakeup handling differs by phase, in [supervisor.ts][supervisor]:
   mobile's `application-active-probe`) rather than reconnecting; a healthy
   session survives foregrounding. `application-active-reconnect` skips the probe
   and replaces the lease outright.
+- Web and desktop also emit `connection-watchdog-probe` once per minute while
+  the document is visible. The supervisor uses the short probe timeout and
+  replaces a stale lease immediately on failure. The watchdog is one shared
+  timer per application runtime. It pauses while hidden and, unlike foreground
+  activation, does not restart shell or thread subscriptions on a healthy
+  connection.
 
 The UI derives `available`, `offline`, `connecting`, `reconnecting`,
 `connected`, and `error` from supervisor state plus explicit data-sync state.
@@ -89,6 +95,28 @@ the initial config RPC succeeds, proving that the server is responsive. Shell
 and thread synchronization are independent data states. A healthy RPC transport
 with a failed shell subscription is shown as connected with a synchronization
 error, not as a reconnect that is not actually scheduled.
+
+Cached thread shells can outlive a lost transport. While an environment is not
+connected, web sidebar rows replace stale in-flight `Working` or `Retrying`
+presentation with `Disconnected`; pending approval and input states retain
+their higher priority. The V2 sidebar derives this from one environment-status
+set at its root; the legacy sidebar reuses environment presentation data it
+already observes. Neither path adds per-thread polling.
+
+## Server Restart Reconciliation
+
+Provider runtime bindings are persisted, but provider subprocesses are not
+assumed to survive a T3 server restart. At startup, `ProviderSessionReaper`
+compares persisted `starting` and `running` bindings with the provider service's
+live-session inventory. If inventory cannot be acquired, reconciliation makes
+no mutations.
+
+Bindings absent from a successful live inventory are marked stopped. When the
+thread projection still reports a starting or running session, the reaper also
+dispatches a deterministic `thread.session.set` command that clears the active
+turn and marks the session `interrupted`. Reconciliation never sends a provider
+turn or resumes an agent automatically. Imported or external sessions already
+persisted as stopped are outside this path.
 
 ## Data Boundary
 
