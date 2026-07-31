@@ -90,6 +90,11 @@ Open Settings and look at the provider row.
 T3 Code shows the authenticated email for providers that report one. Emails are blurred by default;
 click the blurred email to reveal it.
 
+For ChatGPT-backed Codex accounts, the same row also shows the current weekly usage reported by
+Codex. Accounts with separate model limits can show more than one weekly meter. When Codex grants a
+rate-limit reset credit, the available count appears beside the meters. Usage refreshes with provider
+status, so refresh provider status if you need a newer reading.
+
 Use display names and accent colors to make accounts easy to tell apart in the model picker.
 
 ## I Need A Different API Key Or Endpoint

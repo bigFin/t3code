@@ -31,7 +31,11 @@ import { deepMerge } from "@t3tools/shared/Struct";
 import { createModelCapabilities } from "@t3tools/shared/model";
 import { applyServerSettingsPatch } from "@t3tools/shared/serverSettings";
 
-import { checkCodexProviderStatus, type CodexAppServerProviderSnapshot } from "./CodexProvider.ts";
+import {
+  checkCodexProviderStatus,
+  mapCodexRateLimits,
+  type CodexAppServerProviderSnapshot,
+} from "./CodexProvider.ts";
 import { checkClaudeProviderStatus } from "./ClaudeProvider.ts";
 import * as BackgroundPolicy from "../../background/BackgroundPolicy.ts";
 import * as OpenCodeRuntime from "../opencodeRuntime.ts";
@@ -342,11 +346,90 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
   "ProviderRegistry",
   (it) => {
     describe("checkCodexProviderStatus", () => {
+      it("normalizes weekly usage by duration across multiple Codex limits", () => {
+        assert.deepStrictEqual(
+          mapCodexRateLimits({
+            rateLimits: {
+              limitId: "codex",
+              planType: "pro",
+              primary: {
+                usedPercent: 4,
+                resetsAt: 1_786_117_115,
+                windowDurationMins: 10_080,
+              },
+            },
+            rateLimitsByLimitId: {
+              codex_bengalfox: {
+                limitId: "codex_bengalfox",
+                limitName: "GPT-5.3-Codex-Spark",
+                primary: {
+                  usedPercent: 0,
+                  resetsAt: 1_786_123_338,
+                  windowDurationMins: 10_080,
+                },
+              },
+              codex: {
+                limitId: "codex",
+                primary: {
+                  usedPercent: 4,
+                  resetsAt: 1_786_117_115,
+                  windowDurationMins: 10_080,
+                },
+              },
+            },
+            rateLimitResetCredits: {
+              availableCount: 1,
+              credits: null,
+            },
+          }),
+          {
+            rateLimits: [
+              {
+                id: "codex",
+                windows: [
+                  {
+                    usedPercent: 4,
+                    resetsAt: "2026-08-07T15:38:35.000Z",
+                    windowDurationMins: 10_080,
+                  },
+                ],
+              },
+              {
+                id: "codex_bengalfox",
+                name: "GPT-5.3-Codex-Spark",
+                windows: [
+                  {
+                    usedPercent: 0,
+                    resetsAt: "2026-08-07T17:22:18.000Z",
+                    windowDurationMins: 10_080,
+                  },
+                ],
+              },
+            ],
+            resetCreditsAvailable: 1,
+          },
+        );
+      });
+
       it.effect("uses the app-server account and model list for provider status", () =>
         Effect.gen(function* () {
           const status = yield* checkCodexProviderStatus(defaultCodexSettings, () =>
             Effect.succeed(
               makeCodexProbeSnapshot({
+                usage: {
+                  rateLimits: [
+                    {
+                      id: "codex",
+                      windows: [
+                        {
+                          usedPercent: 4,
+                          resetsAt: "2026-08-07T15:38:35.000Z",
+                          windowDurationMins: 10_080,
+                        },
+                      ],
+                    },
+                  ],
+                },
                 skills: [
                   {
                     name: "github:gh-fix-ci",
@@ -366,6 +449,20 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
           assert.strictEqual(status.auth.type, "chatgpt");
           assert.strictEqual(status.auth.label, "ChatGPT Pro 20x Subscription");
           assert.strictEqual(status.auth.email, "test@example.com");
+          assert.deepStrictEqual(status.usage, {
+            rateLimits: [
+              {
+                id: "codex",
+                windows: [
+                  {
+                    usedPercent: 4,
+                    resetsAt: "2026-08-07T15:38:35.000Z",
+                    windowDurationMins: 10_080,
+                  },
+                ],
+              },
+            ],
+          });
           assert.deepStrictEqual(status.models, [
             {
               slug: "gpt-live-codex",

@@ -64,6 +64,76 @@ type EnvironmentDraftRow = {
   readonly valueRedacted?: boolean;
 };
 
+const WEEKLY_USAGE_WINDOW_MINS = 7 * 24 * 60;
+const providerUsageResetFormatter = new Intl.DateTimeFormat(undefined, {
+  month: "short",
+  day: "numeric",
+  hour: "numeric",
+  minute: "2-digit",
+});
+
+export interface ProviderUsageDisplayRow {
+  readonly key: string;
+  readonly label: string;
+  readonly usedPercent: number;
+  readonly resetsAt?: string;
+}
+
+function formatUsageWindowLabel(windowDurationMins: number | undefined): string {
+  if (windowDurationMins === WEEKLY_USAGE_WINDOW_MINS) {
+    return "Weekly";
+  }
+  if (windowDurationMins === undefined) {
+    return "Usage";
+  }
+  if (windowDurationMins % (24 * 60) === 0) {
+    return `${windowDurationMins / (24 * 60)}-day`;
+  }
+  if (windowDurationMins % 60 === 0) {
+    return `${windowDurationMins / 60}-hour`;
+  }
+  return `${windowDurationMins}-minute`;
+}
+
+export function deriveProviderUsageForDisplay(input: {
+  readonly usage: ServerProvider["usage"];
+  readonly primaryLimitId: string;
+}): ReadonlyArray<ProviderUsageDisplayRow> {
+  const windows =
+    input.usage?.rateLimits.flatMap((limit) =>
+      limit.windows.map((window, index) => ({
+        limit,
+        window,
+        index,
+      })),
+    ) ?? [];
+  const hasWeeklyWindow = windows.some(
+    ({ window }) => window.windowDurationMins === WEEKLY_USAGE_WINDOW_MINS,
+  );
+
+  return windows
+    .filter(
+      ({ window }) => !hasWeeklyWindow || window.windowDurationMins === WEEKLY_USAGE_WINDOW_MINS,
+    )
+    .toSorted(
+      (left, right) =>
+        Number(right.limit.id === input.primaryLimitId) -
+          Number(left.limit.id === input.primaryLimitId) ||
+        (right.window.windowDurationMins ?? 0) - (left.window.windowDurationMins ?? 0) ||
+        (left.limit.name ?? left.limit.id).localeCompare(right.limit.name ?? right.limit.id),
+    )
+    .map(({ limit, window, index }) => {
+      const windowLabel = formatUsageWindowLabel(window.windowDurationMins);
+      const limitLabel = limit.id === input.primaryLimitId ? null : limit.name?.trim() || limit.id;
+      return {
+        key: `${limit.id}:${window.windowDurationMins ?? "unknown"}:${index}`,
+        label: limitLabel ? `${limitLabel} · ${windowLabel}` : windowLabel,
+        usedPercent: window.usedPercent,
+        ...(window.resetsAt ? { resetsAt: window.resetsAt } : {}),
+      };
+    });
+}
+
 function makeEnvironmentDraftRow(
   variable: ProviderInstanceEnvironmentVariable,
   index: number,
@@ -416,6 +486,11 @@ export function ProviderInstanceCard({
   const displayName =
     instance.displayName?.trim() || driverOption?.label || String(instance.driver);
   const accentColor = normalizeProviderAccentColor(instance.accentColor);
+  const usageRows = deriveProviderUsageForDisplay({
+    usage: liveProvider?.usage,
+    primaryLimitId: String(instance.driver),
+  });
+  const resetCreditsAvailable = liveProvider?.usage?.resetCreditsAvailable ?? 0;
   const { copyToClipboard } = useCopyToClipboard<{ providerName: string }>({
     onCopy: ({ providerName }) => {
       toastManager.add({
@@ -599,6 +674,52 @@ export function ProviderInstanceCard({
     <code className="text-xs text-muted-foreground">{versionLabel}</code>
   ) : null;
 
+  const usageNode =
+    usageRows.length > 0 || resetCreditsAvailable > 0 ? (
+      <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1.5 pt-0.5 text-[11px] text-muted-foreground">
+        {usageRows.map((row) => {
+          const usedPercent = Math.max(0, row.usedPercent);
+          const progressPercent = Math.min(100, usedPercent);
+          const resetDate = row.resetsAt ? new Date(row.resetsAt) : null;
+          const resetLabel =
+            resetDate && !Number.isNaN(resetDate.getTime())
+              ? providerUsageResetFormatter.format(resetDate)
+              : null;
+          return (
+            <span
+              key={row.key}
+              className="inline-flex min-w-0 items-center gap-1.5"
+              aria-label={`${row.label}: ${usedPercent}% used${resetLabel ? `, resets ${resetLabel}` : ""}`}
+            >
+              <span className="font-medium text-foreground/80">{row.label}</span>
+              <span className="h-1.5 w-14 overflow-hidden rounded-full bg-muted">
+                <span
+                  className={cn(
+                    "block h-full rounded-full",
+                    usedPercent >= 90
+                      ? "bg-destructive"
+                      : usedPercent >= 70
+                        ? "bg-warning"
+                        : "bg-primary/70",
+                  )}
+                  style={{ width: `${progressPercent}%` }}
+                  aria-hidden
+                />
+              </span>
+              <span>{usedPercent}% used</span>
+              {resetLabel ? <span>· resets {resetLabel}</span> : null}
+            </span>
+          );
+        })}
+        {resetCreditsAvailable > 0 ? (
+          <span className="font-medium text-primary">
+            {resetCreditsAvailable} reset {resetCreditsAvailable === 1 ? "credit" : "credits"}{" "}
+            available
+          </span>
+        ) : null}
+      </div>
+    ) : null;
+
   return (
     <div className="rounded-xl transition-colors hover:bg-muted/20">
       <div className="px-3 py-3 sm:px-4">
@@ -705,6 +826,7 @@ export function ProviderInstanceCard({
               {titleTailNode}
             </div>
             {authRowNode}
+            {usageNode}
           </div>
           <div className="flex w-full shrink-0 items-center gap-2 sm:w-auto sm:justify-end">
             <Button

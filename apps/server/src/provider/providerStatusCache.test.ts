@@ -124,6 +124,14 @@ it.layer(NodeServices.layer)("providerStatusCache", (it) => {
   it("hydrates cached provider status while preserving current settings-derived models", () => {
     const cachedCodex = makeProvider(CODEX_DRIVER, {
       checkedAt: "2026-04-10T12:00:00.000Z",
+      usage: {
+        rateLimits: [
+          {
+            id: "codex",
+            windows: [{ usedPercent: 42, windowDurationMins: 10_080 }],
+          },
+        ],
+      },
       models: [
         {
           slug: "gpt-5-mini",
@@ -177,6 +185,7 @@ it.layer(NodeServices.layer)("providerStatusCache", (it) => {
         checkedAt: cachedCodex.checkedAt,
         slashCommands: cachedCodex.slashCommands,
         skills: cachedCodex.skills,
+        usage: cachedCodex.usage,
         message: cachedCodex.message,
       },
     );

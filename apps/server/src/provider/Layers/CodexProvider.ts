@@ -48,6 +48,7 @@ export interface CodexAppServerProviderSnapshot {
   readonly version: string | undefined;
   readonly models: ReadonlyArray<ServerProviderModel>;
   readonly skills: ReadonlyArray<ServerProviderSkill>;
+  readonly usage?: ServerProvider["usage"];
 }
 
 const REASONING_EFFORT_LABELS: Readonly<Record<string, string>> = {
@@ -282,6 +283,88 @@ function parseCodexSkillsListResponse(
   });
 }
 
+function unixSecondsToIso(seconds: number | null | undefined): string | undefined {
+  if (seconds === null || seconds === undefined || !Number.isFinite(seconds) || seconds < 0) {
+    return undefined;
+  }
+  return DateTime.make(seconds * 1_000).pipe(
+    Option.match({
+      onNone: () => undefined,
+      onSome: DateTime.formatIso,
+    }),
+  );
+}
+
+function mapCodexRateLimitWindow(
+  window: CodexSchema.V2GetAccountRateLimitsResponse__RateLimitWindow | null | undefined,
+): NonNullable<ServerProvider["usage"]>["rateLimits"][number]["windows"][number] | undefined {
+  if (!window) {
+    return undefined;
+  }
+
+  const resetsAt = unixSecondsToIso(window.resetsAt);
+  const windowDurationMins =
+    window.windowDurationMins !== null &&
+    window.windowDurationMins !== undefined &&
+    window.windowDurationMins > 0
+      ? window.windowDurationMins
+      : undefined;
+
+  return {
+    usedPercent: Math.max(0, window.usedPercent),
+    ...(resetsAt ? { resetsAt } : {}),
+    ...(windowDurationMins ? { windowDurationMins } : {}),
+  };
+}
+
+export function mapCodexRateLimits(
+  response: CodexSchema.V2GetAccountRateLimitsResponse,
+): ServerProvider["usage"] {
+  const fallbackLimitId = response.rateLimits.limitId?.trim() || "codex";
+  const rateLimitEntries =
+    response.rateLimitsByLimitId && Object.keys(response.rateLimitsByLimitId).length > 0
+      ? Object.entries(response.rateLimitsByLimitId)
+      : [[fallbackLimitId, response.rateLimits] as const];
+
+  const rateLimits = rateLimitEntries
+    .flatMap(([entryId, limit]) => {
+      const id = limit.limitId?.trim() || entryId.trim();
+      if (!id) {
+        return [];
+      }
+
+      const windows = [limit.primary, limit.secondary].flatMap((window) => {
+        const mapped = mapCodexRateLimitWindow(window);
+        return mapped ? [mapped] : [];
+      });
+      if (windows.length === 0) {
+        return [];
+      }
+
+      const name = limit.limitName?.trim();
+      return [
+        {
+          id,
+          ...(name ? { name } : {}),
+          windows,
+        },
+      ];
+    })
+    .toSorted(
+      (left, right) =>
+        Number(right.id === fallbackLimitId) - Number(left.id === fallbackLimitId) ||
+        (left.name ?? left.id).localeCompare(right.name ?? right.id),
+    );
+
+  const resetCreditsAvailable = response.rateLimitResetCredits?.availableCount;
+  return {
+    rateLimits,
+    ...(resetCreditsAvailable !== undefined && resetCreditsAvailable > 0
+      ? { resetCreditsAvailable }
+      : {}),
+  };
+}
+
 const requestAllCodexModels = Effect.fn("requestAllCodexModels")(function* (
   client: CodexClient.CodexAppServerClient["Service"],
 ) {
@@ -389,15 +472,22 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
     } satisfies CodexAppServerProviderSnapshot;
   }
 
-  const [skillsResponse, models] = yield* Effect.all(
+  const [skillsResponse, models, rateLimitsResponse] = yield* Effect.all(
     [
       client.request("skills/list", {
         cwds: [input.cwd],
       }),
       requestAllCodexModels(client),
+      client.request("account/rateLimits/read", undefined).pipe(
+        Effect.timeoutOption(Duration.seconds(2)),
+        Effect.orElseSucceed(() => Option.none<CodexSchema.V2GetAccountRateLimitsResponse>()),
+      ),
     ],
     { concurrency: "unbounded" },
   );
+  const usage = Option.isSome(rateLimitsResponse)
+    ? mapCodexRateLimits(rateLimitsResponse.value)
+    : undefined;
 
   return {
     account: accountResponse,
@@ -406,6 +496,7 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
       appendCustomCodexModels(models, input.customModels ?? []),
     ),
     skills: parseCodexSkillsListResponse(skillsResponse, input.cwd),
+    ...(usage && (usage.rateLimits.length > 0 || usage.resetCreditsAvailable) ? { usage } : {}),
   } satisfies CodexAppServerProviderSnapshot;
 });
 
@@ -595,6 +686,7 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
     checkedAt,
     models: snapshot.models,
     skills: snapshot.skills,
+    ...(snapshot.usage ? { usage: snapshot.usage } : {}),
     probe: {
       installed: true,
       version: snapshot.version ?? null,

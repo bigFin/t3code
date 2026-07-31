@@ -19,10 +19,40 @@ describe("ServerProvider", () => {
       },
       checkedAt: "2026-04-10T00:00:00.000Z",
       models: [],
+      usage: {
+        rateLimits: [
+          {
+            id: "codex",
+            windows: [
+              {
+                usedPercent: 4,
+                resetsAt: "2026-08-07T15:38:35.000Z",
+                windowDurationMins: 10_080,
+              },
+            ],
+          },
+        ],
+        resetCreditsAvailable: 1,
+      },
     });
 
     expect(parsed.slashCommands).toEqual([]);
     expect(parsed.skills).toEqual([]);
+    expect(parsed.usage).toEqual({
+      rateLimits: [
+        {
+          id: "codex",
+          windows: [
+            {
+              usedPercent: 4,
+              resetsAt: "2026-08-07T15:38:35.000Z",
+              windowDurationMins: 10_080,
+            },
+          ],
+        },
+      ],
+      resetCreditsAvailable: 1,
+    });
     expect(parsed.versionAdvisory).toBeUndefined();
     expect(parsed.updateState).toBeUndefined();
   });

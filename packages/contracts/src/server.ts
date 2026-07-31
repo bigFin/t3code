@@ -92,6 +92,26 @@ export const ServerProviderSkill = Schema.Struct({
 });
 export type ServerProviderSkill = typeof ServerProviderSkill.Type;
 
+export const ServerProviderUsageWindow = Schema.Struct({
+  usedPercent: NonNegativeInt,
+  resetsAt: Schema.optional(IsoDateTime),
+  windowDurationMins: Schema.optional(PositiveInt),
+});
+export type ServerProviderUsageWindow = typeof ServerProviderUsageWindow.Type;
+
+export const ServerProviderUsageRateLimit = Schema.Struct({
+  id: TrimmedNonEmptyString,
+  name: Schema.optional(TrimmedNonEmptyString),
+  windows: Schema.Array(ServerProviderUsageWindow),
+});
+export type ServerProviderUsageRateLimit = typeof ServerProviderUsageRateLimit.Type;
+
+export const ServerProviderUsage = Schema.Struct({
+  rateLimits: Schema.Array(ServerProviderUsageRateLimit),
+  resetCreditsAvailable: Schema.optional(NonNegativeInt),
+});
+export type ServerProviderUsage = typeof ServerProviderUsage.Type;
+
 /**
  * Availability of a configured provider instance from the runtime's POV.
  *
@@ -188,6 +208,7 @@ export const ServerProvider = Schema.Struct({
     Schema.withDecodingDefault(Effect.succeed([])),
   ),
   skills: Schema.Array(ServerProviderSkill).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
+  usage: Schema.optional(ServerProviderUsage),
   versionAdvisory: Schema.optionalKey(ServerProviderVersionAdvisory),
   updateState: Schema.optionalKey(ServerProviderUpdateState),
 });
