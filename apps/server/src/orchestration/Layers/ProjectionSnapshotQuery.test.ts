@@ -444,6 +444,18 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
         },
       ]);
 
+      const batchedThreadShells = yield* snapshotQuery.getThreadShellsByIds([
+        ThreadId.make("thread-1"),
+        ThreadId.make("thread-1"),
+        ThreadId.make("thread-missing"),
+      ]);
+      assert.equal(batchedThreadShells.size, 1);
+      assert.deepEqual(
+        batchedThreadShells.get(ThreadId.make("thread-1")),
+        shellSnapshot.threads[0],
+      );
+      assert.equal((yield* snapshotQuery.getThreadShellsByIds([])).size, 0);
+
       const threadDetail = yield* snapshotQuery.getThreadDetailById(ThreadId.make("thread-1"));
       assert.equal(threadDetail._tag, "Some");
       if (threadDetail._tag === "Some") {
@@ -562,6 +574,11 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
         shellSnapshot.threads.map((thread) => thread.id),
         [ThreadId.make("thread-active")],
       );
+      const batchedThreadShells = yield* snapshotQuery.getThreadShellsByIds([
+        ThreadId.make("thread-active"),
+        ThreadId.make("thread-archived"),
+      ]);
+      assert.deepEqual([...batchedThreadShells.keys()], [ThreadId.make("thread-active")]);
 
       const archivedShellSnapshot = yield* snapshotQuery.getArchivedShellSnapshot();
       assert.deepEqual(

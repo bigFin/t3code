@@ -15,6 +15,7 @@ import {
 } from "@t3tools/contracts";
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
+import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -571,6 +572,12 @@ type SettledCodexCliStaleSessionResolution = Exclude<
 type CodexCliRolloutTerminalState = "completed" | "interrupted" | null;
 type CodexCliThreadImportResult = "skipped" | "imported" | "recovering-live";
 
+interface CodexCliThreadImportCandidate {
+  readonly listedThread: CodexListedThread;
+  readonly threadId: ThreadId;
+  readonly existingBinding: ProviderRuntimeBindingWithMetadata | undefined;
+}
+
 interface PreparedCodexCliThreadImport {
   readonly listedThread: CodexListedThread;
   readonly threadId: ThreadId;
@@ -580,6 +587,12 @@ interface PreparedCodexCliThreadImport {
   readonly staleSession: NonNullable<OrchestrationThreadShell["session"]> | undefined;
   readonly importIsCurrent: boolean;
   readonly rolloutPath: string | undefined;
+}
+
+interface CodexCliImportScanMetrics {
+  threadReadCount: number;
+  rolloutTailReadCount: number;
+  skippedCurrentCount: number;
 }
 
 export interface CodexCliRolloutTerminalEvidence {
@@ -913,7 +926,10 @@ const resolveDiscoveryTargets = Effect.fn("CodexCliSessionImporter.resolveDiscov
 
 const withCodexClient = <A, E, R>(
   target: CodexDiscoveryTarget,
-  use: (client: CodexClient.CodexAppServerClient["Service"]) => Effect.Effect<A, E, R>,
+  use: (
+    client: CodexClient.CodexAppServerClient["Service"],
+    appServerStartupMs: number,
+  ) => Effect.Effect<A, E, R>,
 ): Effect.Effect<
   A,
   E | CodexErrors.CodexAppServerError,
@@ -921,6 +937,7 @@ const withCodexClient = <A, E, R>(
 > =>
   Effect.scoped(
     Effect.gen(function* () {
+      const startupStartedAt = yield* Clock.currentTimeMillis;
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
       const serverConfig = yield* ServerConfig;
       const environment = {
@@ -961,7 +978,8 @@ const withCodexClient = <A, E, R>(
       );
       yield* client.request("initialize", buildCodexInitializeParams());
       yield* client.notify("initialized", undefined);
-      return yield* use(client);
+      const appServerStartupMs = Math.max(0, (yield* Clock.currentTimeMillis) - startupStartedAt);
+      return yield* use(client, appServerStartupMs);
     }),
   );
 
@@ -1053,12 +1071,12 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
       return realRolloutPath.value;
     });
 
-    const prepareThreadImport = Effect.fn("CodexCliSessionImporter.prepareThreadImport")(function* (
+    const resolveThreadImportCandidate = Effect.fn(
+      "CodexCliSessionImporter.resolveThreadImportCandidate",
+    )(function* (
       target: CodexDiscoveryTarget,
       listedThread: CodexListedThread,
       bindings: ReadonlyArray<ProviderRuntimeBindingWithMetadata>,
-      sessionsRoot: string,
-      realSessionsRoot: string | undefined,
     ) {
       if (!isImportableCodexInteractiveThread(listedThread)) {
         return undefined;
@@ -1078,7 +1096,22 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
         return undefined;
       }
 
-      const existingThread = yield* projectionSnapshotQuery.getThreadShellById(threadId);
+      return {
+        listedThread,
+        threadId,
+        existingBinding,
+      } satisfies CodexCliThreadImportCandidate;
+    });
+
+    const prepareThreadImport = Effect.fn("CodexCliSessionImporter.prepareThreadImport")(function* (
+      target: CodexDiscoveryTarget,
+      candidate: CodexCliThreadImportCandidate,
+      existingThread: Option.Option<OrchestrationThreadShell>,
+      sessionsRoot: string,
+      realSessionsRoot: string | undefined,
+      metrics: CodexCliImportScanMetrics,
+    ) {
+      const { listedThread, threadId, existingBinding } = candidate;
       if (
         Option.isNone(existingThread) &&
         isDifferentlyKeyedCodexCliOwnerBinding(listedThread.id, existingBinding)
@@ -1093,11 +1126,12 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
           : undefined;
       const importIsCurrent = isCurrentCodexCliImport(existingBinding, listedThread);
       // Currentness is persisted independently of the active thread projection.
-      // Archived threads are intentionally absent from getThreadShellById and
+      // Archived threads are intentionally absent from active shell queries and
       // must not replay their complete transcripts on every periodic scan.
       if (
         shouldSkipCurrentCodexCliImport(existingBinding, listedThread, staleSession !== undefined)
       ) {
+        metrics.skippedCurrentCount += 1;
         return undefined;
       }
 
@@ -1158,6 +1192,7 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
       prepared: PreparedCodexCliThreadImport,
       openRolloutPaths: ReadonlySet<string>,
       nowMillis: number,
+      metrics: CodexCliImportScanMetrics,
     ) {
       const {
         listedThread,
@@ -1177,7 +1212,14 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
               finalMessage: null,
               completedAt: null,
             } satisfies CodexCliRolloutTerminalEvidence)
-          : yield* readCodexRolloutTerminalEvidence(fileSystem, rolloutPath, staleActiveTurnId);
+          : yield* Effect.gen(function* () {
+              metrics.rolloutTailReadCount += 1;
+              return yield* readCodexRolloutTerminalEvidence(
+                fileSystem,
+                rolloutPath,
+                staleActiveTurnId,
+              );
+            });
       const rolloutIsOpen =
         rolloutPath !== undefined &&
         staleActiveTurnId !== null &&
@@ -1229,6 +1271,7 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
         }
       }
 
+      metrics.threadReadCount += 1;
       const response = yield* client.request("thread/read", {
         threadId: listedThread.id,
         includeTurns: true,
@@ -1419,21 +1462,25 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
     const scanTarget = Effect.fn("CodexCliSessionImporter.scanTarget")(function* (
       target: CodexDiscoveryTarget,
     ) {
-      return yield* withCodexClient(target, (client) =>
+      const scanStartedAt = yield* Clock.currentTimeMillis;
+      const result = yield* withCodexClient(target, (client, appServerStartupMs) =>
         Effect.gen(function* () {
+          const metrics: CodexCliImportScanMetrics = {
+            threadReadCount: 0,
+            rolloutTailReadCount: 0,
+            skippedCurrentCount: 0,
+          };
+          const threadListStartedAt = yield* Clock.currentTimeMillis;
           const threads = yield* listInteractiveThreads(client);
+          const threadListMs = Math.max(0, (yield* Clock.currentTimeMillis) - threadListStartedAt);
+
+          const prepareStartedAt = yield* Clock.currentTimeMillis;
           const bindings = yield* directory.listBindings();
           const sessionsRoot = path.resolve(target.homeLayout.sharedHomePath, "sessions");
           const realSessionsRoot = yield* fileSystem.realPath(sessionsRoot).pipe(Effect.option);
-          const preparedImports: PreparedCodexCliThreadImport[] = [];
+          const candidates: CodexCliThreadImportCandidate[] = [];
           for (const thread of threads) {
-            const prepared = yield* prepareThreadImport(
-              target,
-              thread,
-              bindings,
-              sessionsRoot,
-              Option.getOrUndefined(realSessionsRoot),
-            ).pipe(
+            const candidate = yield* resolveThreadImportCandidate(target, thread, bindings).pipe(
               Effect.catchCause((cause) =>
                 Effect.logWarning("codex.cli-import.thread-prepare-failed", {
                   instanceId: target.instanceId,
@@ -1443,10 +1490,53 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
                 }).pipe(Effect.as(undefined)),
               ),
             );
+            if (candidate !== undefined) {
+              candidates.push(candidate);
+            }
+          }
+          const preProjectionPrepareMs = Math.max(
+            0,
+            (yield* Clock.currentTimeMillis) - prepareStartedAt,
+          );
+
+          const projectionLookupStartedAt = yield* Clock.currentTimeMillis;
+          const projectedThreads = yield* projectionSnapshotQuery.getThreadShellsByIds([
+            ...new Set(candidates.map((candidate) => candidate.threadId)),
+          ]);
+          const projectionLookupCompletedAt = yield* Clock.currentTimeMillis;
+          const projectionLookupMs = Math.max(
+            0,
+            projectionLookupCompletedAt - projectionLookupStartedAt,
+          );
+
+          const preparedImports: PreparedCodexCliThreadImport[] = [];
+          for (const candidate of candidates) {
+            const projectedThread = projectedThreads.get(candidate.threadId);
+            const prepared = yield* prepareThreadImport(
+              target,
+              candidate,
+              projectedThread === undefined ? Option.none() : Option.some(projectedThread),
+              sessionsRoot,
+              Option.getOrUndefined(realSessionsRoot),
+              metrics,
+            ).pipe(
+              Effect.catchCause((cause) =>
+                Effect.logWarning("codex.cli-import.thread-prepare-failed", {
+                  instanceId: target.instanceId,
+                  codexHome: target.homeLayout.sharedHomePath,
+                  providerThreadId: candidate.listedThread.id,
+                  cause,
+                }).pipe(Effect.as(undefined)),
+              ),
+            );
             if (prepared !== undefined) {
               preparedImports.push(prepared);
             }
           }
+          const prepareMs =
+            preProjectionPrepareMs +
+            Math.max(0, (yield* Clock.currentTimeMillis) - projectionLookupCompletedAt);
+
           const openRolloutCandidates = new Set(
             preparedImports.flatMap((prepared) =>
               prepared.staleSession?.activeTurnId !== null &&
@@ -1456,12 +1546,15 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
                 : [],
             ),
           );
+          const procScanStartedAt = yield* Clock.currentTimeMillis;
           const openRolloutPaths = yield* collectOpenCodexRolloutPaths(
             fileSystem,
             path,
             openRolloutCandidates,
           );
-          const nowMillis = DateTime.toEpochMillis(yield* DateTime.now);
+          const procScanMs = Math.max(0, (yield* Clock.currentTimeMillis) - procScanStartedAt);
+          const nowMillis = yield* Clock.currentTimeMillis;
+          const importStartedAt = yield* Clock.currentTimeMillis;
           let importedCount = 0;
           let recoveringLiveCount = 0;
           for (const prepared of preparedImports) {
@@ -1471,6 +1564,7 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
               prepared,
               openRolloutPaths,
               nowMillis,
+              metrics,
             ).pipe(
               Effect.catchCause((cause) =>
                 Effect.logWarning("codex.cli-import.thread-failed", {
@@ -1488,13 +1582,25 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
               recoveringLiveCount += 1;
             }
           }
+          const importMs = Math.max(0, (yield* Clock.currentTimeMillis) - importStartedAt);
           return {
             discoveredCount: threads.length,
             importedCount,
             recoveringLiveCount,
+            appServerStartupMs,
+            threadListMs,
+            projectionLookupMs,
+            prepareMs,
+            procScanMs,
+            importMs,
+            ...metrics,
           };
         }),
       );
+      return {
+        ...result,
+        durationMs: Math.max(0, (yield* Clock.currentTimeMillis) - scanStartedAt),
+      };
     });
 
     const scan = Effect.gen(function* () {
@@ -1512,6 +1618,16 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
                 discoveredCount: 0,
                 importedCount: 0,
                 recoveringLiveCount: 0,
+                durationMs: 0,
+                appServerStartupMs: 0,
+                threadListMs: 0,
+                projectionLookupMs: 0,
+                prepareMs: 0,
+                procScanMs: 0,
+                importMs: 0,
+                threadReadCount: 0,
+                rolloutTailReadCount: 0,
+                skippedCurrentCount: 0,
               }),
             ),
           ),
