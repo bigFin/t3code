@@ -15,6 +15,7 @@ import {
 } from "@t3tools/contracts";
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
+import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
@@ -24,6 +25,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
+import * as Scope from "effect/Scope";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import * as CodexClient from "effect-codex-app-server/client";
 import * as CodexErrors from "effect-codex-app-server/errors";
@@ -32,7 +34,6 @@ import type * as CodexSchema from "effect-codex-app-server/schema";
 import { ServerConfig } from "../../config.ts";
 import { OrchestrationEngineService } from "../../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../../orchestration/Services/ProjectionSnapshotQuery.ts";
-import { expandHomePath } from "../../pathExpansion.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { mergeProviderInstanceEnvironment } from "../ProviderInstanceEnvironment.ts";
 import {
@@ -44,6 +45,7 @@ import {
   CodexCliSessionImporter,
   type CodexCliSessionImporterShape,
 } from "../Services/CodexCliSessionImporter.ts";
+import { makeCodexClientLeasePool, type CodexClientLeasePool } from "./CodexClientLeasePool.ts";
 import { resolveCodexHomeLayout, type CodexHomeLayout } from "./CodexHomeLayout.ts";
 import { deriveProviderInstanceConfigMap } from "../Layers/ProviderInstanceRegistryHydration.ts";
 import { buildCodexInitializeParams } from "../Layers/CodexProvider.ts";
@@ -69,10 +71,24 @@ type CodexThreadItem = CodexReadThread["turns"][number]["items"][number];
 type CodexUserInput = Extract<CodexThreadItem, { readonly type: "userMessage" }>["content"][number];
 
 interface CodexDiscoveryTarget {
+  readonly leaseKey: string;
+  readonly configKey: string;
   readonly instanceId: ProviderInstanceId;
   readonly config: CodexSettings;
   readonly environment: NodeJS.ProcessEnv;
   readonly homeLayout: CodexHomeLayout;
+}
+
+interface CodexClientLeaseResource {
+  readonly child: ChildProcessSpawner.ChildProcessHandle;
+  readonly client: CodexClient.CodexAppServerClient["Service"];
+  readonly startupMs: number;
+}
+
+interface CodexClientAcquisitionMetrics {
+  readonly appServerRestarted: boolean;
+  readonly appServerReused: boolean;
+  readonly appServerStartupMs: number;
 }
 
 export interface CodexCliImportedMessage {
@@ -105,6 +121,24 @@ function stableTextHash(value: string): string {
     hash = BigInt.asUintN(64, hash * 0x100000001b3n);
   }
   return hash.toString(16).padStart(16, "0");
+}
+
+function codexDiscoveryTargetConfigKey(input: {
+  readonly instanceId: ProviderInstanceId;
+  readonly config: CodexSettings;
+  readonly environment: NodeJS.ProcessEnv;
+  readonly homeLayout: CodexHomeLayout;
+}): string {
+  return stableTextHash(
+    JSON.stringify({
+      instanceId: input.instanceId,
+      sharedHomePath: input.homeLayout.sharedHomePath,
+      config: input.config,
+      environment: Object.entries(input.environment).sort(([left], [right]) =>
+        left.localeCompare(right),
+      ),
+    }),
+  );
 }
 
 function stableProjectId(cwd: string): ProjectId {
@@ -869,6 +903,32 @@ export function isImportableCodexInteractiveThread(thread: CodexListedThread): b
   );
 }
 
+const isCodexAppServerProcessExitedError = Schema.is(CodexErrors.CodexAppServerProcessExitedError);
+const isCodexAppServerTransportError = Schema.is(CodexErrors.CodexAppServerTransportError);
+const isCodexAppServerInputStreamEndedError = Schema.is(
+  CodexErrors.CodexAppServerInputStreamEndedError,
+);
+
+type RestartableCodexAppServerError =
+  | CodexErrors.CodexAppServerProcessExitedError
+  | CodexErrors.CodexAppServerTransportError
+  | CodexErrors.CodexAppServerInputStreamEndedError;
+
+function isRestartableCodexAppServerError(error: unknown): error is RestartableCodexAppServerError {
+  return (
+    isCodexAppServerProcessExitedError(error) ||
+    isCodexAppServerTransportError(error) ||
+    isCodexAppServerInputStreamEndedError(error)
+  );
+}
+
+function findRestartableCodexAppServerError(
+  cause: Cause.Cause<unknown>,
+): RestartableCodexAppServerError | undefined {
+  const error = Option.getOrUndefined(Cause.findErrorOption(cause));
+  return isRestartableCodexAppServerError(error) ? error : undefined;
+}
+
 function discoveryTargetPreference(target: CodexDiscoveryTarget): number {
   if (target.instanceId === ProviderInstanceId.make("codex")) {
     return 0;
@@ -902,11 +962,17 @@ const resolveDiscoveryTargets = Effect.fn("CodexCliSessionImporter.resolveDiscov
       }
 
       const homeLayout = yield* resolveCodexHomeLayout(config);
-      targets.push({
+      const environment = mergeProviderInstanceEnvironment(entry.environment);
+      const target = {
+        leaseKey: homeLayout.sharedHomePath,
         instanceId,
         config,
-        environment: mergeProviderInstanceEnvironment(entry.environment),
+        environment,
         homeLayout,
+      };
+      targets.push({
+        ...target,
+        configKey: codexDiscoveryTargetConfigKey(target),
       });
     }
 
@@ -924,64 +990,97 @@ const resolveDiscoveryTargets = Effect.fn("CodexCliSessionImporter.resolveDiscov
   },
 );
 
+const openCodexClientLease = Effect.fn("CodexCliSessionImporter.openCodexClientLease")(function* (
+  target: CodexDiscoveryTarget,
+  scope: Scope.Closeable,
+): Effect.fn.Return<
+  CodexClientLeaseResource,
+  CodexErrors.CodexAppServerError,
+  ChildProcessSpawner.ChildProcessSpawner | ServerConfig
+> {
+  const startupStartedAt = yield* Clock.currentTimeMillis;
+  const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+  const serverConfig = yield* ServerConfig;
+  const environment = {
+    ...target.environment,
+    CODEX_HOME: target.homeLayout.sharedHomePath,
+  };
+  const launchArgs = resolveCodexLaunchArgs(target.config.launchArgs, environment);
+  const spawnCommand = yield* resolveSpawnCommand(
+    target.config.binaryPath,
+    codexAppServerArgs(launchArgs),
+    {
+      env: environment,
+      extendEnv: true,
+    },
+  );
+  const child = yield* spawner
+    .spawn(
+      ChildProcess.make(spawnCommand.command, spawnCommand.args, {
+        cwd: serverConfig.cwd,
+        env: environment,
+        extendEnv: true,
+        forceKillAfter: CODEX_APP_SERVER_FORCE_KILL_AFTER,
+        shell: spawnCommand.shell,
+      }),
+    )
+    .pipe(
+      Effect.provideService(Scope.Scope, scope),
+      Effect.mapError(
+        (cause) =>
+          new CodexErrors.CodexAppServerSpawnError({
+            command: `${target.config.binaryPath} app-server`,
+            cause,
+          }),
+      ),
+    );
+  const clientContext = yield* Layer.buildWithScope(CodexClient.layerChildProcess(child), scope);
+  const client = yield* Effect.service(CodexClient.CodexAppServerClient).pipe(
+    Effect.provide(clientContext),
+  );
+  yield* client.request("initialize", buildCodexInitializeParams());
+  yield* client.notify("initialized", undefined);
+  return {
+    child,
+    client,
+    startupMs: Math.max(0, (yield* Clock.currentTimeMillis) - startupStartedAt),
+  };
+});
+
+type CodexClientPool = CodexClientLeasePool<
+  CodexDiscoveryTarget,
+  CodexClientLeaseResource,
+  CodexErrors.CodexAppServerError,
+  ChildProcessSpawner.ChildProcessSpawner | ServerConfig
+>;
+
 const withCodexClient = <A, E, R>(
+  pool: CodexClientPool,
   target: CodexDiscoveryTarget,
   use: (
     client: CodexClient.CodexAppServerClient["Service"],
-    appServerStartupMs: number,
+    metrics: CodexClientAcquisitionMetrics,
   ) => Effect.Effect<A, E, R>,
 ): Effect.Effect<
   A,
   E | CodexErrors.CodexAppServerError,
   R | ChildProcessSpawner.ChildProcessSpawner | ServerConfig
-> =>
-  Effect.scoped(
-    Effect.gen(function* () {
-      const startupStartedAt = yield* Clock.currentTimeMillis;
-      const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-      const serverConfig = yield* ServerConfig;
-      const environment = {
-        ...target.environment,
-        CODEX_HOME: expandHomePath(target.homeLayout.sharedHomePath),
-      };
-      const launchArgs = resolveCodexLaunchArgs(target.config.launchArgs, environment);
-      const spawnCommand = yield* resolveSpawnCommand(
-        target.config.binaryPath,
-        codexAppServerArgs(launchArgs),
-        {
-          env: environment,
-          extendEnv: true,
-        },
-      );
-      const child = yield* spawner
-        .spawn(
-          ChildProcess.make(spawnCommand.command, spawnCommand.args, {
-            cwd: serverConfig.cwd,
-            env: environment,
-            extendEnv: true,
-            forceKillAfter: CODEX_APP_SERVER_FORCE_KILL_AFTER,
-            shell: spawnCommand.shell,
-          }),
-        )
-        .pipe(
-          Effect.mapError(
-            (cause) =>
-              new CodexErrors.CodexAppServerSpawnError({
-                command: `${target.config.binaryPath} app-server`,
-                cause,
-              }),
-          ),
-        );
-      const clientContext = yield* Layer.build(CodexClient.layerChildProcess(child));
-      const client = yield* Effect.service(CodexClient.CodexAppServerClient).pipe(
-        Effect.provide(clientContext),
-      );
-      yield* client.request("initialize", buildCodexInitializeParams());
-      yield* client.notify("initialized", undefined);
-      const appServerStartupMs = Math.max(0, (yield* Clock.currentTimeMillis) - startupStartedAt);
-      return yield* use(client, appServerStartupMs);
-    }),
-  );
+> => {
+  return Effect.gen(function* () {
+    const acquisition = yield* pool.acquire(target);
+    return yield* use(acquisition.lease.resource.client, {
+      appServerRestarted: acquisition.restarted,
+      appServerReused: acquisition.reused,
+      appServerStartupMs: acquisition.reused ? 0 : acquisition.lease.resource.startupMs,
+    }).pipe(
+      Effect.catch((error) =>
+        isRestartableCodexAppServerError(error)
+          ? pool.invalidate(target, acquisition.lease).pipe(Effect.andThen(Effect.fail(error)))
+          : Effect.fail(error),
+      ),
+    );
+  });
+};
 
 const listInteractiveThreads = Effect.fn("CodexCliSessionImporter.listInteractiveThreads")(
   function* (client: CodexClient.CodexAppServerClient["Service"]) {
@@ -1028,6 +1127,15 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
       | ServerConfig
       | ServerSettingsService
     >();
+    const clientPool = yield* makeCodexClientLeasePool<
+      CodexDiscoveryTarget,
+      CodexClientLeaseResource,
+      CodexErrors.CodexAppServerError,
+      ChildProcessSpawner.ChildProcessSpawner | ServerConfig
+    >({
+      open: openCodexClientLease,
+      isRunning: (resource) => resource.child.isRunning.pipe(Effect.orElseSucceed(() => false)),
+    });
     const scanIntervalMs = Math.max(1, options?.scanIntervalMs ?? DEFAULT_SCAN_INTERVAL_MS);
 
     const resolveRolloutPath = Effect.fn("CodexCliSessionImporter.resolveRolloutPath")(function* (
@@ -1463,7 +1571,7 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
       target: CodexDiscoveryTarget,
     ) {
       const scanStartedAt = yield* Clock.currentTimeMillis;
-      const result = yield* withCodexClient(target, (client, appServerStartupMs) =>
+      const result = yield* withCodexClient(clientPool, target, (client, appServerMetrics) =>
         Effect.gen(function* () {
           const metrics: CodexCliImportScanMetrics = {
             threadReadCount: 0,
@@ -1566,14 +1674,18 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
               nowMillis,
               metrics,
             ).pipe(
-              Effect.catchCause((cause) =>
-                Effect.logWarning("codex.cli-import.thread-failed", {
+              Effect.catchCause((cause) => {
+                const restartableError = findRestartableCodexAppServerError(cause);
+                if (restartableError !== undefined) {
+                  return Effect.fail(restartableError);
+                }
+                return Effect.logWarning("codex.cli-import.thread-failed", {
                   instanceId: target.instanceId,
                   codexHome: target.homeLayout.sharedHomePath,
                   providerThreadId: prepared.listedThread.id,
                   cause,
-                }).pipe(Effect.as("skipped" satisfies CodexCliThreadImportResult)),
-              ),
+                }).pipe(Effect.as("skipped" satisfies CodexCliThreadImportResult));
+              }),
             );
             if (importResult !== "skipped") {
               importedCount += 1;
@@ -1587,7 +1699,7 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
             discoveredCount: threads.length,
             importedCount,
             recoveringLiveCount,
-            appServerStartupMs,
+            ...appServerMetrics,
             threadListMs,
             projectionLookupMs,
             prepareMs,
@@ -1605,6 +1717,7 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
 
     const scan = Effect.gen(function* () {
       const targets = yield* resolveDiscoveryTargets();
+      yield* clientPool.reconcile(targets);
       let recoveringLiveCount = 0;
       for (const target of targets) {
         const result = yield* scanTarget(target).pipe(
@@ -1619,6 +1732,8 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
                 importedCount: 0,
                 recoveringLiveCount: 0,
                 durationMs: 0,
+                appServerRestarted: false,
+                appServerReused: false,
                 appServerStartupMs: 0,
                 threadListMs: 0,
                 projectionLookupMs: 0,
