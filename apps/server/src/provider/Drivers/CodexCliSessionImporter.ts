@@ -755,6 +755,14 @@ export function isCurrentCodexCliImport(
   );
 }
 
+export function shouldSkipCurrentCodexCliImport(
+  binding: ProviderRuntimeBinding | undefined,
+  listedThread: CodexListedThread,
+  hasStaleSession: boolean,
+): boolean {
+  return isCurrentCodexCliImport(binding, listedThread) && !hasStaleSession;
+}
+
 export function isImportableCodexInteractiveThread(thread: CodexListedThread): boolean {
   return (
     !thread.ephemeral &&
@@ -926,8 +934,9 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
       client: CodexClient.CodexAppServerClient["Service"],
       listedThread: CodexListedThread,
       bindings: ReadonlyArray<ProviderRuntimeBindingWithMetadata>,
-      rolloutPathsByThreadId: ReadonlyMap<string, string>,
-      openRolloutPaths: ReadonlySet<string>,
+      bindingsByThreadId: ReadonlyMap<ThreadId, ProviderRuntimeBindingWithMetadata>,
+      sessionsRoot: string,
+      realSessionsRoot: string | undefined,
     ) {
       if (!isImportableCodexInteractiveThread(listedThread)) {
         return "skipped" satisfies CodexCliThreadImportResult;
@@ -941,7 +950,7 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
         });
         return "skipped" satisfies CodexCliThreadImportResult;
       }
-      const existingBinding = Option.getOrUndefined(yield* directory.getBinding(threadId));
+      const existingBinding = bindingsByThreadId.get(threadId);
       if (existingBinding !== undefined && existingBinding.provider !== CODEX_DRIVER) {
         yield* Effect.logWarning("codex.cli-import.binding-conflict", {
           threadId,
@@ -961,9 +970,13 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
         projectedThread?.session !== null
           ? projectedThread?.session
           : undefined;
-      const importIsCurrent =
-        projectedThread !== undefined && isCurrentCodexCliImport(existingBinding, listedThread);
-      if (importIsCurrent && staleSession === undefined) {
+      const importIsCurrent = isCurrentCodexCliImport(existingBinding, listedThread);
+      // Currentness is persisted independently of the active thread projection.
+      // Archived threads are intentionally absent from getThreadShellById and
+      // must not replay their complete transcripts on every periodic scan.
+      if (
+        shouldSkipCurrentCodexCliImport(existingBinding, listedThread, staleSession !== undefined)
+      ) {
         return "skipped" satisfies CodexCliThreadImportResult;
       }
 
@@ -972,7 +985,41 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
         includeTurns: true,
       });
       const thread = response.thread;
-      const rolloutPath = rolloutPathsByThreadId.get(listedThread.id);
+      const rolloutPath = yield* Effect.gen(function* () {
+        if (realSessionsRoot === undefined) {
+          return undefined;
+        }
+        const listedRolloutPath = listedThread.path?.trim();
+        if (!listedRolloutPath) {
+          return undefined;
+        }
+
+        const candidate = path.resolve(listedRolloutPath);
+        if (!isCodexRolloutPathWithinSessionsRoot(path, sessionsRoot, candidate)) {
+          yield* Effect.logWarning("codex.cli-import.rollout-path-rejected", {
+            instanceId: target.instanceId,
+            providerThreadId: listedThread.id,
+            sessionsRoot,
+            rolloutPath: candidate,
+          });
+          return undefined;
+        }
+
+        const realRolloutPath = yield* fileSystem.realPath(candidate).pipe(Effect.option);
+        if (Option.isNone(realRolloutPath)) {
+          return undefined;
+        }
+        if (!isCodexRolloutPathWithinSessionsRoot(path, realSessionsRoot, realRolloutPath.value)) {
+          yield* Effect.logWarning("codex.cli-import.rollout-path-rejected", {
+            instanceId: target.instanceId,
+            providerThreadId: listedThread.id,
+            sessionsRoot: realSessionsRoot,
+            rolloutPath: realRolloutPath.value,
+          });
+          return undefined;
+        }
+        return realRolloutPath.value;
+      });
       const staleActiveTurnId = staleSession?.activeTurnId ?? null;
       const rolloutTerminalEvidence =
         rolloutPath === undefined || staleActiveTurnId === null
@@ -1115,8 +1162,14 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
           staleActiveTurnId === null
             ? undefined
             : thread.turns.find((turn) => turn.id === staleActiveTurnId);
+        const rolloutIsOpen =
+          rolloutPath !== undefined && staleActiveTurnId !== null
+            ? (yield* collectOpenCodexRolloutPaths(fileSystem, path, new Set([rolloutPath]))).has(
+                rolloutPath,
+              )
+            : false;
         const resolution = resolveStaleCodexCliSession({
-          rolloutIsOpen: rolloutPath !== undefined && openRolloutPaths.has(rolloutPath),
+          rolloutIsOpen,
           rolloutHasFinalResponse: rolloutTerminalEvidence.finalMessage !== null,
           rolloutTerminalState: rolloutTerminalEvidence.state,
           upstreamTurn,
@@ -1190,56 +1243,11 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
         Effect.gen(function* () {
           const threads = yield* listInteractiveThreads(client);
           const bindings = yield* directory.listBindings();
+          const bindingsByThreadId = new Map(
+            bindings.map((binding) => [binding.threadId, binding] as const),
+          );
           const sessionsRoot = path.resolve(target.homeLayout.sharedHomePath, "sessions");
           const realSessionsRoot = yield* fileSystem.realPath(sessionsRoot).pipe(Effect.option);
-          const rolloutPathsByThreadId = new Map<string, string>();
-          for (const thread of threads) {
-            if (Option.isNone(realSessionsRoot)) {
-              break;
-            }
-            const listedRolloutPath = thread.path?.trim();
-            if (!listedRolloutPath) {
-              continue;
-            }
-
-            const rolloutPath = path.resolve(listedRolloutPath);
-            if (!isCodexRolloutPathWithinSessionsRoot(path, sessionsRoot, rolloutPath)) {
-              yield* Effect.logWarning("codex.cli-import.rollout-path-rejected", {
-                instanceId: target.instanceId,
-                providerThreadId: thread.id,
-                sessionsRoot,
-                rolloutPath,
-              });
-              continue;
-            }
-
-            const realRolloutPath = yield* fileSystem.realPath(rolloutPath).pipe(Effect.option);
-            if (Option.isNone(realRolloutPath)) {
-              continue;
-            }
-            if (
-              !isCodexRolloutPathWithinSessionsRoot(
-                path,
-                realSessionsRoot.value,
-                realRolloutPath.value,
-              )
-            ) {
-              yield* Effect.logWarning("codex.cli-import.rollout-path-rejected", {
-                instanceId: target.instanceId,
-                providerThreadId: thread.id,
-                sessionsRoot: realSessionsRoot.value,
-                rolloutPath: realRolloutPath.value,
-              });
-              continue;
-            }
-            rolloutPathsByThreadId.set(thread.id, realRolloutPath.value);
-          }
-          const candidateRolloutPaths = new Set(rolloutPathsByThreadId.values());
-          const openRolloutPaths = yield* collectOpenCodexRolloutPaths(
-            fileSystem,
-            path,
-            candidateRolloutPaths,
-          );
           let importedCount = 0;
           let recoveringLiveCount = 0;
           for (const thread of threads) {
@@ -1248,8 +1256,9 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
               client,
               thread,
               bindings,
-              rolloutPathsByThreadId,
-              openRolloutPaths,
+              bindingsByThreadId,
+              sessionsRoot,
+              Option.getOrUndefined(realSessionsRoot),
             ).pipe(
               Effect.catchCause((cause) =>
                 Effect.logWarning("codex.cli-import.thread-failed", {

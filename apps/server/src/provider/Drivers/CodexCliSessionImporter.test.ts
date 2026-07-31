@@ -24,6 +24,7 @@ import {
   reconcileCodexCliImportedMessages,
   resolveStaleCodexCliSession,
   shouldInterruptStaleCodexCliSession,
+  shouldSkipCurrentCodexCliImport,
 } from "./CodexCliSessionImporter.ts";
 
 const path = Effect.runSync(Path.Path.pipe(Effect.provide(Path.layer)));
@@ -746,6 +747,37 @@ describe("CodexCliSessionImporter transcript conversion", () => {
       ),
     ).toBe(false);
     expect(isCurrentCodexCliImport(undefined, makeThread())).toBe(false);
+  });
+
+  it("skips unchanged imports when archived threads are absent from active projections", () => {
+    const binding = {
+      threadId: ThreadId.make("019codex-thread"),
+      provider: ProviderDriverKind.make("codex"),
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      status: "stopped" as const,
+      runtimeMode: "full-access" as const,
+      runtimePayload: {
+        importedFrom: "codex-cli",
+        codexCliImportVersion: 2,
+        codexCliUpdatedAt: 1_700_000_002,
+      },
+    };
+
+    expect(shouldSkipCurrentCodexCliImport(binding, makeThread(), false)).toBe(true);
+    expect(shouldSkipCurrentCodexCliImport(binding, makeThread(), true)).toBe(false);
+    expect(
+      shouldSkipCurrentCodexCliImport(
+        {
+          ...binding,
+          runtimePayload: {
+            ...binding.runtimePayload,
+            codexCliUpdatedAt: 1_700_000_001,
+          },
+        },
+        makeThread(),
+        false,
+      ),
+    ).toBe(false);
   });
 
   it("discovers both Codex interactive source buckets without importing automation", () => {
