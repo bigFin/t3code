@@ -11,6 +11,7 @@ import {
   TurnId,
   ModelSelection,
   type OrchestrationThread,
+  type OrchestrationThreadShell,
 } from "@t3tools/contracts";
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
@@ -54,6 +55,7 @@ const CODEX_APP_SERVER_FORCE_KILL_AFTER = "2 seconds" as const;
 const THREAD_LIST_PAGE_SIZE = 100;
 const MAX_INTERACTIVE_THREADS_PER_SCAN = 100;
 const ROLLOUT_TERMINAL_EVENT_TAIL_BYTES = 4 * 1024 * 1024;
+const CODEX_CLI_LIVE_INACTIVITY_GRACE_MS = 15 * 60_000;
 const CODEX_CLI_IMPORT_VERSION = 2;
 export const CODEX_INTERACTIVE_SOURCE_KINDS = ["cli", "vscode"] as const;
 
@@ -516,15 +518,19 @@ function readCodexResumeCursorThreadId(resumeCursor: unknown): string | undefine
   return typeof resumeCursor.threadId === "string" ? resumeCursor.threadId : undefined;
 }
 
-export function isCodexProviderThreadOwnedByAnotherBinding(
+export function resolveCodexCliImportBinding(
   providerThreadId: string,
   bindings: ReadonlyArray<ProviderRuntimeBindingWithMetadata>,
-): boolean {
-  return bindings.some(
+): ProviderRuntimeBindingWithMetadata | undefined {
+  const resumeOwners = bindings.filter(
     (binding) =>
       binding.provider === CODEX_DRIVER &&
-      binding.threadId !== providerThreadId &&
       readCodexResumeCursorThreadId(binding.resumeCursor) === providerThreadId,
+  );
+  return (
+    resumeOwners.find(isLiveCodexBinding) ??
+    resumeOwners[0] ??
+    bindings.find((binding) => binding.threadId === providerThreadId)
   );
 }
 
@@ -546,9 +552,24 @@ type CodexCliStaleSessionResolution =
   | { readonly status: "preserve" }
   | { readonly status: "ready"; readonly lastError: string | null }
   | { readonly status: "interrupted" | "error"; readonly lastError: string };
+type SettledCodexCliStaleSessionResolution = Exclude<
+  CodexCliStaleSessionResolution,
+  { readonly status: "preserve" }
+>;
 
 type CodexCliRolloutTerminalState = "completed" | "interrupted" | null;
 type CodexCliThreadImportResult = "skipped" | "imported" | "recovering-live";
+
+interface PreparedCodexCliThreadImport {
+  readonly listedThread: CodexListedThread;
+  readonly threadId: ThreadId;
+  readonly existingBinding: ProviderRuntimeBindingWithMetadata | undefined;
+  readonly existingThread: Option.Option<OrchestrationThreadShell>;
+  readonly projectedThread: OrchestrationThreadShell | undefined;
+  readonly staleSession: NonNullable<OrchestrationThreadShell["session"]> | undefined;
+  readonly importIsCurrent: boolean;
+  readonly rolloutPath: string | undefined;
+}
 
 export interface CodexCliRolloutTerminalEvidence {
   readonly state: CodexCliRolloutTerminalState;
@@ -566,26 +587,38 @@ const NO_CODEX_ROLLOUT_TERMINAL_EVIDENCE: CodexCliRolloutTerminalEvidence = {
  * A missing in-memory provider binding does not prove that a Codex CLI turn
  * stopped: the owning CLI may still be running and appending to the shared
  * rollout after T3 reconnects. Prefer explicit terminal evidence, then keep a
- * projected running turn alive while another Linux process still owns the
- * rollout file.
+ * projected running turn alive while another Linux process still owns and
+ * recently updated the rollout file.
  */
 export function resolveStaleCodexCliSession(input: {
   readonly rolloutIsOpen: boolean;
+  readonly rolloutIsRecent: boolean;
   readonly rolloutHasFinalResponse?: boolean;
   readonly rolloutTerminalState: CodexCliRolloutTerminalState;
   readonly upstreamTurn:
     | Pick<CodexReadThread["turns"][number], "error" | "items" | "status">
     | undefined;
 }): CodexCliStaleSessionResolution {
-  const hasFinalAssistantMessage =
-    input.rolloutHasFinalResponse === true ||
-    (input.upstreamTurn?.items.some(
+  const upstreamHasFinalAssistantMessage =
+    input.upstreamTurn?.items.some(
       (item) =>
         item.type === "agentMessage" &&
         item.text.length > 0 &&
         (item.phase === undefined || item.phase === null || item.phase === "final_answer"),
-    ) ??
-      false);
+    ) ?? false;
+  const upstreamHasLegacyFinalAssistantMessage =
+    input.upstreamTurn?.items.some(
+      (item) =>
+        item.type === "agentMessage" &&
+        item.text.length > 0 &&
+        (item.phase === undefined || item.phase === null),
+    ) ?? false;
+  const completionIsAuthoritative =
+    input.rolloutTerminalState === "completed" || input.upstreamTurn?.status === "completed";
+  const hasFinalAssistantMessage =
+    input.rolloutHasFinalResponse === true ||
+    upstreamHasLegacyFinalAssistantMessage ||
+    (completionIsAuthoritative && upstreamHasFinalAssistantMessage);
 
   if (
     input.rolloutTerminalState === "completed" ||
@@ -614,14 +647,15 @@ export function resolveStaleCodexCliSession(input: {
     };
   }
 
-  if (input.rolloutIsOpen) {
+  if (input.rolloutIsOpen && input.rolloutIsRecent) {
     return { status: "preserve" };
   }
 
   return {
     status: "interrupted",
-    lastError:
-      "The Codex process ended before it produced a final response. T3 recovered the available transcript.",
+    lastError: input.rolloutIsOpen
+      ? "The Codex turn stopped producing activity before it produced a final response. T3 recovered the available transcript."
+      : "The Codex process ended before it produced a final response. T3 recovered the available transcript.",
   };
 }
 
@@ -769,14 +803,36 @@ export function shouldPreserveCurrentOpenCodexCliImport(input: {
   readonly staleActiveTurnId: string | null;
   readonly rolloutIsOpen: boolean;
   readonly rolloutTerminalEvidence: CodexCliRolloutTerminalEvidence;
+  readonly nowMillis: number;
 }): boolean {
   return (
     isCurrentCodexCliImport(input.binding, input.listedThread) &&
     input.staleActiveTurnId !== null &&
     input.rolloutIsOpen &&
+    isRecentCodexCliActivity(input.listedThread.updatedAt, input.nowMillis) &&
     input.rolloutTerminalEvidence.state === null &&
     input.rolloutTerminalEvidence.finalMessage === null
   );
+}
+
+export function shouldReconcileCurrentCodexCliSessionWithoutRead(input: {
+  readonly binding: ProviderRuntimeBinding | undefined;
+  readonly listedThread: CodexListedThread;
+  readonly staleActiveTurnId: string | null;
+  readonly rolloutIsOpen: boolean;
+  readonly rolloutTerminalEvidence: CodexCliRolloutTerminalEvidence;
+  readonly nowMillis: number;
+}): boolean {
+  return (
+    isCurrentCodexCliImport(input.binding, input.listedThread) &&
+    input.staleActiveTurnId !== null &&
+    input.rolloutTerminalEvidence.finalMessage === null &&
+    !shouldPreserveCurrentOpenCodexCliImport(input)
+  );
+}
+
+export function isRecentCodexCliActivity(updatedAt: number, nowMillis: number): boolean {
+  return nowMillis - unixSecondsToMillis(updatedAt, 0) <= CODEX_CLI_LIVE_INACTIVITY_GRACE_MS;
 }
 
 export function isImportableCodexInteractiveThread(thread: CodexListedThread): boolean {
@@ -945,38 +1001,70 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
     >();
     const scanIntervalMs = Math.max(1, options?.scanIntervalMs ?? DEFAULT_SCAN_INTERVAL_MS);
 
-    const importThread = Effect.fn("CodexCliSessionImporter.importThread")(function* (
+    const resolveRolloutPath = Effect.fn("CodexCliSessionImporter.resolveRolloutPath")(function* (
       target: CodexDiscoveryTarget,
-      client: CodexClient.CodexAppServerClient["Service"],
+      listedThread: CodexListedThread,
+      sessionsRoot: string,
+      realSessionsRoot: string | undefined,
+    ) {
+      if (realSessionsRoot === undefined) {
+        return undefined;
+      }
+      const listedRolloutPath = listedThread.path?.trim();
+      if (!listedRolloutPath) {
+        return undefined;
+      }
+
+      const candidate = path.resolve(listedRolloutPath);
+      if (!isCodexRolloutPathWithinSessionsRoot(path, sessionsRoot, candidate)) {
+        yield* Effect.logWarning("codex.cli-import.rollout-path-rejected", {
+          instanceId: target.instanceId,
+          providerThreadId: listedThread.id,
+          sessionsRoot,
+          rolloutPath: candidate,
+        });
+        return undefined;
+      }
+
+      const realRolloutPath = yield* fileSystem.realPath(candidate).pipe(Effect.option);
+      if (Option.isNone(realRolloutPath)) {
+        return undefined;
+      }
+      if (!isCodexRolloutPathWithinSessionsRoot(path, realSessionsRoot, realRolloutPath.value)) {
+        yield* Effect.logWarning("codex.cli-import.rollout-path-rejected", {
+          instanceId: target.instanceId,
+          providerThreadId: listedThread.id,
+          sessionsRoot: realSessionsRoot,
+          rolloutPath: realRolloutPath.value,
+        });
+        return undefined;
+      }
+      return realRolloutPath.value;
+    });
+
+    const prepareThreadImport = Effect.fn("CodexCliSessionImporter.prepareThreadImport")(function* (
+      target: CodexDiscoveryTarget,
       listedThread: CodexListedThread,
       bindings: ReadonlyArray<ProviderRuntimeBindingWithMetadata>,
-      bindingsByThreadId: ReadonlyMap<ThreadId, ProviderRuntimeBindingWithMetadata>,
       sessionsRoot: string,
       realSessionsRoot: string | undefined,
     ) {
       if (!isImportableCodexInteractiveThread(listedThread)) {
-        return "skipped" satisfies CodexCliThreadImportResult;
+        return undefined;
       }
 
-      const threadId = ThreadId.make(listedThread.id);
-      if (isCodexProviderThreadOwnedByAnotherBinding(listedThread.id, bindings)) {
-        yield* Effect.logDebug("codex.cli-import.skipped-t3-owned-thread", {
-          providerThreadId: listedThread.id,
-          instanceId: target.instanceId,
-        });
-        return "skipped" satisfies CodexCliThreadImportResult;
-      }
-      const existingBinding = bindingsByThreadId.get(threadId);
+      const existingBinding = resolveCodexCliImportBinding(listedThread.id, bindings);
+      const threadId = existingBinding?.threadId ?? ThreadId.make(listedThread.id);
       if (existingBinding !== undefined && existingBinding.provider !== CODEX_DRIVER) {
         yield* Effect.logWarning("codex.cli-import.binding-conflict", {
           threadId,
           existingProvider: existingBinding.provider,
           discoveredInstanceId: target.instanceId,
         });
-        return "skipped" satisfies CodexCliThreadImportResult;
+        return undefined;
       }
       if (isLiveCodexBinding(existingBinding)) {
-        return "skipped" satisfies CodexCliThreadImportResult;
+        return undefined;
       }
 
       const existingThread = yield* projectionSnapshotQuery.getThreadShellById(threadId);
@@ -993,44 +1081,77 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
       if (
         shouldSkipCurrentCodexCliImport(existingBinding, listedThread, staleSession !== undefined)
       ) {
-        return "skipped" satisfies CodexCliThreadImportResult;
+        return undefined;
       }
 
-      const rolloutPath = yield* Effect.gen(function* () {
-        if (realSessionsRoot === undefined) {
-          return undefined;
-        }
-        const listedRolloutPath = listedThread.path?.trim();
-        if (!listedRolloutPath) {
-          return undefined;
-        }
+      return {
+        listedThread,
+        threadId,
+        existingBinding,
+        existingThread,
+        projectedThread,
+        staleSession,
+        importIsCurrent,
+        rolloutPath: yield* resolveRolloutPath(
+          target,
+          listedThread,
+          sessionsRoot,
+          realSessionsRoot,
+        ),
+      };
+    });
 
-        const candidate = path.resolve(listedRolloutPath);
-        if (!isCodexRolloutPathWithinSessionsRoot(path, sessionsRoot, candidate)) {
-          yield* Effect.logWarning("codex.cli-import.rollout-path-rejected", {
-            instanceId: target.instanceId,
-            providerThreadId: listedThread.id,
-            sessionsRoot,
-            rolloutPath: candidate,
-          });
-          return undefined;
-        }
-
-        const realRolloutPath = yield* fileSystem.realPath(candidate).pipe(Effect.option);
-        if (Option.isNone(realRolloutPath)) {
-          return undefined;
-        }
-        if (!isCodexRolloutPathWithinSessionsRoot(path, realSessionsRoot, realRolloutPath.value)) {
-          yield* Effect.logWarning("codex.cli-import.rollout-path-rejected", {
-            instanceId: target.instanceId,
-            providerThreadId: listedThread.id,
-            sessionsRoot: realSessionsRoot,
-            rolloutPath: realRolloutPath.value,
-          });
-          return undefined;
-        }
-        return realRolloutPath.value;
+    const settleStaleSession = Effect.fn("CodexCliSessionImporter.settleStaleSession")(function* (
+      threadId: ThreadId,
+      staleSession: NonNullable<OrchestrationThreadShell["session"]>,
+      resolution: SettledCodexCliStaleSessionResolution,
+      rolloutTerminalState: CodexCliRolloutTerminalState,
+    ) {
+      const settledAt = DateTime.formatIso(yield* DateTime.now);
+      yield* orchestrationEngine.dispatch({
+        type: "thread.session.set",
+        commandId: stableCommandId(
+          "session-reconciled",
+          resolution.status,
+          threadId,
+          staleSession.activeTurnId ?? staleSession.updatedAt,
+        ),
+        threadId,
+        session: {
+          ...staleSession,
+          status: resolution.status,
+          activeTurnId: null,
+          lastError: resolution.lastError,
+          updatedAt: settledAt,
+        },
+        createdAt: settledAt,
       });
+      yield* Effect.logInfo("codex.cli-import.reconciled-stale-session", {
+        threadId,
+        previousStatus: staleSession.status,
+        previousActiveTurnId: staleSession.activeTurnId,
+        reconciledStatus: resolution.status,
+        rolloutTerminalState,
+      });
+    });
+
+    const importThread = Effect.fn("CodexCliSessionImporter.importThread")(function* (
+      target: CodexDiscoveryTarget,
+      client: CodexClient.CodexAppServerClient["Service"],
+      prepared: PreparedCodexCliThreadImport,
+      openRolloutPaths: ReadonlySet<string>,
+      nowMillis: number,
+    ) {
+      const {
+        listedThread,
+        threadId,
+        existingBinding,
+        existingThread,
+        projectedThread,
+        staleSession,
+        importIsCurrent,
+        rolloutPath,
+      } = prepared;
       const staleActiveTurnId = staleSession?.activeTurnId ?? null;
       const rolloutTerminalEvidence =
         rolloutPath === undefined || staleActiveTurnId === null
@@ -1041,11 +1162,10 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
             } satisfies CodexCliRolloutTerminalEvidence)
           : yield* readCodexRolloutTerminalEvidence(fileSystem, rolloutPath, staleActiveTurnId);
       const rolloutIsOpen =
-        rolloutPath !== undefined && staleActiveTurnId !== null
-          ? (yield* collectOpenCodexRolloutPaths(fileSystem, path, new Set([rolloutPath]))).has(
-              rolloutPath,
-            )
-          : false;
+        rolloutPath !== undefined &&
+        staleActiveTurnId !== null &&
+        openRolloutPaths.has(rolloutPath);
+      const rolloutIsRecent = isRecentCodexCliActivity(listedThread.updatedAt, nowMillis);
       if (
         shouldPreserveCurrentOpenCodexCliImport({
           binding: existingBinding,
@@ -1053,6 +1173,7 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
           staleActiveTurnId,
           rolloutIsOpen,
           rolloutTerminalEvidence,
+          nowMillis,
         })
       ) {
         yield* Effect.logInfo("codex.cli-import.recovering-live-session", {
@@ -1061,6 +1182,34 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
           providerThreadId: listedThread.id,
         });
         return "recovering-live" satisfies CodexCliThreadImportResult;
+      }
+      if (
+        staleSession !== undefined &&
+        shouldReconcileCurrentCodexCliSessionWithoutRead({
+          binding: existingBinding,
+          listedThread,
+          staleActiveTurnId,
+          rolloutIsOpen,
+          rolloutTerminalEvidence,
+          nowMillis,
+        })
+      ) {
+        const resolution = resolveStaleCodexCliSession({
+          rolloutIsOpen,
+          rolloutIsRecent,
+          rolloutHasFinalResponse: false,
+          rolloutTerminalState: rolloutTerminalEvidence.state,
+          upstreamTurn: undefined,
+        });
+        if (resolution.status !== "preserve") {
+          yield* settleStaleSession(
+            threadId,
+            staleSession,
+            resolution,
+            rolloutTerminalEvidence.state,
+          );
+          return "imported" satisfies CodexCliThreadImportResult;
+        }
       }
 
       const response = yield* client.request("thread/read", {
@@ -1203,6 +1352,7 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
             : thread.turns.find((turn) => turn.id === staleActiveTurnId);
         const resolution = resolveStaleCodexCliSession({
           rolloutIsOpen,
+          rolloutIsRecent,
           rolloutHasFinalResponse: rolloutTerminalEvidence.finalMessage !== null,
           rolloutTerminalState: rolloutTerminalEvidence.state,
           upstreamTurn,
@@ -1216,32 +1366,12 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
             providerThreadId: thread.id,
           });
         } else {
-          const settledAt = DateTime.formatIso(yield* DateTime.now);
-          yield* orchestrationEngine.dispatch({
-            type: "thread.session.set",
-            commandId: stableCommandId(
-              "session-reconciled",
-              resolution.status,
-              threadId,
-              staleActiveTurnId ?? staleSession.updatedAt,
-            ),
+          yield* settleStaleSession(
             threadId,
-            session: {
-              ...staleSession,
-              status: resolution.status,
-              activeTurnId: null,
-              lastError: resolution.lastError,
-              updatedAt: settledAt,
-            },
-            createdAt: settledAt,
-          });
-          yield* Effect.logInfo("codex.cli-import.reconciled-stale-session", {
-            threadId,
-            previousStatus: staleSession.status,
-            previousActiveTurnId: staleActiveTurnId,
-            reconciledStatus: resolution.status,
-            rolloutTerminalState: rolloutTerminalEvidence.state,
-          });
+            staleSession,
+            resolution,
+            rolloutTerminalEvidence.state,
+          );
         }
       }
 
@@ -1276,30 +1406,62 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
         Effect.gen(function* () {
           const threads = yield* listInteractiveThreads(client);
           const bindings = yield* directory.listBindings();
-          const bindingsByThreadId = new Map(
-            bindings.map((binding) => [binding.threadId, binding] as const),
-          );
           const sessionsRoot = path.resolve(target.homeLayout.sharedHomePath, "sessions");
           const realSessionsRoot = yield* fileSystem.realPath(sessionsRoot).pipe(Effect.option);
+          const preparedImports: PreparedCodexCliThreadImport[] = [];
+          for (const thread of threads) {
+            const prepared = yield* prepareThreadImport(
+              target,
+              thread,
+              bindings,
+              sessionsRoot,
+              Option.getOrUndefined(realSessionsRoot),
+            ).pipe(
+              Effect.catchCause((cause) =>
+                Effect.logWarning("codex.cli-import.thread-prepare-failed", {
+                  instanceId: target.instanceId,
+                  codexHome: target.homeLayout.sharedHomePath,
+                  providerThreadId: thread.id,
+                  cause,
+                }).pipe(Effect.as(undefined)),
+              ),
+            );
+            if (prepared !== undefined) {
+              preparedImports.push(prepared);
+            }
+          }
+          const openRolloutCandidates = new Set(
+            preparedImports.flatMap((prepared) =>
+              prepared.staleSession?.activeTurnId !== null &&
+              prepared.staleSession?.activeTurnId !== undefined &&
+              prepared.rolloutPath !== undefined
+                ? [prepared.rolloutPath]
+                : [],
+            ),
+          );
+          const openRolloutPaths = yield* collectOpenCodexRolloutPaths(
+            fileSystem,
+            path,
+            openRolloutCandidates,
+          );
+          const nowMillis = DateTime.toEpochMillis(yield* DateTime.now);
           let importedCount = 0;
           let recoveringLiveCount = 0;
-          for (const thread of threads) {
+          for (const prepared of preparedImports) {
             const importResult = yield* importThread(
               target,
               client,
-              thread,
-              bindings,
-              bindingsByThreadId,
-              sessionsRoot,
-              Option.getOrUndefined(realSessionsRoot),
+              prepared,
+              openRolloutPaths,
+              nowMillis,
             ).pipe(
               Effect.catchCause((cause) =>
                 Effect.logWarning("codex.cli-import.thread-failed", {
                   instanceId: target.instanceId,
                   codexHome: target.homeLayout.sharedHomePath,
-                  providerThreadId: thread.id,
+                  providerThreadId: prepared.listedThread.id,
                   cause,
-                }).pipe(Effect.as(false)),
+                }).pipe(Effect.as("skipped" satisfies CodexCliThreadImportResult)),
               ),
             );
             if (importResult !== "skipped") {

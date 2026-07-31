@@ -15,16 +15,18 @@ import {
   codexCliMessageImportCommand,
   collectCodexCliImportedMessages,
   collectCodexCliRolloutMessages,
-  isCodexProviderThreadOwnedByAnotherBinding,
   isCodexRolloutPathWithinSessionsRoot,
   isCurrentCodexCliImport,
   isImportableCodexInteractiveThread,
   isLiveCodexBinding,
+  isRecentCodexCliActivity,
   parseCodexRolloutTerminalEvidence,
   reconcileCodexCliImportedMessages,
+  resolveCodexCliImportBinding,
   resolveStaleCodexCliSession,
   shouldInterruptStaleCodexCliSession,
   shouldPreserveCurrentOpenCodexCliImport,
+  shouldReconcileCurrentCodexCliSessionWithoutRead,
   shouldSkipCurrentCodexCliImport,
 } from "./CodexCliSessionImporter.ts";
 
@@ -429,7 +431,7 @@ describe("CodexCliSessionImporter transcript conversion", () => {
     expect(isLiveCodexBinding(undefined)).toBe(false);
   });
 
-  it("does not import a provider thread already owned by a differently keyed T3 thread", () => {
+  it("selects a differently keyed T3 binding that owns the provider thread", () => {
     const providerThreadId = "019codex-thread";
     const baseBinding = {
       provider: ProviderDriverKind.make("codex"),
@@ -438,27 +440,21 @@ describe("CodexCliSessionImporter transcript conversion", () => {
       runtimeMode: "full-access" as const,
       lastSeenAt: "2026-07-24T00:00:00.000Z",
     };
+    const ownerBinding = {
+      ...baseBinding,
+      threadId: ThreadId.make("t3-owned-thread"),
+      resumeCursor: { threadId: providerThreadId },
+    };
 
+    expect(resolveCodexCliImportBinding(providerThreadId, [ownerBinding])).toBe(ownerBinding);
+    const sameKeyBinding = {
+      ...baseBinding,
+      threadId: ThreadId.make(providerThreadId),
+      resumeCursor: { threadId: providerThreadId },
+    };
+    expect(resolveCodexCliImportBinding(providerThreadId, [sameKeyBinding])).toBe(sameKeyBinding);
     expect(
-      isCodexProviderThreadOwnedByAnotherBinding(providerThreadId, [
-        {
-          ...baseBinding,
-          threadId: ThreadId.make("t3-owned-thread"),
-          resumeCursor: { threadId: providerThreadId },
-        },
-      ]),
-    ).toBe(true);
-    expect(
-      isCodexProviderThreadOwnedByAnotherBinding(providerThreadId, [
-        {
-          ...baseBinding,
-          threadId: ThreadId.make(providerThreadId),
-          resumeCursor: { threadId: providerThreadId },
-        },
-      ]),
-    ).toBe(false);
-    expect(
-      isCodexProviderThreadOwnedByAnotherBinding(providerThreadId, [
+      resolveCodexCliImportBinding(providerThreadId, [
         {
           ...baseBinding,
           threadId: ThreadId.make("other-provider-thread"),
@@ -471,7 +467,27 @@ describe("CodexCliSessionImporter transcript conversion", () => {
           resumeCursor: { threadId: 42 },
         },
       ]),
-    ).toBe(false);
+    ).toBeUndefined();
+  });
+
+  it("prefers the live T3 owner when duplicate resume bindings exist", () => {
+    const providerThreadId = "019codex-thread";
+    const stopped = {
+      threadId: ThreadId.make("stopped-owner"),
+      provider: ProviderDriverKind.make("codex"),
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      status: "stopped" as const,
+      runtimeMode: "full-access" as const,
+      resumeCursor: { threadId: providerThreadId },
+      lastSeenAt: "2026-07-24T00:00:00.000Z",
+    };
+    const running = {
+      ...stopped,
+      threadId: ThreadId.make("running-owner"),
+      status: "running" as const,
+    };
+
+    expect(resolveCodexCliImportBinding(providerThreadId, [stopped, running])).toBe(running);
   });
 
   it("interrupts stale projected work once the live provider binding is gone", () => {
@@ -513,13 +529,27 @@ describe("CodexCliSessionImporter transcript conversion", () => {
     expect(
       resolveStaleCodexCliSession({
         rolloutIsOpen: true,
+        rolloutIsRecent: true,
         rolloutTerminalState: null,
         upstreamTurn: activeTurn,
       }),
     ).toEqual({ status: "preserve" });
     expect(
       resolveStaleCodexCliSession({
+        rolloutIsOpen: true,
+        rolloutIsRecent: false,
+        rolloutTerminalState: null,
+        upstreamTurn: activeTurn,
+      }),
+    ).toEqual({
+      status: "interrupted",
+      lastError:
+        "The Codex turn stopped producing activity before it produced a final response. T3 recovered the available transcript.",
+    });
+    expect(
+      resolveStaleCodexCliSession({
         rolloutIsOpen: false,
+        rolloutIsRecent: false,
         rolloutTerminalState: null,
         upstreamTurn: activeTurn,
       }),
@@ -531,6 +561,7 @@ describe("CodexCliSessionImporter transcript conversion", () => {
     expect(
       resolveStaleCodexCliSession({
         rolloutIsOpen: true,
+        rolloutIsRecent: true,
         rolloutTerminalState: "interrupted",
         upstreamTurn: activeTurn,
       }),
@@ -540,10 +571,11 @@ describe("CodexCliSessionImporter transcript conversion", () => {
     });
   });
 
-  it("settles recovered turns when Codex persisted a final response", () => {
+  it("does not treat an unconfirmed final-answer item as root turn completion", () => {
     expect(
       resolveStaleCodexCliSession({
         rolloutIsOpen: true,
+        rolloutIsRecent: true,
         rolloutTerminalState: null,
         upstreamTurn: {
           status: "interrupted",
@@ -558,10 +590,14 @@ describe("CodexCliSessionImporter transcript conversion", () => {
           ],
         },
       }),
-    ).toEqual({ status: "ready", lastError: null });
+    ).toEqual({ status: "preserve" });
+  });
+
+  it("settles recovered turns when Codex persisted terminal evidence", () => {
     expect(
       resolveStaleCodexCliSession({
         rolloutIsOpen: false,
+        rolloutIsRecent: false,
         rolloutHasFinalResponse: true,
         rolloutTerminalState: "completed",
         upstreamTurn: {
@@ -577,6 +613,7 @@ describe("CodexCliSessionImporter transcript conversion", () => {
     expect(
       resolveStaleCodexCliSession({
         rolloutIsOpen: false,
+        rolloutIsRecent: false,
         rolloutTerminalState: "completed",
         upstreamTurn: {
           status: "completed",
@@ -654,6 +691,7 @@ describe("CodexCliSessionImporter transcript conversion", () => {
     expect(
       resolveStaleCodexCliSession({
         rolloutIsOpen: true,
+        rolloutIsRecent: true,
         rolloutTerminalState: null,
         upstreamTurn: commentaryOnlyTurn,
       }),
@@ -661,6 +699,7 @@ describe("CodexCliSessionImporter transcript conversion", () => {
     expect(
       resolveStaleCodexCliSession({
         rolloutIsOpen: false,
+        rolloutIsRecent: false,
         rolloutTerminalState: null,
         upstreamTurn: commentaryOnlyTurn,
       }),
@@ -675,6 +714,7 @@ describe("CodexCliSessionImporter transcript conversion", () => {
     expect(
       resolveStaleCodexCliSession({
         rolloutIsOpen: false,
+        rolloutIsRecent: false,
         rolloutTerminalState: null,
         upstreamTurn: {
           status: "interrupted",
@@ -695,6 +735,7 @@ describe("CodexCliSessionImporter transcript conversion", () => {
     expect(
       resolveStaleCodexCliSession({
         rolloutIsOpen: false,
+        rolloutIsRecent: false,
         rolloutTerminalState: null,
         upstreamTurn: {
           status: "failed",
@@ -804,9 +845,26 @@ describe("CodexCliSessionImporter transcript conversion", () => {
         finalMessage: null,
         completedAt: null,
       },
+      nowMillis: 1_700_000_002_000 + 60_000,
     } as const;
 
     expect(shouldPreserveCurrentOpenCodexCliImport(input)).toBe(true);
+    expect(isRecentCodexCliActivity(input.listedThread.updatedAt, input.nowMillis)).toBe(true);
+    expect(
+      shouldPreserveCurrentOpenCodexCliImport({
+        ...input,
+        nowMillis: 1_700_000_002_000 + 20 * 60_000,
+      }),
+    ).toBe(false);
+    expect(
+      shouldReconcileCurrentCodexCliSessionWithoutRead({
+        ...input,
+        nowMillis: 1_700_000_002_000 + 20 * 60_000,
+      }),
+    ).toBe(true);
+    expect(
+      isRecentCodexCliActivity(input.listedThread.updatedAt, 1_700_000_002_000 + 20 * 60_000),
+    ).toBe(false);
     expect(
       shouldPreserveCurrentOpenCodexCliImport({
         ...input,
@@ -825,6 +883,12 @@ describe("CodexCliSessionImporter transcript conversion", () => {
         rolloutIsOpen: false,
       }),
     ).toBe(false);
+    expect(
+      shouldReconcileCurrentCodexCliSessionWithoutRead({
+        ...input,
+        rolloutIsOpen: false,
+      }),
+    ).toBe(true);
     expect(
       shouldPreserveCurrentOpenCodexCliImport({
         ...input,
@@ -847,6 +911,16 @@ describe("CodexCliSessionImporter transcript conversion", () => {
     ).toBe(false);
     expect(
       shouldPreserveCurrentOpenCodexCliImport({
+        ...input,
+        rolloutTerminalEvidence: {
+          state: null,
+          finalMessage: "Recovered final response.",
+          completedAt: null,
+        },
+      }),
+    ).toBe(false);
+    expect(
+      shouldReconcileCurrentCodexCliSessionWithoutRead({
         ...input,
         rolloutTerminalEvidence: {
           state: null,
