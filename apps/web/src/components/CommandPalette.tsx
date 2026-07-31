@@ -41,6 +41,7 @@ import {
   LinkIcon,
   LoaderCircleIcon,
   MessageSquareIcon,
+  RefreshCwIcon,
   SettingsIcon,
   SquarePenIcon,
   TextSearchIcon,
@@ -1544,6 +1545,25 @@ function OpenCommandPaletteDialog(props: {
       await navigate({ to: "/settings" });
     },
   });
+
+  const restartApp = typeof window === "undefined" ? undefined : window.desktopBridge?.restartApp;
+  if (typeof restartApp === "function") {
+    actionItems.push({
+      kind: "action",
+      value: "action:restart-app",
+      searchTerms: ["restart", "relaunch", "reload", "desktop", "t3 code", "quit"],
+      title: "Restart T3 Code",
+      description: "Gracefully restart the desktop app and local backend",
+      icon: <RefreshCwIcon className={ITEM_ICON_CLASS} />,
+      run: async () => {
+        const confirmed = window.confirm(
+          "Restart T3 Code? The app will disconnect briefly, and active local turns may be interrupted.",
+        );
+        if (!confirmed) return;
+        await restartApp();
+      },
+    });
+  }
 
   const rootGroups = buildRootGroups({ actionItems, recentThreadItems });
   const sourceSelectionViewValue =

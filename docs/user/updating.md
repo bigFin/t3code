@@ -21,6 +21,15 @@ connection will disappear briefly and work that is still running may be interrup
 
 The update does not remove saved threads, settings, or project files.
 
+## Restart the Desktop App
+
+Use **Settings** → **About** → **Restart T3 Code**, or run **Restart T3 Code** from the command
+palette. This uses the desktop app's graceful shutdown and relaunch flow rather than requiring a
+process kill or a hidden application menu.
+
+The desktop app and its local backend disconnect briefly. Remote environments reconnect
+automatically, but let active local agent work and terminal commands finish first.
+
 ## Choose the Action You See
 
 If the client is older, update and relaunch T3 Code on the device showing the warning. T3 Code does

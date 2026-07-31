@@ -350,6 +350,8 @@ function AboutVersionSection() {
   const [isChangingUpdateChannel, setIsChangingUpdateChannel] = useState(false);
 
   const hasDesktopBridge = typeof window !== "undefined" && Boolean(window.desktopBridge);
+  const canRestartDesktop =
+    typeof window !== "undefined" && typeof window.desktopBridge?.restartApp === "function";
   const selectedUpdateChannel = updateState?.channel ?? "latest";
   const selectedHostedAppChannel = hasDesktopBridge ? null : HOSTED_APP_CHANNEL;
 
@@ -447,6 +449,24 @@ function AboutVersionSection() {
         );
       });
   }, [updateState]);
+
+  const handleRestart = useCallback(() => {
+    const restartApp = window.desktopBridge?.restartApp;
+    if (typeof restartApp !== "function") return;
+    const confirmed = window.confirm(
+      "Restart T3 Code? The app will disconnect briefly, and active local turns may be interrupted.",
+    );
+    if (!confirmed) return;
+    void restartApp().catch((error: unknown) => {
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: "Could not restart T3 Code",
+          description: error instanceof Error ? error.message : "Restart failed.",
+        }),
+      );
+    });
+  }, []);
 
   const action = updateState ? resolveDesktopUpdateButtonAction(updateState) : "none";
   const buttonTooltip = updateState ? getDesktopUpdateButtonTooltip(updateState) : null;
@@ -548,6 +568,17 @@ function AboutVersionSection() {
                 </SelectItem>
               </SelectPopup>
             </Select>
+          }
+        />
+      ) : null}
+      {canRestartDesktop ? (
+        <SettingsRow
+          title="Restart T3 Code"
+          description="Gracefully restarts the desktop app and local backend. Remote environments reconnect automatically."
+          control={
+            <Button size="xs" variant="outline" onClick={handleRestart}>
+              Restart
+            </Button>
           }
         />
       ) : null}
