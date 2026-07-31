@@ -17,6 +17,7 @@ import {
   collectCodexCliRolloutMessages,
   isCodexRolloutPathWithinSessionsRoot,
   isCurrentCodexCliImport,
+  isDifferentlyKeyedCodexCliOwnerBinding,
   isImportableCodexInteractiveThread,
   isLiveCodexBinding,
   isRecentCodexCliActivity,
@@ -447,12 +448,14 @@ describe("CodexCliSessionImporter transcript conversion", () => {
     };
 
     expect(resolveCodexCliImportBinding(providerThreadId, [ownerBinding])).toBe(ownerBinding);
+    expect(isDifferentlyKeyedCodexCliOwnerBinding(providerThreadId, ownerBinding)).toBe(true);
     const sameKeyBinding = {
       ...baseBinding,
       threadId: ThreadId.make(providerThreadId),
       resumeCursor: { threadId: providerThreadId },
     };
     expect(resolveCodexCliImportBinding(providerThreadId, [sameKeyBinding])).toBe(sameKeyBinding);
+    expect(isDifferentlyKeyedCodexCliOwnerBinding(providerThreadId, sameKeyBinding)).toBe(false);
     expect(
       resolveCodexCliImportBinding(providerThreadId, [
         {

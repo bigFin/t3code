@@ -534,6 +534,17 @@ export function resolveCodexCliImportBinding(
   );
 }
 
+export function isDifferentlyKeyedCodexCliOwnerBinding(
+  providerThreadId: string,
+  binding: ProviderRuntimeBinding | undefined,
+): boolean {
+  return (
+    binding?.provider === CODEX_DRIVER &&
+    binding.threadId !== providerThreadId &&
+    readCodexResumeCursorThreadId(binding.resumeCursor) === providerThreadId
+  );
+}
+
 export function isLiveCodexBinding(binding: ProviderRuntimeBinding | undefined): boolean {
   return binding?.status === "starting" || binding?.status === "running";
 }
@@ -1068,6 +1079,12 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
       }
 
       const existingThread = yield* projectionSnapshotQuery.getThreadShellById(threadId);
+      if (
+        Option.isNone(existingThread) &&
+        isDifferentlyKeyedCodexCliOwnerBinding(listedThread.id, existingBinding)
+      ) {
+        return undefined;
+      }
       const projectedThread = Option.getOrUndefined(existingThread);
       const staleSession =
         shouldInterruptStaleCodexCliSession(existingBinding, projectedThread?.session) &&
