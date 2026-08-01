@@ -10,6 +10,7 @@ import * as Scope from "effect/Scope";
 import type * as Electron from "electron";
 
 import * as DesktopEnvironment from "./DesktopEnvironment.ts";
+import * as DesktopInstanceLock from "./DesktopInstanceLock.ts";
 import { makeComponentLogger } from "./DesktopObservability.ts";
 import * as DesktopShutdown from "./DesktopShutdown.ts";
 import * as ElectronApp from "../electron/ElectronApp.ts";
@@ -37,31 +38,6 @@ export type DesktopLifecycleRuntimeServices =
   | ElectronApp.ElectronApp
   | ElectronTheme.ElectronTheme;
 
-export interface DesktopRelaunchTarget {
-  readonly execPath: string;
-  readonly args: ReadonlyArray<string>;
-}
-
-export function resolveDesktopRelaunchTarget(input: {
-  readonly configuredLauncherPath: Option.Option<string>;
-  readonly processExecPath: string;
-  readonly processArgv: ReadonlyArray<string>;
-  readonly appPath: string;
-}): DesktopRelaunchTarget {
-  if (Option.isNone(input.configuredLauncherPath)) {
-    return {
-      execPath: input.processExecPath,
-      args: input.processArgv.slice(1),
-    };
-  }
-
-  const appPathIndex = input.processArgv.indexOf(input.appPath, 1);
-  return {
-    execPath: input.configuredLauncherPath.value,
-    args: input.processArgv.slice(appPathIndex === -1 ? 1 : appPathIndex + 1),
-  };
-}
-
 /**
  * @effect-expect-leaking DesktopEnvironment | DesktopShutdown | DesktopState | DesktopWindow | ElectronApp | ElectronTheme
  */
@@ -70,9 +46,13 @@ export class DesktopLifecycle extends Context.Service<
   {
     readonly relaunch: (
       reason: string,
-      target?: DesktopRelaunchTarget,
+      target?: DesktopInstanceLock.DesktopRelaunchTarget,
     ) => Effect.Effect<void, never, DesktopLifecycleRuntimeServices>;
-    readonly register: Effect.Effect<void, never, Scope.Scope | DesktopLifecycleRuntimeServices>;
+    readonly register: Effect.Effect<
+      void,
+      never,
+      Scope.Scope | DesktopInstanceLock.DesktopInstanceLock | DesktopLifecycleRuntimeServices
+    >;
   }
 >()("@t3tools/desktop/app/DesktopLifecycle") {}
 
@@ -83,18 +63,6 @@ const {
 } = makeComponentLogger("desktop-lifecycle");
 
 const DESKTOP_SHUTDOWN_TIMEOUT_MS = 10_000;
-const DESKTOP_LAUNCH_IDENTITY_VERSION = 1;
-
-const DesktopLaunchIdentity = Schema.Struct({
-  type: Schema.Literal("t3code-desktop-launch"),
-  version: Schema.Literal(DESKTOP_LAUNCH_IDENTITY_VERSION),
-  appPath: Schema.String,
-  execPath: Schema.String,
-  args: Schema.Array(Schema.String),
-});
-type DesktopLaunchIdentity = typeof DesktopLaunchIdentity.Type;
-
-const decodeDesktopLaunchIdentity = Schema.decodeUnknownOption(DesktopLaunchIdentity);
 
 export function shouldQuitAfterLastWindowCloses(platform: NodeJS.Platform): boolean {
   // Keep the Linux desktop/backend process alive after the compositor closes
@@ -248,7 +216,7 @@ function quitFromSignal(
 
 const relaunch = Effect.fn("desktop.lifecycle.relaunch")(function* (
   reason: string,
-  target?: DesktopRelaunchTarget,
+  target?: DesktopInstanceLock.DesktopRelaunchTarget,
 ) {
   const electronApp = yield* ElectronApp.ElectronApp;
   const environment = yield* DesktopEnvironment.DesktopEnvironment;
@@ -265,7 +233,7 @@ const relaunch = Effect.fn("desktop.lifecycle.relaunch")(function* (
     }
     const resolvedTarget =
       target ??
-      resolveDesktopRelaunchTarget({
+      DesktopInstanceLock.resolveDesktopRelaunchTarget({
         configuredLauncherPath: environment.desktopLauncherPath,
         processExecPath: process.execPath,
         processArgv: process.argv,
@@ -293,29 +261,12 @@ export const make = DesktopLifecycle.of({
     const electronApp = yield* ElectronApp.ElectronApp;
     const electronTheme = yield* ElectronTheme.ElectronTheme;
     const environment = yield* DesktopEnvironment.DesktopEnvironment;
-    const metadata = yield* electronApp.metadata.pipe(Effect.orDie);
+    const instanceLock = yield* DesktopInstanceLock.DesktopInstanceLock;
     const context = yield* Effect.context<DesktopLifecycleRuntimeServices>();
     const runEffect = Effect.runPromiseWith(context);
-    const relaunchTarget = resolveDesktopRelaunchTarget({
-      configuredLauncherPath: environment.desktopLauncherPath,
-      processExecPath: process.execPath,
-      processArgv: process.argv,
-      appPath: metadata.appPath,
-    });
-    const launchIdentity: DesktopLaunchIdentity = {
-      type: "t3code-desktop-launch",
-      version: DESKTOP_LAUNCH_IDENTITY_VERSION,
-      appPath: metadata.appPath,
-      execPath: relaunchTarget.execPath,
-      args: relaunchTarget.args,
-    };
+    const launchIdentity = instanceLock.launchIdentity;
     let quitAllowed = false;
     let updaterQuitAllowed = false;
-
-    if (!(yield* electronApp.requestSingleInstanceLock(launchIdentity))) {
-      yield* electronApp.quit;
-      return yield* Effect.interrupt;
-    }
 
     yield* electronApp.on(
       "second-instance",
@@ -325,7 +276,7 @@ export const make = DesktopLifecycle.of({
         _workingDirectory: string,
         additionalData: unknown,
       ) => {
-        const incomingIdentity = decodeDesktopLaunchIdentity(additionalData);
+        const incomingIdentity = DesktopInstanceLock.decodeDesktopLaunchIdentity(additionalData);
         if (
           Option.isNone(incomingIdentity) ||
           incomingIdentity.value.appPath === launchIdentity.appPath

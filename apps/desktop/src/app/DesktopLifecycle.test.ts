@@ -10,6 +10,7 @@ import type * as Electron from "electron";
 import * as ElectronApp from "../electron/ElectronApp.ts";
 import * as ElectronTheme from "../electron/ElectronTheme.ts";
 import * as DesktopEnvironment from "./DesktopEnvironment.ts";
+import * as DesktopInstanceLock from "./DesktopInstanceLock.ts";
 import * as DesktopLifecycle from "./DesktopLifecycle.ts";
 import * as DesktopShutdown from "./DesktopShutdown.ts";
 import * as DesktopState from "./DesktopState.ts";
@@ -25,14 +26,12 @@ const makeLifecycleTestLayer = (options: {
   readonly quit?: Effect.Effect<void>;
   readonly relaunch?: (options: Electron.RelaunchOptions) => Effect.Effect<void>;
   readonly desktopLauncherPath?: string;
-  readonly requestSingleInstanceLock?: (
-    additionalData?: Readonly<Record<string, unknown>>,
-  ) => Effect.Effect<boolean>;
 }) => {
+  const appPath = options.appPath ?? "/nix/store/current-t3code/apps/desktop";
   const electronAppLayer = Layer.succeed(ElectronApp.ElectronApp, {
     metadata: Effect.succeed({
       appVersion: "1.2.3",
-      appPath: options.appPath ?? "/nix/store/current-t3code/apps/desktop",
+      appPath,
       isPackaged: true,
       resourcesPath: "/nix/store/current-t3code/resources",
       runningUnderArm64Translation: false,
@@ -46,7 +45,7 @@ const makeLifecycleTestLayer = (options: {
     setName: () => Effect.void,
     setAboutPanelOptions: () => Effect.void,
     setAppUserModelId: () => Effect.void,
-    requestSingleInstanceLock: options.requestSingleInstanceLock ?? (() => Effect.succeed(true)),
+    requestSingleInstanceLock: () => Effect.succeed(true),
     getAppMetrics: Effect.succeed([]),
     isDefaultProtocolClient: () => Effect.succeed(false),
     setAsDefaultProtocolClient: () => Effect.succeed(true),
@@ -98,7 +97,7 @@ const makeLifecycleTestLayer = (options: {
   const environmentLayer = Layer.succeed(DesktopEnvironment.DesktopEnvironment, {
     platform: "linux",
     isDevelopment: false,
-    appPath: options.appPath ?? "/nix/store/current-t3code/apps/desktop",
+    appPath,
     desktopLauncherPath:
       options.desktopLauncherPath === undefined
         ? Option.none()
@@ -113,6 +112,16 @@ const makeLifecycleTestLayer = (options: {
     isComplete: Effect.succeed(true),
   });
 
+  const instanceLockLayer = Layer.succeed(DesktopInstanceLock.DesktopInstanceLock, {
+    launchIdentity: {
+      type: "t3code-desktop-launch",
+      version: 1,
+      appPath,
+      execPath: options.desktopLauncherPath ?? "/nix/store/current-electron/bin/electron",
+      args: [appPath],
+    },
+  });
+
   return DesktopLifecycle.layer.pipe(
     Layer.provideMerge(electronAppLayer),
     Layer.provideMerge(electronThemeLayer),
@@ -120,6 +129,7 @@ const makeLifecycleTestLayer = (options: {
     Layer.provideMerge(environmentLayer),
     Layer.provideMerge(desktopShutdownLayer),
     Layer.provideMerge(DesktopState.layer),
+    Layer.provideMerge(instanceLockLayer),
   );
 };
 
@@ -196,72 +206,22 @@ describe("DesktopLifecycle", () => {
     assert.equal(DesktopLifecycle.shouldQuitAfterLastWindowCloses("win32"), true);
   });
 
-  it("routes packaged relaunches through the configured launcher", () => {
-    assert.deepEqual(
-      DesktopLifecycle.resolveDesktopRelaunchTarget({
-        configuredLauncherPath: Option.some("/nix/store/t3code/bin/t3code-desktop"),
-        processExecPath: "/nix/store/electron/bin/electron",
-        processArgv: [
-          "/nix/store/electron/bin/electron",
-          "--password-store=gnome-libsecret",
-          "/nix/store/t3code/apps/desktop",
-          "t3code://pair?token=not-logged",
-        ],
-        appPath: "/nix/store/t3code/apps/desktop",
-      }),
-      {
-        execPath: "/nix/store/t3code/bin/t3code-desktop",
-        args: ["t3code://pair?token=not-logged"],
-      },
-    );
-  });
-
-  it("preserves Electron relaunch behavior without a configured launcher", () => {
-    assert.deepEqual(
-      DesktopLifecycle.resolveDesktopRelaunchTarget({
-        configuredLauncherPath: Option.none(),
-        processExecPath: "/Applications/T3 Code.app/Contents/MacOS/T3 Code",
-        processArgv: [
-          "/Applications/T3 Code.app/Contents/MacOS/T3 Code",
-          "t3code://pair?token=not-logged",
-        ],
-        appPath: "/Applications/T3 Code.app/Contents/Resources/app.asar",
-      }),
-      {
-        execPath: "/Applications/T3 Code.app/Contents/MacOS/T3 Code",
-        args: ["t3code://pair?token=not-logged"],
-      },
-    );
-  });
-
   it.effect("activates the resident package when a matching instance launches", () =>
     Effect.gen(function* () {
       const appListeners = new Map<string, AppListener>();
       const activated = yield* Deferred.make<void>();
-      const requestSingleInstanceLock = vi.fn(
-        (_additionalData?: Readonly<Record<string, unknown>>) => Effect.succeed(true),
-      );
       const relaunch = vi.fn((_options: Electron.RelaunchOptions) => Effect.void);
       const layer = makeLifecycleTestLayer({
         appListeners,
         activate: Deferred.succeed(activated, undefined).pipe(Effect.asVoid),
         desktopLauncherPath: "/nix/store/current-t3code/bin/t3code-desktop",
         relaunch,
-        requestSingleInstanceLock,
       });
 
       yield* Effect.scoped(
         Effect.gen(function* () {
           const lifecycle = yield* DesktopLifecycle.DesktopLifecycle;
           yield* lifecycle.register;
-
-          assert.deepEqual(requestSingleInstanceLock.mock.calls[0]?.[0], {
-            type: "t3code-desktop-launch",
-            version: 1,
-            appPath: "/nix/store/current-t3code/apps/desktop",
-            execPath: "/nix/store/current-t3code/bin/t3code-desktop",
-            args: process.argv.slice(1),
-          });
 
           dispatchSecondInstance(appListeners, {
             type: "t3code-desktop-launch",
@@ -341,29 +301,6 @@ describe("DesktopLifecycle", () => {
           assert.equal(relaunch.mock.calls.length, 0);
         }),
       ).pipe(Effect.provide(layer));
-    }),
-  );
-
-  it.effect("quits a secondary process that cannot acquire the instance lock", () =>
-    Effect.gen(function* () {
-      const appListeners = new Map<string, AppListener>();
-      const quit = vi.fn();
-      const layer = makeLifecycleTestLayer({
-        appListeners,
-        quit: Effect.sync(quit),
-        requestSingleInstanceLock: () => Effect.succeed(false),
-      });
-
-      const exit = yield* Effect.scoped(
-        Effect.gen(function* () {
-          const lifecycle = yield* DesktopLifecycle.DesktopLifecycle;
-          yield* lifecycle.register;
-        }),
-      ).pipe(Effect.provide(layer), Effect.exit);
-
-      assert.equal(exit._tag, "Failure");
-      assert.equal(quit.mock.calls.length, 1);
-      assert.equal(appListeners.size, 0);
     }),
   );
 
@@ -454,6 +391,17 @@ describe("DesktopLifecycle", () => {
         Layer.provideMerge(environmentLayer),
         Layer.provideMerge(DesktopShutdown.layer),
         Layer.provideMerge(DesktopState.layer),
+        Layer.provideMerge(
+          Layer.succeed(DesktopInstanceLock.DesktopInstanceLock, {
+            launchIdentity: {
+              type: "t3code-desktop-launch",
+              version: 1,
+              appPath: "/nix/store/current-t3code/apps/desktop",
+              execPath: "/nix/store/current-electron/bin/electron",
+              args: ["/nix/store/current-t3code/apps/desktop"],
+            },
+          }),
+        ),
       );
 
       return Effect.scoped(

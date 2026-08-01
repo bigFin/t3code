@@ -24,6 +24,7 @@ vi.mock("@clerk/electron/storage", () => ({
 
 import * as DesktopClerk from "./DesktopClerk.ts";
 import * as DesktopEnvironment from "./DesktopEnvironment.ts";
+import * as DesktopInstanceLock from "./DesktopInstanceLock.ts";
 
 const makeDesktopClerkLayer = (isDevelopment = true) => {
   const environment = DesktopEnvironment.DesktopEnvironment.of({
@@ -32,7 +33,20 @@ const makeDesktopClerkLayer = (isDevelopment = true) => {
   } as unknown as DesktopEnvironment.DesktopEnvironment["Service"]);
 
   return DesktopClerk.layer.pipe(
-    Layer.provide(Layer.succeed(DesktopEnvironment.DesktopEnvironment, environment)),
+    Layer.provide(
+      Layer.mergeAll(
+        Layer.succeed(DesktopEnvironment.DesktopEnvironment, environment),
+        Layer.succeed(DesktopInstanceLock.DesktopInstanceLock, {
+          launchIdentity: {
+            type: "t3code-desktop-launch",
+            version: 1,
+            appPath: "/tmp/t3code/apps/desktop",
+            execPath: "/tmp/t3code/bin/electron",
+            args: ["/tmp/t3code/apps/desktop"],
+          },
+        }),
+      ),
+    ),
   );
 };
 
@@ -53,7 +67,7 @@ describe("DesktopClerk", () => {
     assert.equal(DesktopClerk.resolveDesktopClerkFrontendApiHostname("invalid"), undefined);
   });
 
-  it.effect("defers the SDK bridge until configure and releases it with the scope", () => {
+  it.effect("creates the SDK bridge with the layer and releases it with the scope", () => {
     const cleanup = vi.fn();
     const events: string[] = [];
     storageMock.mockReturnValue(storageAdapter);
@@ -65,9 +79,8 @@ describe("DesktopClerk", () => {
     return Effect.gen(function* () {
       yield* Effect.scoped(
         Effect.gen(function* () {
-          const clerk = yield* DesktopClerk.DesktopClerk;
-          assert.equal(createClerkBridgeMock.mock.calls.length, 0);
-          yield* clerk.configure;
+          yield* DesktopClerk.DesktopClerk;
+          assert.equal(createClerkBridgeMock.mock.calls.length, 1);
         }).pipe(Effect.provide(makeDesktopClerkLayer(true))),
       );
 
@@ -97,10 +110,7 @@ describe("DesktopClerk", () => {
 
     return Effect.gen(function* () {
       const error = yield* Effect.scoped(
-        Effect.gen(function* () {
-          const clerk = yield* DesktopClerk.DesktopClerk;
-          yield* clerk.configure;
-        }).pipe(Effect.provide(makeDesktopClerkLayer())),
+        DesktopClerk.DesktopClerk.pipe(Effect.provide(makeDesktopClerkLayer())),
       ).pipe(Effect.flip);
 
       assert.instanceOf(error, DesktopClerk.DesktopClerkBridgeInitializationError);
@@ -125,12 +135,7 @@ describe("DesktopClerk", () => {
 
     return Effect.gen(function* () {
       const exit = yield* Effect.exit(
-        Effect.scoped(
-          Effect.gen(function* () {
-            const clerk = yield* DesktopClerk.DesktopClerk;
-            yield* clerk.configure;
-          }).pipe(Effect.provide(makeDesktopClerkLayer(false))),
-        ),
+        Effect.scoped(DesktopClerk.DesktopClerk.pipe(Effect.provide(makeDesktopClerkLayer(false)))),
       );
 
       assert.equal(exit._tag, "Failure");
