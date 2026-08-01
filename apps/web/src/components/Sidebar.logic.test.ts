@@ -24,6 +24,7 @@ import {
   resolveSidebarV2Status,
   resolveThreadStatusPill,
   resolveWorkingStartedAt,
+  searchSidebarThreadsByTitle,
   formatWorkingDurationLabel,
   shouldNavigateAfterProjectRemoval,
   shouldClearThreadSelectionOnMouseDown,
@@ -868,6 +869,26 @@ describe("resolveSidebarV2AttentionDetail", () => {
       status: "retrying",
       text: "Retrying: Backoff",
     });
+  });
+});
+
+describe("searchSidebarThreadsByTitle", () => {
+  const threads = [
+    { id: "thread-1", title: "Fix workspace search", project: "Alpha" },
+    { id: "thread-2", title: "Review providers", project: "Workspace" },
+    { id: "thread-3", title: "WORKTREE cleanup", project: "Beta" },
+  ];
+
+  it("matches thread titles case-insensitively and preserves their order", () => {
+    expect(searchSidebarThreadsByTitle(threads, "work")).toEqual([threads[0], threads[2]]);
+  });
+
+  it("does not match project metadata", () => {
+    expect(searchSidebarThreadsByTitle(threads, "workspace")).toEqual([threads[0]]);
+  });
+
+  it("returns no results for an empty query", () => {
+    expect(searchSidebarThreadsByTitle(threads, "   ")).toEqual([]);
   });
 });
 
