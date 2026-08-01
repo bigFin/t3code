@@ -11,6 +11,7 @@ import {
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as ManagedRuntime from "effect/ManagedRuntime";
@@ -26,6 +27,7 @@ import {
 import { ProjectionSnapshotQuery } from "../../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
 import * as ProviderSessionRuntime from "../../persistence/ProviderSessionRuntime.ts";
+import { ServerActivation } from "../../serverActivation.ts";
 import { ProviderAdapterSessionNotFoundError, ProviderValidationError } from "../Errors.ts";
 import { ProviderSessionReaper } from "../Services/ProviderSessionReaper.ts";
 import { ProviderService, type ProviderServiceShape } from "../Services/ProviderService.ts";
@@ -300,6 +302,66 @@ describe("ProviderSessionReaper", () => {
     runtime = ManagedRuntime.make(layer);
     return { dispatch, dispatchedCommands, reattachSession, stopSession, stoppedThreadIds };
   }
+
+  it("parks startup reconciliation until a trial server is activated", async () => {
+    const activation = await Effect.runPromise(Deferred.make<void>());
+    const listed = await Effect.runPromise(Deferred.make<void>());
+    const listSessions = vi.fn(() =>
+      Deferred.succeed(listed, undefined).pipe(Effect.as<ReadonlyArray<ProviderSession>>([])),
+    );
+    const harness = await createHarness({
+      readModel: makeReadModel([]),
+      listSessionsImplementation: listSessions,
+    });
+    const reaper = await runtime!.runPromise(Effect.service(ProviderSessionReaper));
+    scope = await runtime!.runPromise(Scope.make("sequential"));
+
+    await runtime!.runPromise(
+      reaper
+        .start()
+        .pipe(
+          Scope.provide(scope),
+          Effect.provideService(ServerActivation, Deferred.await(activation)),
+        ),
+    );
+
+    expect(listSessions).not.toHaveBeenCalled();
+    expect(harness.reattachSession).not.toHaveBeenCalled();
+    expect(harness.dispatch).not.toHaveBeenCalled();
+    expect(harness.stopSession).not.toHaveBeenCalled();
+
+    await runtime!.runPromise(Deferred.succeed(activation, undefined));
+    await runtime!.runPromise(Deferred.await(listed));
+
+    expect(listSessions).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not reconcile a parked trial when its scope closes before activation", async () => {
+    const activation = await Effect.runPromise(Deferred.make<void>());
+    const listSessions = vi.fn(() => Effect.succeed<ReadonlyArray<ProviderSession>>([]));
+    const harness = await createHarness({
+      readModel: makeReadModel([]),
+      listSessionsImplementation: listSessions,
+    });
+    const reaper = await runtime!.runPromise(Effect.service(ProviderSessionReaper));
+    scope = await runtime!.runPromise(Scope.make("sequential"));
+
+    await runtime!.runPromise(
+      reaper
+        .start()
+        .pipe(
+          Scope.provide(scope),
+          Effect.provideService(ServerActivation, Deferred.await(activation)),
+        ),
+    );
+    await runtime!.runPromise(Scope.close(scope, Exit.void));
+    scope = null;
+
+    expect(listSessions).not.toHaveBeenCalled();
+    expect(harness.reattachSession).not.toHaveBeenCalled();
+    expect(harness.dispatch).not.toHaveBeenCalled();
+    expect(harness.stopSession).not.toHaveBeenCalled();
+  });
 
   it("reaps stale persisted sessions without active turns", async () => {
     const threadId = ThreadId.make("thread-reaper-stale");

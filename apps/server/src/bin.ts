@@ -16,6 +16,7 @@ import { sharedServerCommandFlags } from "./cli/config.ts";
 import { projectCommand } from "./cli/project.ts";
 import { runServerCommand, serveCommand, startCommand } from "./cli/server.ts";
 import { serviceCommand } from "./cli/service.ts";
+import { servicePreflightCommand } from "./cli/servicePreflight.ts";
 import { readCodexProviderHostConfig } from "./provider/host/CodexProviderHostConfig.ts";
 import { runCodexProviderHost } from "./provider/host/CodexProviderHostServer.ts";
 
@@ -79,6 +80,7 @@ export const makeCli = ({ cloudEnabled = hasCloudPublicConfig } = {}) =>
       projectCommand,
       serviceCommand,
       providerHostCommand,
+      servicePreflightCommand,
       cloudEnabled ? connectCommand : connectUnavailableCommand,
     ]),
   );

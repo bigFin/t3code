@@ -19,6 +19,7 @@ import {
   ProviderSessionReaper,
   type ProviderSessionReaperShape,
 } from "../Services/ProviderSessionReaper.ts";
+import { forkParked, ServerActivation } from "../../serverActivation.ts";
 import { ProviderService } from "../Services/ProviderService.ts";
 
 const DEFAULT_INACTIVITY_THRESHOLD_MS = 30 * 60 * 1000;
@@ -495,47 +496,56 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
       }
     });
 
-    const start: ProviderSessionReaperShape["start"] = () =>
-      Effect.gen(function* () {
-        yield* reconcileOrphanedSessions().pipe(
-          Effect.catchCause((cause) =>
-            Effect.logWarning("provider.session.reaper.startup-reconcile-failed", {
-              cause,
-            }),
-          ),
-        );
+    const startActivated = Effect.gen(function* () {
+      yield* reconcileOrphanedSessions().pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("provider.session.reaper.startup-reconcile-failed", {
+            cause,
+          }),
+        ),
+      );
 
-        yield* Effect.forkScoped(
-          Effect.forever(
-            Effect.sleep(Duration.millis(reattachRetryIntervalMs)).pipe(
-              Effect.andThen(
-                reconcileOrphanedSessions().pipe(
-                  Effect.catchCause((cause) =>
-                    Effect.logWarning("provider.session.reaper.retry-reconcile-failed", {
-                      cause,
-                    }),
-                  ),
+      yield* Effect.forkScoped(
+        Effect.forever(
+          Effect.sleep(Duration.millis(reattachRetryIntervalMs)).pipe(
+            Effect.andThen(
+              reconcileOrphanedSessions().pipe(
+                Effect.catchCause((cause) =>
+                  Effect.logWarning("provider.session.reaper.retry-reconcile-failed", {
+                    cause,
+                  }),
                 ),
               ),
             ),
           ),
-        );
+        ),
+      );
 
-        yield* Effect.forkScoped(
-          sweep.pipe(
-            Effect.catch((error: unknown) =>
-              Effect.logWarning("provider.session.reaper.sweep-failed", {
-                error,
-              }),
-            ),
-            Effect.catchDefect((defect: unknown) =>
-              Effect.logWarning("provider.session.reaper.sweep-defect", {
-                defect,
-              }),
-            ),
-            Effect.repeat(Schedule.spaced(Duration.millis(sweepIntervalMs))),
+      yield* Effect.forkScoped(
+        sweep.pipe(
+          Effect.catch((error: unknown) =>
+            Effect.logWarning("provider.session.reaper.sweep-failed", {
+              error,
+            }),
           ),
-        );
+          Effect.catchDefect((defect: unknown) =>
+            Effect.logWarning("provider.session.reaper.sweep-defect", {
+              defect,
+            }),
+          ),
+          Effect.repeat(Schedule.spaced(Duration.millis(sweepIntervalMs))),
+        ),
+      );
+    });
+
+    const start: ProviderSessionReaperShape["start"] = () =>
+      Effect.gen(function* () {
+        const activation = yield* ServerActivation;
+        if (activation === undefined) {
+          yield* startActivated;
+        } else {
+          yield* forkParked(startActivated);
+        }
 
         yield* Effect.logInfo("provider.session.reaper.started", {
           inactivityThresholdMs,

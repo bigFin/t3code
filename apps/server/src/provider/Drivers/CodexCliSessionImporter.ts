@@ -34,6 +34,7 @@ import type * as CodexSchema from "effect-codex-app-server/schema";
 import { ServerConfig } from "../../config.ts";
 import { OrchestrationEngineService } from "../../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../../orchestration/Services/ProjectionSnapshotQuery.ts";
+import { forkParked } from "../../serverActivation.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { mergeProviderInstanceEnvironment } from "../ProviderInstanceEnvironment.ts";
 import {
@@ -1900,7 +1901,7 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
 
     const start: CodexCliSessionImporterShape["start"] = () =>
       Effect.gen(function* () {
-        yield* Effect.forkScoped(
+        yield* forkParked(
           Effect.forever(
             Effect.gen(function* () {
               const recoveringLive = yield* scan.pipe(

@@ -2,146 +2,118 @@
 
 > For maintainers. Using T3 Code? See [docs/user](../user/).
 
-T3 Code can update an older connected server to the exact version of the client that detected
-version drift. It never uses this path to downgrade a newer server. This path exists primarily for
-remote environments, where the user may not have a terminal open on the server machine.
+Remote server updates use one stable systemd launcher. Foreground CLI processes do not self-update,
+and a running server never edits its systemd unit or durable service state.
 
-The feature has three boundaries:
+The client offers this path only when the connected server is older, targeting the client's exact
+version. If the client is older, the user is directed to update the client instead. This
+upgrade-only direction is client policy; the server RPC validates an exact package version and
+migration compatibility rather than comparing semantic-version ordering.
 
-- the server advertises whether and how it can be replaced;
-- the client chooses the matching user action;
-- the server installs and verifies the replacement before handing off the process.
+## Client Selection
 
-## Detection and Presentation
+The client compares `ExecutionEnvironmentDescriptor.environment.serverVersion` with `APP_VERSION`.
 
-`ExecutionEnvironmentDescriptor` includes the server version and an optional
-`capabilities.serverSelfUpdate` value. Progress-capable servers also advertise
-`capabilities.serverSelfUpdateProgress`. The client compares the server version with `APP_VERSION`
-after loading server config. A server update action is offered only when the server is older. When
-the client is older, the UI directs the user to update and relaunch that client instead of
-attempting to downgrade the newer server.
+| Condition                                           | Client behavior                                                   |
+| --------------------------------------------------- | ----------------------------------------------------------------- |
+| Client is older                                     | Update and relaunch this client; do not offer a server downgrade. |
+| Versions cannot be ordered as semantic versions     | Show neutral version-sync guidance.                               |
+| Older server advertises `boot-service`              | Call the launcher-backed remote update RPC.                       |
+| Older server advertises `desktop-managed`           | Update the desktop app on the server machine.                     |
+| Older server has no update capability               | Offer the exact manual relaunch command.                          |
+| Older server advertises legacy `respawn` capability | Use the RPC path supported by that older server.                  |
 
-The optional capability is intentionally backward compatible. An older server does not know about
-the field, so a missing value means the client must offer a manual relaunch instead of sending an
-unknown RPC.
+The conversation banner and **Settings** → **Connections** use the same environment-keyed operation
+state, so navigation does not cancel an update.
 
-The shared `ServerUpdateAction` can be rendered in both user-facing version-drift surfaces when the
-server is the older side:
+## Ownership
 
-- the conversation banner in `ChatView`;
-- primary and saved environment rows in **Settings** → **Connections**.
+The service files under `<baseDir>/runtime` are:
 
-Server update actions target the client's exact version. When the reconnected server reports that
-version, the mismatch and action disappear.
+- `service-launcher.mjs`, the stable process selected by systemd;
+- `service-state.json`, the launcher's durable selection state;
+- `versions/<version>`, immutable exact-version npm installs.
 
-The operation state lives in `packages/client-runtime`, keyed by environment. Both web surfaces read
-the same `downloading`, `installing`, or `resuming` state, so route changes do not own or cancel the
-operation.
+The launcher is the only runtime writer of `service-state.json`. `t3 service install` and
+`t3 service update` may replace the launcher and state while the unit is stopped. Server children
+only communicate with the launcher over their inherited IPC channel.
 
-## Capability Selection
+The state contains one active version and, at most, one update record:
 
-The server resolves its capability once at startup and publishes it in the environment descriptor.
+- `pending A → B` selects B as a retryable trial;
+- `committed A → B` selects B for ordinary restarts;
+- `rolled-back A → B` or `failed A → B` selects A;
+- invalid state fails closed so systemd cannot guess at a runtime.
 
-| Advertised value  | Process shape                                                                                 | Client behavior                                                       |
-| ----------------- | --------------------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
-| `boot-service`    | Linux server running under the T3-managed systemd user service                                | Call the update RPC; the service unit is replaced and restarted.      |
-| `respawn`         | Published npm CLI running in the foreground on macOS or Linux                                 | Call the update RPC; the process hands off to a detached replacement. |
-| `desktop-managed` | Backend supervised by the desktop app                                                         | Tell the user to update the desktop app on the server machine.        |
-| absent            | Older server, development checkout, Windows foreground process, or an unrecognized supervisor | Offer the exact manual relaunch command.                              |
+Every write uses same-directory replacement plus file and directory fsync.
 
-Desktop ownership takes precedence over process-shape detection. A desktop-managed backend must
-never spawn a second CLI server beside the app-owned process. Likewise, a process launched by an
-unrecognized systemd unit does not claim the foreground respawn path because its supervisor could
-bring the old version back.
+## Remote Update
 
-## Update Flow
+1. The active server installs `t3@<target>` into a unique staging directory.
+2. The target runs `__service-preflight` against the active database in read-only mode.
+3. The staging directory is renamed to its immutable version path only after preflight succeeds.
+4. The active child sends `request-update`. The launcher validates the child and target, writes
+   pending state, generates the update ID, then replies `update-accepted`.
+5. After a short response-flush grace period, the launcher stops the active child.
+6. The launcher starts the target as a trial and gives it the pending update over IPC.
+7. The trial acquires dependencies, binds HTTP, starts each registered long-running root, and
+   verifies that each root is parked at the activation gate. It does not run migrations.
+8. The trial sends `prepared`. The launcher durably commits B before replying `committed`.
+9. The child opens the existing activation gate, accepts commands, and publishes lifecycle ready
+   with the terminal update outcome.
 
-```mermaid
-flowchart TD
-    A[Client detects different versions] --> B{Which side is older?}
-    B -->|client| C[Update and relaunch this client]
-    B -->|unknown| D[Show neutral sync guidance]
-    B -->|server| E{Advertised update path}
-    E -->|desktop-managed| F[Update desktop app on server machine]
-    E -->|missing| G[Copy exact manual relaunch command]
-    E -->|boot-service or respawn| H{Progress capability}
-    H -->|present| I[server.updateServerWithProgress]
-    H -->|missing| J[server.updateServer fallback]
-    I --> K[Download exact t3 version]
-    J --> K
-    K --> L[Install exact t3 version in pinned runtime]
-    L --> M[Run version preflight]
-    M -->|bad code or version| N[Remove candidate runtime and keep current server]
-    M -->|cannot run preflight| O[Keep candidate and current server]
-    M -->|passes| P{Handoff method}
-    P -->|boot-service| Q[Rewrite and restart T3 systemd unit]
-    P -->|respawn| R[Start delayed replacement and exit current process]
-    Q --> S[Reconnect with fresh backoff]
-    R --> S
-    S --> T[Replacement publishes ready at target version]
+Post-commit trial activation does not call service `start`, `initialize`, `connect`, `load`, or
+`acquire` operations. It only opens prepared gates and publishes prepared lifecycle state.
+
+The launcher serializes child exits, IPC messages, and timers. A trial must report prepared within
+120 seconds. If the trial exits or times out before prepared, the launcher records rollback and
+starts A. After commit, B is active and normal systemd restart policy applies.
+
+## Migration Boundary
+
+Remote update preflight requires exact equality between the database's applied `(id, name)` rows
+and the target release's migration manifest. A target with a missing, additional, renamed, or
+unknown migration is blocked. Remote updates never migrate or downgrade a database.
+
+When the target migration manifest differs from the active database, update locally:
+
+```sh
+npx t3@<version> service update
 ```
 
-Both update RPCs require the environment's `orchestration:operate` authorization scope. Their
-payload accepts only an exact npm version, including an exact prerelease version; dist-tags such as
-`latest` and `nightly` are rejected. The unary `server.updateServer` method remains available so a
-new client can still repair skew with an older server.
+The local command stops the unit, selects the new launcher and exact runtime, then restarts the
+service. Its normal server startup may run migrations.
 
-The update service permits one update at a time. It installs `t3@<version>` under
-`<baseDir>/runtime/versions/<version>` and writes an install-complete sentinel only after npm exits
-successfully. Boot-service setup and self-update share the same process-wide installation lock, so
-they cannot mutate a pinned runtime concurrently.
+## Client Correlation
 
-Before any restart, the current Node executable runs the replacement with `--version`. A failed
-install, failed preflight, or wrong reported version leaves the current server running.
+The update acknowledgement includes the launcher-generated update ID. After reconnecting, clients
+wait for a lifecycle ready event carrying that same ID. `committed` completes the operation only
+when the ready server is the target version. `rolled-back` and `failed` end it immediately with the
+recorded reason. Older servers without an ID retain version-only reconnect behavior.
 
-Candidate cleanup is narrower than "any failed preflight". The candidate runtime is removed only when
-the preflight process actually completes and reports a bad exit code or the wrong version: that is
-the case where a completed npm install produced an unusable tree, so retrying the same version must
-perform a clean install rather than reuse it. If the preflight cannot run at all, for example a spawn
-error or the `PREFLIGHT_TIMEOUT` elapsing, the update fails before reaching cleanup and the candidate
-directory is left in place.
+## Capability and Compatibility
 
-## Host Service Lifecycle
-
-The systemd user service is a host lifecycle concern, not a T3 Connect resource. The standalone
-`t3 service install`, `uninstall`, `update`, and `status` commands own it. Install and update both
-reconcile the unit through `BootService`; running `npx t3@latest service update` therefore pins and
-activates the latest CLI release without requiring a connected client.
-
-The `t3 connect` onboarding flow may offer service installation, but it calls the same reconciliation
-operation as `t3 service install`. Connect logout only disables cloud access and clears its
-authorization; it does not uninstall the host service.
-
-## Process Handoff
-
-For `boot-service`, the server atomically rewrites the T3-managed user unit to point at the verified
-runtime and reloads systemd. It acknowledges the handoff, then restarts the unit after the same
-short grace period used by foreground respawn. A rejected deferred restart restores the previous
-unit and is logged by the still-running process.
-
-For `respawn`, the server starts a detached, delayed replacement that replays the original CLI
-arguments. It then acknowledges the request and schedules the current process to exit. The delays
-give the acknowledgement time to cross direct or relayed connections before the socket closes.
-
-Progress-capable servers emit `downloading` before installing the pinned runtime and `installing`
-before preflight and handoff. A terminal stream event acknowledges that restart is scheduled. The
-client then enters `resuming`, waits for the replacement lifecycle stream to publish `ready` with
-the target version, and only then completes the operation. It watches for the intentional
-disconnect's first backoff state and requests one fresh retry, which clears historical backoff debt
-without adding a separate reconnect loop.
+The existing additive RPC and lifecycle schemas remain compatible with older clients. New servers
+advertise remote self-update only when they have valid launcher context and a live IPC channel.
+Desktop-managed servers direct the user to update the desktop app. Other process shapes provide a
+manual command. The old detached foreground `respawn` path no longer exists in current servers but
+remains decodable for compatibility with older servers.
 
 ## Release Invariant
 
-The exact client version must exist as the `t3` npm package before a client carrying that version is
-published. The release workflow therefore makes the GitHub release depend on CLI publication, and
-the hosted web deployment depends on that release. See [Release Checklist](../operations/release.md#server-self-update-release-invariant).
+Every released client version must have a matching `t3@<version>` package available first. See the
+[release invariant](../operations/release.md#server-self-update-release-invariant).
 
 ## Source Map
 
+- Client version policy: `apps/web/src/versionSkew.ts`
 - Capability contract: `packages/contracts/src/environment.ts`
-- Update RPC contract: `packages/contracts/src/server.ts` and `packages/contracts/src/rpc.ts`
-- Capability detection and handoff: `apps/server/src/cloud/selfUpdate.ts`
-- Host service commands: `apps/server/src/cli/service.ts`
-- Pinned runtime installation: `apps/server/src/cloud/pinnedRuntime.ts`
-- Client version comparison: `apps/web/src/versionSkew.ts`
-- Shared update action: `apps/web/src/components/ServerUpdateAction.tsx`
+- Update and outcome contracts: `packages/contracts/src/server.ts`
+- Update preparation: `apps/server/src/cloud/selfUpdate.ts`
+- Launcher and state machine: `apps/server/src/serviceLauncher.ts`
+- IPC and durable state types: `apps/server/src/cloud/serviceProtocol.ts`
+- Child IPC adapter: `apps/server/src/cloud/serviceLauncherClient.ts`
+- Staging and preflight: `apps/server/src/cloud/pinnedRuntime.ts` and `servicePreflight.ts`
+- Service installation: `apps/server/src/cloud/bootService.ts`
+- Activation boundary: `apps/server/src/serverRuntimeStartup.ts` and `serverActivation.ts`
+- Client outcome correlation: `packages/client-runtime/src/state/server.ts`

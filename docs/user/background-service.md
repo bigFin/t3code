@@ -32,6 +32,10 @@ npx t3@latest service uninstall
 Updating restarts T3 Code briefly. Active Codex turns continue in their independent provider host,
 but terminal commands and other providers can still be interrupted. Let those finish first.
 
+The systemd unit runs a small stable launcher. Exact T3 Code versions are installed separately, so
+a failed remote candidate can return to the previous version without rewriting the unit. Releases
+that change the database must be installed with the local `service update` command above.
+
 ## Using It with T3 Connect
 
 T3 Connect may offer to install the service during setup so the host stays reachable after you log
