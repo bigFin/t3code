@@ -1254,7 +1254,7 @@ export const runCodexProviderHost = Effect.fn("runCodexProviderHost")(function* 
               handleEnvelope(connection, decoded.success).pipe(
                 Effect.catchCause((cause) =>
                   Effect.logWarning("codex.provider-host.request-failed", {
-                    cause,
+                    cause: Cause.pretty(cause),
                   }),
                 ),
               ),

@@ -680,6 +680,149 @@ it.effect("keeps the attach timeout active until the initial snapshot arrives", 
   );
 });
 
+it.effect("does not send commands until the authoritative snapshot arrives", () => {
+  const root = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-provider-host-ready-"));
+  const socketPath = NodePath.join(root, "control.sock");
+  const sockets = new Set<NodeNet.Socket>();
+  const threadId = ThreadId.make("thread-provider-host-client-ready");
+  const providerInstanceId = ProviderInstanceId.make("codex");
+  const now = "2026-01-01T00:00:00.000Z";
+  const operations: string[] = [];
+  let attachedResolve: () => void = () => undefined;
+  const attached = new Promise<void>((resolve) => {
+    attachedResolve = resolve;
+  });
+  let commandResolve: () => void = () => undefined;
+  const commandReceived = new Promise<void>((resolve) => {
+    commandResolve = resolve;
+  });
+  let attachedSocket: NodeNet.Socket | undefined;
+
+  const server = NodeNet.createServer((socket) => {
+    sockets.add(socket);
+    socket.setEncoding("utf8");
+    socket.on("close", () => sockets.delete(socket));
+    socket.write(
+      `${JSON.stringify({
+        version: PROVIDER_HOST_PROTOCOL_VERSION,
+        type: "hello",
+        providerInstanceId,
+        generationFingerprint: "generation-client-ready-test",
+        hostProcess: {
+          pid: 1,
+          startTimeMs: 0,
+        },
+        startedAt: now,
+        latestCursor: 0,
+      })}\n`,
+    );
+
+    let inbound = "";
+    socket.on("data", (chunk: string) => {
+      inbound += chunk;
+      while (true) {
+        const newline = inbound.indexOf("\n");
+        if (newline < 0) break;
+        const line = inbound.slice(0, newline).trim();
+        inbound = inbound.slice(newline + 1);
+        if (!line) continue;
+        const envelope = JSON.parse(line) as ClientEnvelope;
+        if (envelope.type === "attach") {
+          attachedSocket = socket;
+          attachedResolve();
+          continue;
+        }
+        if (envelope.type !== "command") continue;
+        NodeAssert.ok(envelope.commandId);
+        NodeAssert.ok(envelope.operation);
+        operations.push(envelope.operation);
+        socket.write(
+          `${JSON.stringify({
+            version: PROVIDER_HOST_PROTOCOL_VERSION,
+            type: "commandResult",
+            commandId: CommandId.make(envelope.commandId),
+            threadId,
+            ok: true,
+            result: {
+              threadId,
+              turns: [],
+            },
+          })}\n`,
+        );
+        commandResolve();
+      }
+    });
+  });
+
+  return Effect.gen(function* () {
+    yield* Effect.promise(() => listen(server, socketPath));
+    yield* Effect.scoped(
+      Effect.gen(function* () {
+        const runtime = yield* makeCodexProviderHostRuntime({
+          controlSocketPath: socketPath,
+          options: {
+            threadId,
+            providerInstanceId,
+            cwd: root,
+            binaryPath: "codex",
+            launchArgs: "",
+            runtimeMode: "full-access",
+          },
+        });
+        const startFiber = yield* runtime.start().pipe(Effect.forkChild);
+        const readFiber = yield* runtime.readThread.pipe(Effect.forkChild);
+        yield* Effect.promise(() => attached);
+        yield* Effect.promise(
+          () =>
+            new Promise<void>((resolve) => {
+              setImmediate(resolve);
+            }),
+        );
+        NodeAssert.deepStrictEqual(operations, []);
+        NodeAssert.ok(attachedSocket);
+
+        const state: ProviderSession = {
+          provider: ProviderDriverKind.make("codex"),
+          providerInstanceId,
+          status: "ready",
+          runtimeMode: "full-access",
+          cwd: root,
+          threadId,
+          createdAt: now,
+          updatedAt: now,
+        };
+        attachedSocket.write(
+          `${JSON.stringify({
+            version: PROVIDER_HOST_PROTOCOL_VERSION,
+            type: "snapshot",
+            threadId,
+            cursor: 0,
+            state,
+          })}\n`,
+        );
+
+        yield* Effect.promise(() => commandReceived);
+        NodeAssert.equal((yield* Fiber.join(startFiber)).status, "ready");
+        NodeAssert.deepStrictEqual(yield* Fiber.join(readFiber), {
+          threadId,
+          turns: [],
+        });
+        NodeAssert.deepStrictEqual(operations, ["thread.read"]);
+      }),
+    );
+  }).pipe(
+    Effect.ensuring(
+      Effect.promise(async () => {
+        for (const socket of sockets) {
+          socket.destroy();
+        }
+        await closeServer(server);
+        NodeFS.rmSync(root, { recursive: true, force: true });
+      }),
+    ),
+  );
+});
+
 it.effect("attaches to an inventoried runtime without sending session options", () => {
   const root = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-provider-host-existing-"));
   const socketPath = NodePath.join(root, "control.sock");

@@ -1,4 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off
+// @effect-diagnostics preferSchemaOverJson:off - Test sockets exchange controlled JSON fixtures.
 import * as NodeSocket from "@effect/platform-node/NodeSocket";
 import * as NodeAssert from "node:assert/strict";
 import * as NodeFS from "node:fs";
@@ -105,7 +106,52 @@ describe("CodexAppServerWebSocket", () => {
     }),
   );
 
-  it.effect("terminates the connection when the inbound queue exceeds its byte limit", () =>
+  it.effect("accepts one inbound frame larger than the queued-backlog byte budget", () =>
+    Effect.gen(function* () {
+      const root = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-codex-websocket-"));
+      const socketPath = NodePath.join(root, "app-server.sock");
+      const server = NodeHttp.createServer();
+      const webSocketServer = new NodeSocket.NodeWS.WebSocketServer({
+        perMessageDeflate: false,
+        server,
+      });
+      const payload = "x".repeat(256);
+      webSocketServer.on("connection", (socket) => {
+        socket.on("message", (data) => {
+          const request = JSON.parse(data.toString()) as { readonly id: number };
+          socket.send(JSON.stringify({ id: request.id, result: { payload } }));
+        });
+      });
+
+      yield* Effect.acquireRelease(listen(server, socketPath), () =>
+        closeServer(server, webSocketServer).pipe(
+          Effect.ensuring(
+            Effect.sync(() => {
+              NodeFS.rmSync(root, { recursive: true, force: true });
+            }),
+          ),
+        ),
+      );
+
+      const result = yield* Effect.scoped(
+        Effect.gen(function* () {
+          const connection = yield* __testing.makeConnection(socketPath, {
+            maxInboundFrameBytes: 1024,
+            maxInboundQueueBytes: 64,
+            maxInboundQueueMessages: 4,
+          });
+          return yield* connection.client.raw.request("initialize", {
+            clientInfo: { name: "test", version: "0" },
+          });
+        }),
+      );
+
+      NodeAssert.deepStrictEqual(result, { payload });
+      NodeAssert.equal(__testing.maxInboundFrameBytes, 128 * 1024 * 1024);
+    }),
+  );
+
+  it.effect("terminates the connection when an inbound frame exceeds its byte limit", () =>
     Effect.gen(function* () {
       const root = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-codex-websocket-"));
       const socketPath = NodePath.join(root, "app-server.sock");
@@ -138,14 +184,98 @@ describe("CodexAppServerWebSocket", () => {
         ),
       );
 
-      const maxInboundQueueBytes = 64;
+      const maxInboundFrameBytes = 64;
       const status = yield* Effect.scoped(
         Effect.gen(function* () {
           const connection = yield* __testing.makeConnection(socketPath, {
-            maxInboundQueueBytes,
+            maxInboundFrameBytes,
+            maxInboundQueueBytes: 1024,
             maxInboundQueueMessages: 4,
           });
           return yield* connection.closed;
+        }),
+      );
+
+      NodeAssert.equal(status.code, 1009);
+      NodeAssert.equal(
+        status.reason,
+        `Codex App Server inbound frame exceeded its ${maxInboundFrameBytes}-byte limit.`,
+      );
+      NodeAssert.equal(status.cause?.message, status.reason);
+      NodeAssert.equal(yield* Effect.promise(() => peerClosed), 1009);
+      NodeAssert.equal(__testing.maxInboundQueueMessages, 1_024);
+      NodeAssert.equal(__testing.maxInboundQueueBytes, 32 * 1024 * 1024);
+    }),
+  );
+
+  it.effect("terminates the connection when queued inbound frames exceed the byte budget", () =>
+    Effect.gen(function* () {
+      const root = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-codex-websocket-"));
+      const socketPath = NodePath.join(root, "app-server.sock");
+      const server = NodeHttp.createServer();
+      const webSocketServer = new NodeSocket.NodeWS.WebSocketServer({
+        perMessageDeflate: false,
+        server,
+      });
+      let peer: NodeSocket.NodeWS.WebSocket | undefined;
+      webSocketServer.on("connection", (socket) => {
+        peer = socket;
+        socket.on("message", (data) => {
+          const request = JSON.parse(data.toString()) as { readonly id: number };
+          socket.send(JSON.stringify({ id: request.id, result: { connected: true } }));
+        });
+      });
+
+      yield* Effect.acquireRelease(listen(server, socketPath), () =>
+        closeServer(server, webSocketServer).pipe(
+          Effect.ensuring(
+            Effect.sync(() => {
+              NodeFS.rmSync(root, { recursive: true, force: true });
+            }),
+          ),
+        ),
+      );
+
+      const maxInboundQueueBytes = 128;
+      const notificationStarted = yield* Deferred.make<void>();
+      const releaseNotification = yield* Deferred.make<void>();
+      const status = yield* Effect.scoped(
+        Effect.gen(function* () {
+          const connection = yield* __testing.makeConnection(socketPath, {
+            maxInboundFrameBytes: 1024,
+            maxInboundQueueBytes,
+            maxInboundQueueMessages: 4,
+          });
+          yield* connection.client.handleUnknownServerNotification((method) =>
+            method === "test/queued-byte-limit"
+              ? Deferred.succeed(notificationStarted, undefined).pipe(
+                  Effect.andThen(Deferred.await(releaseNotification)),
+                )
+              : Effect.void,
+          );
+          NodeAssert.deepStrictEqual(
+            yield* connection.client.raw.request("initialize", {
+              clientInfo: { name: "test", version: "0" },
+            }),
+            { connected: true },
+          );
+          NodeAssert.ok(peer);
+          peer.send(
+            JSON.stringify({
+              method: "test/queued-byte-limit",
+              params: { payload: "x".repeat(64) },
+            }),
+          );
+          yield* Deferred.await(notificationStarted);
+          peer.send(
+            JSON.stringify({
+              method: "test/queued-byte-limit-overflow",
+              params: { payload: "x".repeat(64) },
+            }),
+          );
+          const status = yield* connection.closed;
+          yield* Deferred.succeed(releaseNotification, undefined);
+          return status;
         }),
       );
 
@@ -156,9 +286,6 @@ describe("CodexAppServerWebSocket", () => {
           `${maxInboundQueueBytes}-byte limit.`,
       );
       NodeAssert.equal(status.cause?.message, status.reason);
-      NodeAssert.equal(yield* Effect.promise(() => peerClosed), 1009);
-      NodeAssert.equal(__testing.maxInboundQueueMessages, 1_024);
-      NodeAssert.equal(__testing.maxInboundQueueBytes, 32 * 1024 * 1024);
     }),
   );
 

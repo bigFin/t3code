@@ -423,10 +423,8 @@ export const makeCodexProviderHostRuntime = Effect.fn("makeCodexProviderHostRunt
         sockets.add(socket);
         socket.setNoDelay(true);
         let settleSnapshot: (session: ProviderSession) => void = () => undefined;
-        let rejectSnapshot: (cause: Error) => void = () => undefined;
-        const snapshot = new Promise<ProviderSession>((snapshotResolve, snapshotReject) => {
+        const snapshot = new Promise<ProviderSession>((snapshotResolve) => {
           settleSnapshot = snapshotResolve;
-          rejectSnapshot = snapshotReject;
         });
         let resolveTransportClosed: () => void = () => undefined;
         const transportClosed = new Promise<void>((resolve) => {
@@ -444,7 +442,6 @@ export const makeCodexProviderHostRuntime = Effect.fn("makeCodexProviderHostRunt
           lineFramer: makeProviderHostLineFramer(MAX_INBOUND_LINE_BYTES),
         };
         let settled = false;
-        let connectionResolved = false;
         let attached = false;
         let helloReceived = false;
         let inventoryReceived = false;
@@ -457,9 +454,6 @@ export const makeCodexProviderHostRuntime = Effect.fn("makeCodexProviderHostRunt
           if (!settled) {
             settled = true;
             reject(cause);
-          }
-          if (connectionResolved) {
-            rejectSnapshot(cause);
           }
           rejectPending(current, cause);
         };
@@ -482,12 +476,6 @@ export const makeCodexProviderHostRuntime = Effect.fn("makeCodexProviderHostRunt
             (cause) => {
               if (cause) {
                 fail(cause);
-                return;
-              }
-              if (!settled) {
-                settled = true;
-                connectionResolved = true;
-                resolve(current);
               }
             },
           );
@@ -587,7 +575,6 @@ export const makeCodexProviderHostRuntime = Effect.fn("makeCodexProviderHostRunt
                   envelope.threadId === input.options.threadId &&
                   isProviderSession(envelope.state)
                 ) {
-                  clearTimeout(timeout);
                   const snapshotState = envelope.state;
                   const shouldEmitAuthoritativeBarrier = started || input.attachExisting === true;
                   current.replayTruncated = envelope.replayTruncated === true;
@@ -615,6 +602,11 @@ export const makeCodexProviderHostRuntime = Effect.fn("makeCodexProviderHostRunt
                           Effect.sync(() => {
                             replayCursor = envelope.cursor;
                             settleSnapshot(snapshotState);
+                            clearTimeout(timeout);
+                            if (!settled) {
+                              settled = true;
+                              resolve(current);
+                            }
                           }),
                         ),
                       ),

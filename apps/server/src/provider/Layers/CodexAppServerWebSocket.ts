@@ -15,8 +15,9 @@ const APP_SERVER_OPEN_TIMEOUT_MS = 3_000;
 const APP_SERVER_PROBE_TIMEOUT_MS = 500;
 const MAX_INBOUND_QUEUE_MESSAGES = 1_024;
 const MAX_INBOUND_QUEUE_BYTES = 32 * 1024 * 1024;
-const encoder = new TextEncoder();
+const MAX_INBOUND_FRAME_BYTES = 128 * 1024 * 1024;
 const decoder = new TextDecoder();
+const newline = Buffer.from("\n");
 
 export interface CodexAppServerWebSocketClose {
   readonly code: number;
@@ -32,9 +33,10 @@ export interface CodexAppServerWebSocketConnection {
 interface CodexAppServerWebSocketConnectionOptions {
   readonly maxInboundQueueMessages?: number;
   readonly maxInboundQueueBytes?: number;
+  readonly maxInboundFrameBytes?: number;
 }
 
-function makeSocket(socketPath: string, maxPayload = MAX_INBOUND_QUEUE_BYTES) {
+function makeSocket(socketPath: string, maxPayload = MAX_INBOUND_FRAME_BYTES) {
   return new NodeSocket.NodeWS.WebSocket("ws://localhost/", {
     createConnection: () => NodeNet.createConnection(socketPath),
     handshakeTimeout: APP_SERVER_OPEN_TIMEOUT_MS,
@@ -65,14 +67,14 @@ export function probeCodexAppServerWebSocket(socketPath: string): Promise<boolea
   });
 }
 
-function websocketFrameText(data: NodeSocket.NodeWS.RawData): string {
+function websocketPayloadBytes(data: NodeSocket.NodeWS.RawData): Buffer {
   if (Array.isArray(data)) {
-    return Buffer.concat(data).toString();
+    return Buffer.concat(data);
   }
   if (data instanceof ArrayBuffer) {
-    return decoder.decode(new Uint8Array(data));
+    return Buffer.from(data);
   }
-  return data.toString();
+  return Buffer.isBuffer(data) ? data : Buffer.from(data);
 }
 
 function isWebSocketPayloadLimitError(cause: Error): boolean {
@@ -84,6 +86,7 @@ const makeCodexAppServerWebSocketConnectionWithOptions = Effect.fn(
 )(function* (socketPath: string, options: CodexAppServerWebSocketConnectionOptions = {}) {
   const maxInboundQueueMessages = options.maxInboundQueueMessages ?? MAX_INBOUND_QUEUE_MESSAGES;
   const maxInboundQueueBytes = options.maxInboundQueueBytes ?? MAX_INBOUND_QUEUE_BYTES;
+  const maxInboundFrameBytes = options.maxInboundFrameBytes ?? MAX_INBOUND_FRAME_BYTES;
   const input = yield* Queue.bounded<Uint8Array, Cause.Done<void>>(maxInboundQueueMessages);
   const runSync = Effect.runSyncWith(yield* Effect.context<never>());
   let retainedMessages = 0;
@@ -120,8 +123,16 @@ const makeCodexAppServerWebSocketConnectionWithOptions = Effect.fn(
   const overflowReason = () =>
     `Codex App Server inbound queue exceeded its ` +
     `${maxInboundQueueMessages}-message or ${maxInboundQueueBytes}-byte limit.`;
+  const frameOverflowReason = () =>
+    `Codex App Server inbound frame exceeded its ${maxInboundFrameBytes}-byte limit.`;
   const settleOverflow = (socket: NodeSocket.NodeWS.WebSocket) => {
     const reason = overflowReason();
+    const cause = new Error(reason);
+    settleClosed({ code: 1009, reason, cause }, true);
+    socket.terminate();
+  };
+  const settleFrameOverflow = (socket: NodeSocket.NodeWS.WebSocket) => {
+    const reason = frameOverflowReason();
     const cause = new Error(reason);
     settleClosed({ code: 1009, reason, cause }, true);
     socket.terminate();
@@ -130,7 +141,7 @@ const makeCodexAppServerWebSocketConnectionWithOptions = Effect.fn(
 
   const socket = yield* Effect.acquireRelease(
     Effect.callback<NodeSocket.NodeWS.WebSocket, CodexErrors.CodexAppServerSpawnError>((resume) => {
-      const socket = makeSocket(socketPath, maxInboundQueueBytes);
+      const socket = makeSocket(socketPath, maxInboundFrameBytes);
       let opened = false;
       const onOpen = () => {
         opened = true;
@@ -152,7 +163,7 @@ const makeCodexAppServerWebSocketConnectionWithOptions = Effect.fn(
         }
         removeSocketListeners();
         if (isWebSocketPayloadLimitError(cause)) {
-          settleOverflow(socket);
+          settleFrameOverflow(socket);
           return;
         }
         settleClosed({ code: 1006, reason: cause.message, cause }, true);
@@ -160,9 +171,20 @@ const makeCodexAppServerWebSocketConnectionWithOptions = Effect.fn(
       };
       const onMessage = (data: NodeSocket.NodeWS.RawData) => {
         if (closed) return;
-        const frame = encoder.encode(`${websocketFrameText(data)}\n`);
+        const payload = websocketPayloadBytes(data);
+        if (payload.byteLength > maxInboundFrameBytes) {
+          removeSocketListeners();
+          settleFrameOverflow(socket);
+          return;
+        }
+        const frame = Buffer.concat([payload, newline]);
         const exceedsMessageLimit = retainedMessages >= maxInboundQueueMessages;
-        const exceedsByteLimit = frame.byteLength > maxInboundQueueBytes - retainedBytes;
+        // A single response may legitimately exceed the queued-backlog budget
+        // (notably thread/resume for a long-running Codex session). Allow one
+        // bounded frame through an empty queue, then reject additional backlog
+        // until the consumer releases it.
+        const exceedsByteLimit =
+          retainedMessages > 0 && frame.byteLength > maxInboundQueueBytes - retainedBytes;
         if (exceedsMessageLimit || exceedsByteLimit || !Queue.offerUnsafe(input, frame)) {
           removeSocketListeners();
           settleOverflow(socket);
@@ -292,6 +314,7 @@ export const makeCodexAppServerWebSocketConnection = (socketPath: string) =>
 
 export const __testing = {
   makeConnection: makeCodexAppServerWebSocketConnectionWithOptions,
+  maxInboundFrameBytes: MAX_INBOUND_FRAME_BYTES,
   maxInboundQueueBytes: MAX_INBOUND_QUEUE_BYTES,
   maxInboundQueueMessages: MAX_INBOUND_QUEUE_MESSAGES,
 };
