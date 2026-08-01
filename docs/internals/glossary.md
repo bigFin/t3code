@@ -100,6 +100,13 @@ The backend agent runtime that actually performs work. Five drivers ship built i
 
 The live provider-backed runtime attached to a thread. Session shape is in [the orchestration contracts][1], and lifecycle is managed in [ProviderService.ts][14].
 
+#### Provider host
+
+A provider-owned process whose lifecycle is independent from the T3 server. Codex uses a provider
+host to own its app-server process and multiplex low-cost reader/writer attachments. Restarting T3
+detaches observers; it does not stop the provider execution. Reattachment reconciles an authoritative
+session snapshot into orchestration state. See [providers.md][16].
+
 #### Runtime mode
 
 The safety/access mode for a thread or session. [The contracts][1] define four values: `approval-required`, `auto-accept-edits`, `auto`, and `full-access`. See [permission modes][18].

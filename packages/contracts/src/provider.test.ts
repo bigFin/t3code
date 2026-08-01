@@ -215,6 +215,22 @@ describe("providerInstanceId routing key (slice-2 invariant)", () => {
     expect(event.providerInstanceId).toBe("codex_personal");
   });
 
+  it("decodes replay metadata for detached provider-host delivery", () => {
+    const event = decodeProviderEvent({
+      id: "event-replayed",
+      kind: "notification",
+      provider: "codex",
+      threadId: "thread-1",
+      createdAt: "2024-01-01T00:00:00Z",
+      method: "item/agentMessage/delta",
+      replay: {
+        truncated: true,
+      },
+    });
+
+    expect(event.replay).toEqual({ truncated: true });
+  });
+
   it("rejects providerInstanceId values that fail the slug pattern (defense in depth)", () => {
     expect(() =>
       decodeProviderSessionStartInput({

@@ -97,6 +97,16 @@ status, so refresh provider status if you need a newer reading.
 
 Use display names and accent colors to make accounts easy to tell apart in the model picker.
 
+## What Happens When T3 Restarts?
+
+On Linux and macOS, T3 runs Codex through an independent provider host. Restarting or updating the
+T3 server briefly disconnects the app, but it does not stop an active Codex turn. T3 reattaches and
+restores the provider's current status when the server returns.
+
+T3 does not submit a message or automatically resume work when the Codex execution is actually
+gone. A machine restart, spot-instance eviction, or explicit **Stop** can end that execution; after
+reconnecting, send a message only when you want the thread to continue.
+
 ## I Need A Different API Key Or Endpoint
 
 Use the provider's Environment variables section in Settings.

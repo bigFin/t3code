@@ -23,6 +23,27 @@ describe("ProviderRuntimeEvent", () => {
     expect(parsed.providerInstanceId).toBe("ollama_local");
   });
 
+  it("decodes replay metadata for truncated detached-host replay", () => {
+    const parsed = decodeRuntimeEvent({
+      type: "content.delta",
+      eventId: "event-replayed-delta",
+      provider: "codex",
+      createdAt: "2026-02-28T00:00:00.000Z",
+      threadId: "thread-1",
+      turnId: "turn-1",
+      itemId: "item-1",
+      replay: {
+        truncated: true,
+      },
+      payload: {
+        streamKind: "assistant_text",
+        delta: "retained suffix",
+      },
+    });
+
+    expect(parsed.replay).toEqual({ truncated: true });
+  });
+
   it("decodes turn.plan.updated for plan rendering", () => {
     const parsed = decodeRuntimeEvent({
       type: "turn.plan.updated",
@@ -47,6 +68,40 @@ describe("ProviderRuntimeEvent", () => {
     }
     expect(parsed.payload.plan).toHaveLength(2);
     expect(parsed.payload.plan[1]?.status).toBe("inProgress");
+  });
+
+  it("decodes authoritative active-turn reconciliation on session state changes", () => {
+    const running = decodeRuntimeEvent({
+      type: "session.state.changed",
+      eventId: "event-session-running-reattached",
+      provider: "codex",
+      createdAt: "2026-02-28T00:00:00.000Z",
+      threadId: "thread-1",
+      turnId: "turn-1",
+      payload: {
+        state: "running",
+        activeTurnId: "turn-1",
+      },
+    });
+    const cleared = decodeRuntimeEvent({
+      type: "session.state.changed",
+      eventId: "event-session-ready-reattached",
+      provider: "codex",
+      createdAt: "2026-02-28T00:00:01.000Z",
+      threadId: "thread-1",
+      payload: {
+        state: "ready",
+        activeTurnId: null,
+      },
+    });
+
+    expect(running.type).toBe("session.state.changed");
+    expect(cleared.type).toBe("session.state.changed");
+    if (running.type !== "session.state.changed" || cleared.type !== "session.state.changed") {
+      throw new Error("expected session.state.changed");
+    }
+    expect(running.payload.activeTurnId).toBe("turn-1");
+    expect(cleared.payload.activeTurnId).toBeNull();
   });
 
   it("decodes proposed-plan completion events", () => {

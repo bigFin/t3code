@@ -41,6 +41,23 @@ describe("codexAppServerArgs", () => {
       "foo",
     ]);
   });
+
+  it("removes configured transport flags because T3 owns the app-server transport", () => {
+    NodeAssert.deepStrictEqual(
+      codexAppServerArgs(
+        "--strict-config --listen ws://127.0.0.1:4500 --stdio --listen=off --stdio=true --enable foo",
+      ),
+      ["app-server", "--strict-config", "--enable", "foo"],
+    );
+  });
+
+  it("does not consume a following option when --listen has no value", () => {
+    NodeAssert.deepStrictEqual(codexAppServerArgs("--listen --enable foo"), [
+      "app-server",
+      "--enable",
+      "foo",
+    ]);
+  });
 });
 
 describe("codexExecLaunchArgs", () => {

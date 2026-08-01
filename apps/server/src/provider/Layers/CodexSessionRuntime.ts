@@ -18,11 +18,13 @@ import {
 } from "@t3tools/contracts";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
 import { normalizeModelSlug } from "@t3tools/shared/model";
+import * as Cause from "effect/Cause";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
@@ -36,7 +38,8 @@ import * as CodexRpc from "effect-codex-app-server/rpc";
 import * as EffectCodexSchema from "effect-codex-app-server/schema";
 
 import { buildCodexInitializeParams } from "./CodexProvider.ts";
-import { codexSessionAppServerArgs } from "./codexLaunchArgs.ts";
+import { makeCodexAppServerWebSocketConnection } from "./CodexAppServerWebSocket.ts";
+import { codexAppServerArgs } from "./codexLaunchArgs.ts";
 import { expandHomePath } from "../../pathExpansion.ts";
 import { buildCodexDeveloperInstructions } from "../CodexDeveloperInstructions.ts";
 const decodeV2TurnStartResponse = Schema.decodeUnknownEffect(EffectCodexSchema.V2TurnStartResponse);
@@ -59,10 +62,6 @@ const RECOVERABLE_THREAD_RESUME_ERROR_SNIPPETS = [
   "unknown thread",
   "does not exist",
 ];
-
-export function hasConfiguredMcpServer(appServerArgs: ReadonlyArray<string> | undefined): boolean {
-  return appServerArgs?.some((argument) => argument.includes("mcp_servers.")) === true;
-}
 
 export const CodexResumeCursorSchema = Schema.Struct({
   threadId: Schema.String,
@@ -105,7 +104,8 @@ export interface CodexSessionRuntimeOptions {
   readonly model?: string;
   readonly serviceTier?: CodexServiceTier | undefined;
   readonly resumeCursor?: CodexResumeCursor;
-  readonly appServerArgs?: ReadonlyArray<string>;
+  readonly threadConfig?: Readonly<Record<string, unknown>>;
+  readonly appServerSocketPath?: string;
 }
 
 export interface CodexSessionRuntimeSendTurnInput {
@@ -133,6 +133,8 @@ export interface CodexThreadSnapshot {
 export interface CodexSessionRuntimeShape {
   readonly start: () => Effect.Effect<ProviderSession, CodexSessionRuntimeError>;
   readonly getSession: Effect.Effect<ProviderSession>;
+  /** Number of events successfully emitted into the runtime stream. */
+  readonly emittedEventCount: Effect.Effect<number>;
   readonly sendTurn: (
     input: CodexSessionRuntimeSendTurnInput,
   ) => Effect.Effect<ProviderTurnStartResult, CodexSessionRuntimeError>;
@@ -150,6 +152,8 @@ export interface CodexSessionRuntimeShape {
     answers: ProviderUserInputAnswers,
   ) => Effect.Effect<void, CodexSessionRuntimeError>;
   readonly events: Stream.Stream<ProviderEvent, never>;
+  /** Release only this T3 attachment without changing Codex execution state. */
+  readonly detach: Effect.Effect<void>;
   readonly close: Effect.Effect<void>;
 }
 
@@ -159,6 +163,121 @@ export type CodexSessionRuntimeError =
   | CodexSessionRuntimePendingUserInputNotFoundError
   | CodexSessionRuntimeInvalidUserInputAnswersError
   | CodexSessionRuntimeThreadIdMissingError;
+
+export function classifyCodexConnectionClosure(input: {
+  readonly reattachable: boolean;
+  readonly failed: boolean;
+  readonly message: string;
+}): {
+  readonly status: "error" | "closed";
+  readonly method: "session/disconnected" | "session/exited";
+  readonly message: string;
+  readonly clearActiveTurn: boolean;
+} {
+  if (!input.reattachable) {
+    return {
+      status: input.failed ? "error" : "closed",
+      method: "session/exited",
+      message: input.message,
+      clearActiveTurn: true,
+    };
+  }
+  return {
+    status: "error",
+    method: "session/disconnected",
+    message: input.failed
+      ? `${input.message} T3 will reattach without interrupting Codex execution.`
+      : "T3 detached from Codex execution.",
+    clearActiveTurn: false,
+  };
+}
+
+type CodexRecoveredTurnStatus = "completed" | "interrupted" | "failed" | "inProgress";
+
+export function resolveCodexRecoveredThreadState(input: {
+  readonly status:
+    | { readonly type: "notLoaded" | "idle" | "systemError" }
+    | {
+        readonly type: "active";
+        readonly activeFlags: ReadonlyArray<"waitingOnApproval" | "waitingOnUserInput">;
+      };
+  readonly turns: ReadonlyArray<{
+    readonly id: string;
+    readonly status: CodexRecoveredTurnStatus;
+    readonly error?: { readonly message: string } | null;
+  }>;
+}): {
+  readonly sessionStatus: "ready" | "running" | "error";
+  readonly activeTurnId?: TurnId;
+  readonly lastError?: string;
+  readonly lifecycle?:
+    | { readonly type: "started"; readonly turnId: TurnId }
+    | {
+        readonly type: "completed";
+        readonly turnId: TurnId;
+        readonly status: Exclude<CodexRecoveredTurnStatus, "inProgress">;
+      };
+  readonly waitingReason?: string;
+} {
+  const activeTurn =
+    input.status.type === "active"
+      ? input.turns.findLast((turn) => turn.status === "inProgress")
+      : undefined;
+  if (activeTurn) {
+    const waitingReason =
+      input.status.type === "active" && input.status.activeFlags.includes("waitingOnUserInput")
+        ? "Codex is waiting for user input."
+        : input.status.type === "active" && input.status.activeFlags.includes("waitingOnApproval")
+          ? "Codex is waiting for approval."
+          : undefined;
+    const turnId = TurnId.make(activeTurn.id);
+    return {
+      sessionStatus: "running",
+      activeTurnId: turnId,
+      lifecycle: { type: "started", turnId },
+      ...(waitingReason ? { waitingReason } : {}),
+    };
+  }
+
+  const latestTurn = input.turns.at(-1);
+  if (latestTurn) {
+    const turnId = TurnId.make(latestTurn.id);
+    if (latestTurn.status === "inProgress") {
+      if (input.status.type === "systemError") {
+        return {
+          sessionStatus: "error",
+          lastError: "Codex reported a system error for this thread.",
+        };
+      }
+      return {
+        sessionStatus: "running",
+        activeTurnId: turnId,
+        lifecycle: { type: "started", turnId },
+      };
+    }
+    return {
+      sessionStatus:
+        latestTurn.status === "failed" || input.status.type === "systemError" ? "error" : "ready",
+      ...(latestTurn.status === "failed"
+        ? { lastError: latestTurn.error?.message ?? "The Codex turn failed." }
+        : input.status.type === "systemError"
+          ? { lastError: "Codex reported a system error for this thread." }
+          : {}),
+      lifecycle: {
+        type: "completed",
+        turnId,
+        status: latestTurn.status,
+      },
+    };
+  }
+
+  return input.status.type === "systemError"
+    ? {
+        sessionStatus: "error",
+        lastError: "Codex reported a system error for this thread.",
+      }
+    : { sessionStatus: "ready" };
+}
 
 export class CodexSessionRuntimePendingApprovalNotFoundError extends Schema.TaggedErrorClass<CodexSessionRuntimePendingApprovalNotFoundError>()(
   "CodexSessionRuntimePendingApprovalNotFoundError",
@@ -302,6 +421,7 @@ function buildThreadStartParams(input: {
   readonly runtimeMode: RuntimeMode;
   readonly model: string | undefined;
   readonly serviceTier: CodexServiceTier | undefined;
+  readonly threadConfig: Readonly<Record<string, unknown>> | undefined;
 }): EffectCodexSchema.V2ThreadStartParams {
   const config = runtimeModeToThreadConfig(input.runtimeMode);
   return {
@@ -311,6 +431,7 @@ function buildThreadStartParams(input: {
     approvalsReviewer: config.approvalsReviewer,
     ...(input.model ? { model: input.model } : {}),
     ...(input.serviceTier ? { serviceTier: input.serviceTier } : {}),
+    ...(input.threadConfig ? { config: input.threadConfig } : {}),
   };
 }
 
@@ -462,6 +583,7 @@ export const openCodexThread = (input: {
   readonly requestedModel: string | undefined;
   readonly serviceTier: CodexServiceTier | undefined;
   readonly resumeThreadId: string | undefined;
+  readonly threadConfig?: Readonly<Record<string, unknown>>;
 }): Effect.Effect<CodexThreadOpenResponse, CodexErrors.CodexAppServerError> => {
   const resumeThreadId = input.resumeThreadId;
   const startParams = buildThreadStartParams({
@@ -469,6 +591,7 @@ export const openCodexThread = (input: {
     runtimeMode: input.runtimeMode,
     model: input.requestedModel,
     serviceTier: input.serviceTier,
+    threadConfig: input.threadConfig,
   });
 
   if (resumeThreadId === undefined) {
@@ -715,10 +838,10 @@ export const makeCodexSessionRuntime = (
   ChildProcessSpawner.ChildProcessSpawner | Crypto.Crypto | Scope.Scope
 > =>
   Effect.gen(function* () {
-    const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
     const runtimeScope = yield* Scope.Scope;
     const crypto = yield* Crypto.Crypto;
-    const events = yield* Queue.unbounded<ProviderEvent>();
+    const events = yield* Queue.unbounded<ProviderEvent, Cause.Done<void>>();
+    const emittedEventCount = yield* Ref.make(0);
     const pendingApprovalsRef = yield* Ref.make(new Map<ApprovalRequestId, PendingApproval>());
     const approvalCorrelationsRef = yield* Ref.make(new Map<string, ApprovalCorrelation>());
     const pendingUserInputsRef = yield* Ref.make(new Map<ApprovalRequestId, PendingUserInput>());
@@ -734,40 +857,76 @@ export const makeCodexSessionRuntime = (
       ...(resolvedHomePath ? { CODEX_HOME: resolvedHomePath } : {}),
     };
     const extendEnv = options.environment === undefined;
-    const appServerArgs = codexSessionAppServerArgs(options.appServerArgs, options.launchArgs);
-    const spawnCommand = yield* resolveSpawnCommand(options.binaryPath, appServerArgs, {
-      env,
-      extendEnv,
-    });
-    const child = yield* spawner
-      .spawn(
-        ChildProcess.make(spawnCommand.command, spawnCommand.args, {
-          cwd: options.cwd,
-          env,
-          extendEnv,
-          forceKillAfter: CODEX_APP_SERVER_FORCE_KILL_AFTER,
-          shell: spawnCommand.shell,
-        }),
-      )
-      .pipe(
+    const scopedProcessConnection = Effect.gen(function* () {
+      const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+      const appServerArgs = codexAppServerArgs(options.launchArgs);
+      const spawnCommand = yield* resolveSpawnCommand(options.binaryPath, appServerArgs, {
+        env,
+        extendEnv,
+      });
+      const child = yield* spawner
+        .spawn(
+          ChildProcess.make(spawnCommand.command, spawnCommand.args, {
+            cwd: options.cwd,
+            env,
+            extendEnv,
+            forceKillAfter: CODEX_APP_SERVER_FORCE_KILL_AFTER,
+            shell: spawnCommand.shell,
+          }),
+        )
+        .pipe(
+          Effect.provideService(Scope.Scope, runtimeScope),
+          Effect.mapError(
+            (cause) =>
+              new CodexErrors.CodexAppServerSpawnError({
+                command: `${options.binaryPath} app-server`,
+                cause,
+              }),
+          ),
+        );
+      const clientContext = yield* CodexClient.layerChildProcess(child).pipe(
+        Layer.build,
         Effect.provideService(Scope.Scope, runtimeScope),
-        Effect.mapError(
-          (cause) =>
-            new CodexErrors.CodexAppServerSpawnError({
-              command: `${options.binaryPath} app-server`,
-              cause,
-            }),
-        ),
       );
-
-    const clientContext = yield* CodexClient.layerChildProcess(child).pipe(
-      Layer.build,
-      Effect.provideService(Scope.Scope, runtimeScope),
-    );
-    const client = yield* Effect.service(CodexClient.CodexAppServerClient).pipe(
-      Effect.provide(clientContext),
-    );
-    const serverNotifications = yield* Queue.unbounded<CodexServerNotification>();
+      const client = yield* Effect.service(CodexClient.CodexAppServerClient).pipe(
+        Effect.provide(clientContext),
+      );
+      return {
+        client,
+        stderr: child.stderr,
+        reattachable: false,
+        closed: child.exitCode.pipe(
+          Effect.map((exitCode) => ({
+            failed: exitCode !== 0,
+            message:
+              exitCode === 0
+                ? "Codex App Server connection exited."
+                : `Codex App Server connection exited with code ${exitCode}.`,
+          })),
+        ),
+      };
+    });
+    const connection = options.appServerSocketPath
+      ? yield* makeCodexAppServerWebSocketConnection(options.appServerSocketPath).pipe(
+          Effect.provideService(Scope.Scope, runtimeScope),
+          Effect.map(({ client, closed }) => ({
+            client,
+            stderr: Stream.empty,
+            reattachable: true,
+            closed: closed.pipe(
+              Effect.map((status) => ({
+                failed: status.code !== 1000,
+                message:
+                  status.code === 1000
+                    ? "Codex App Server connection closed."
+                    : `Codex App Server connection closed with code ${status.code}.`,
+              })),
+            ),
+          })),
+        )
+      : yield* scopedProcessConnection;
+    const client = connection.client;
+    const serverNotifications = yield* Queue.unbounded<CodexServerNotification, Cause.Done<void>>();
     const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
     const randomUUIDv4 = (purpose: CodexErrors.CodexAppServerIdentifierPurpose) =>
       crypto.randomUUIDv4.pipe(
@@ -794,7 +953,12 @@ export const makeCodexSessionRuntime = (
       updatedAt: sessionCreatedAt,
     } satisfies ProviderSession;
     const sessionRef = yield* Ref.make<ProviderSession>(initialSession);
-    const offerEvent = (event: ProviderEvent) => Queue.offer(events, event).pipe(Effect.asVoid);
+    const offerEvent = (event: ProviderEvent) =>
+      Queue.offer(events, event).pipe(
+        Effect.flatMap((offered) =>
+          offered ? Ref.update(emittedEventCount, (count) => count + 1) : Effect.void,
+        ),
+      );
 
     const emitEvent = (event: Omit<ProviderEvent, "id" | "provider" | "createdAt">) =>
       Effect.gen(function* () {
@@ -1147,13 +1311,13 @@ export const makeCodexSessionRuntime = (
       { concurrency: 1, discard: true },
     );
 
-    yield* Stream.fromQueue(serverNotifications).pipe(
+    const serverNotificationFiber = yield* Stream.fromQueue(serverNotifications).pipe(
       Stream.runForEach(handleRawNotification),
       Effect.forkIn(runtimeScope),
     );
 
     const stderrRemainderRef = yield* Ref.make("");
-    yield* child.stderr.pipe(
+    yield* connection.stderr.pipe(
       Stream.decodeText(),
       Stream.runForEach((chunk) =>
         Ref.modify(stderrRemainderRef, (current) => {
@@ -1185,27 +1349,22 @@ export const makeCodexSessionRuntime = (
       Effect.forkIn(runtimeScope),
     );
 
-    yield* child.exitCode.pipe(
-      Effect.flatMap((exitCode) =>
+    yield* connection.closed.pipe(
+      Effect.flatMap(({ failed, message }) =>
         Ref.get(closedRef).pipe(
           Effect.flatMap((closed) => {
             if (closed) {
               return Effect.void;
             }
-            const nextStatus = exitCode === 0 ? "closed" : "error";
+            const closure = classifyCodexConnectionClosure({
+              reattachable: connection.reattachable,
+              failed,
+              message,
+            });
             return updateSession(sessionRef, {
-              status: nextStatus,
-              activeTurnId: undefined,
-            }).pipe(
-              Effect.andThen(
-                emitSessionEvent(
-                  "session/exited",
-                  exitCode === 0
-                    ? "Codex App Server exited."
-                    : `Codex App Server exited with code ${exitCode}.`,
-                ),
-              ),
-            );
+              status: closure.status,
+              ...(closure.clearActiveTurn ? { activeTurnId: undefined } : {}),
+            }).pipe(Effect.andThen(emitSessionEvent(closure.method, closure.message)));
           }),
         ),
       ),
@@ -1213,7 +1372,7 @@ export const makeCodexSessionRuntime = (
     );
 
     const start = Effect.fn("CodexSessionRuntime.start")(function* () {
-      yield* emitSessionEvent("session/connecting", "Starting Codex App Server session.");
+      yield* emitSessionEvent("session/connecting", "Connecting to Codex App Server session.");
       yield* client.request("initialize", buildCodexInitializeParams());
       yield* client.notify("initialized", undefined);
 
@@ -1227,19 +1386,47 @@ export const makeCodexSessionRuntime = (
         requestedModel,
         serviceTier: options.serviceTier,
         resumeThreadId: readResumeCursorThreadId(options.resumeCursor),
+        ...(options.threadConfig ? { threadConfig: options.threadConfig } : {}),
       });
 
       const providerThreadId = opened.thread.id;
+      const recoveredState = resolveCodexRecoveredThreadState(opened.thread);
       const session = {
         ...(yield* Ref.get(sessionRef)),
-        status: "ready",
+        status: recoveredState.sessionStatus,
         cwd: opened.cwd,
         model: opened.model,
         resumeCursor: { threadId: providerThreadId },
+        ...(recoveredState.activeTurnId
+          ? { activeTurnId: recoveredState.activeTurnId }
+          : { activeTurnId: undefined }),
+        ...(recoveredState.lastError ? { lastError: recoveredState.lastError } : {}),
         updatedAt: yield* nowIso,
       } satisfies ProviderSession;
       yield* Ref.set(sessionRef, session);
-      yield* emitSessionEvent("session/ready", "Codex App Server session ready.");
+      if (recoveredState.sessionStatus === "ready") {
+        yield* emitSessionEvent("session/ready", "Codex App Server session ready.");
+      }
+      if (options.resumeCursor !== undefined && recoveredState.lifecycle) {
+        const recoveredTurn = opened.thread.turns.find(
+          (turn) => turn.id === recoveredState.lifecycle?.turnId,
+        );
+        if (recoveredTurn) {
+          yield* emitEvent({
+            kind: "notification",
+            threadId: options.threadId,
+            method: recoveredState.lifecycle.type === "started" ? "turn/started" : "turn/completed",
+            turnId: recoveredState.lifecycle.turnId,
+            payload: {
+              threadId: providerThreadId,
+              turn: recoveredTurn,
+            },
+          });
+        }
+      }
+      if (recoveredState.waitingReason) {
+        yield* emitSessionEvent("session/waiting", recoveredState.waitingReason);
+      }
       return session;
     });
 
@@ -1253,42 +1440,42 @@ export const makeCodexSessionRuntime = (
       return providerThreadId;
     });
 
-    const close = Effect.gen(function* () {
+    const releaseAttachment = Effect.fn("CodexSessionRuntime.releaseAttachment")(function* (
+      emitClosed: boolean,
+    ) {
       const alreadyClosed = yield* Ref.getAndSet(closedRef, true);
       if (alreadyClosed) {
         return;
       }
-      yield* settlePendingApprovals("cancel");
-      yield* settlePendingUserInputs({});
-      yield* updateSession(sessionRef, {
-        status: "closed",
-        activeTurnId: undefined,
-      });
-      yield* emitSessionEvent("session/closed", "Session stopped").pipe(
-        Effect.catch((cause) =>
-          Effect.logError("Failed to emit Codex session closed event.", { cause }),
-        ),
-      );
+      if (emitClosed) {
+        yield* settlePendingApprovals("cancel");
+        yield* settlePendingUserInputs({});
+        yield* updateSession(sessionRef, {
+          status: "closed",
+          activeTurnId: undefined,
+        });
+        yield* emitSessionEvent("session/closed", "Session stopped").pipe(
+          Effect.catch((cause) =>
+            Effect.logError("Failed to emit Codex session closed event.", { cause }),
+          ),
+        );
+      }
+      // The provider host may still be publishing events that were accepted
+      // before this attachment closed. End gracefully so it can drain those
+      // events instead of discarding them during runtime replacement.
+      yield* Queue.end(serverNotifications);
+      yield* Fiber.join(serverNotificationFiber).pipe(Effect.ignore);
       yield* Scope.close(runtimeScope, Exit.void);
-      yield* Queue.shutdown(serverNotifications);
-      yield* Queue.shutdown(events);
+      yield* Queue.end(events);
     });
 
     return {
       start,
       getSession: Ref.get(sessionRef),
+      emittedEventCount: Ref.get(emittedEventCount),
       sendTurn: (input) =>
         Effect.gen(function* () {
           const providerThreadId = yield* readProviderThreadId;
-          if (hasConfiguredMcpServer(options.appServerArgs)) {
-            yield* client.request("config/mcpServer/reload", undefined).pipe(
-              Effect.catch((cause) =>
-                Effect.logWarning("Failed to refresh Codex MCP tool catalog before turn.", {
-                  cause,
-                }),
-              ),
-            );
-          }
           const normalizedModel = normalizeCodexModelSlug(
             input.model ?? (yield* Ref.get(sessionRef)).model,
           );
@@ -1418,6 +1605,7 @@ export const makeCodexSessionRuntime = (
           });
         }),
       events: Stream.fromQueue(events),
-      close,
+      detach: releaseAttachment(false),
+      close: releaseAttachment(true),
     } satisfies CodexSessionRuntimeShape;
   });

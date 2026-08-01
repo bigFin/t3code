@@ -75,6 +75,36 @@ spills the whole accumulated text as one delta. The buffer also flushes at inter
 when a request opens (approval) or user input is requested, via
 `flushBufferedAssistantMessagesForTurn`.
 
+## Detached Codex execution
+
+Codex uses a detached provider host so an agent turn is not owned by the T3 server process. The host
+owns one Codex app-server process and multiplexes lightweight thread attachments over a Unix socket.
+T3 shutdown closes those attachments; it does not stop Codex. An explicit user stop still sends the
+provider-host stop command.
+
+Attachments request bounded event replay and then receive a fresh snapshot, so missed transcript
+events land before the authoritative state is projected as `session.state.changed`, including an
+explicit active turn id (or `null`). Startup events emitted while the first attachment creates its
+runtime are synchronized into that replay before the snapshot. If the requested cursor predates the
+retained window, the host reports truncation and T3 projects a runtime warning instead of silently
+claiming complete replay.
+
+Provider event command ids are stable across replay, so reconnecting T3 does not duplicate already
+persisted orchestration changes. Transport commands reuse their id while retrying against the same
+provider host. This lets orchestration replace stale projected state without inventing a new
+`turn.started` event or prompting the model.
+
+On server startup, [`ProviderSessionReaper`][reaper] reattaches bindings marked with detached session
+persistence. A successful reattachment immediately projects the returned `connecting`, `ready`,
+`running`, `error`, or `closed` state. Transient transport failures remain visibly reconnecting and
+are retried without stopping the provider or aging the binding out through inactivity cleanup. A
+typed missing-session result marks the detached execution as no longer present. T3 does not
+automatically resume the persisted provider thread, submit a follow-up prompt, or claim that an
+interrupted turn continued.
+
+The generated systemd user service uses `KillMode=process`: restarting the T3 service stops its main
+server process without killing provider hosts that intentionally continue in the service cgroup.
+
 [drivers]: ../../apps/server/src/provider/builtInDrivers.ts
 [codex]: ../../apps/server/src/provider/Drivers/CodexDriver.ts
 [claude]: ../../apps/server/src/provider/Drivers/ClaudeDriver.ts
@@ -90,3 +120,4 @@ when a request opens (approval) or user input is requested, via
 [ingest]: ../../apps/server/src/orchestration/Layers/ProviderRuntimeIngestion.ts
 [cmd]: ../../apps/server/src/orchestration/Layers/ProviderCommandReactor.ts
 [checkpoint]: ../../apps/server/src/orchestration/Layers/CheckpointReactor.ts
+[reaper]: ../../apps/server/src/provider/Layers/ProviderSessionReaper.ts

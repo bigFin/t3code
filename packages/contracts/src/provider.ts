@@ -113,6 +113,11 @@ export type ProviderRespondToUserInputInput = typeof ProviderRespondToUserInputI
 
 const ProviderEventKind = Schema.Literals(["session", "notification", "request", "error"]);
 
+export const ProviderEventReplay = Schema.Struct({
+  truncated: Schema.Boolean,
+});
+export type ProviderEventReplay = typeof ProviderEventReplay.Type;
+
 export const ProviderEvent = Schema.Struct({
   id: EventId,
   kind: ProviderEventKind,
@@ -129,5 +134,6 @@ export const ProviderEvent = Schema.Struct({
   requestKind: Schema.optional(ProviderRequestKind),
   textDelta: Schema.optional(Schema.String),
   payload: Schema.optional(Schema.Unknown),
+  replay: Schema.optional(ProviderEventReplay),
 });
 export type ProviderEvent = typeof ProviderEvent.Type;

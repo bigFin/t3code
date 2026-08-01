@@ -45,6 +45,15 @@ export interface ProviderServiceShape {
   ) => Effect.Effect<ProviderSession, ProviderServiceError>;
 
   /**
+   * Reattach T3 to the provider execution described by the persisted binding.
+   *
+   * This never starts a model turn or synthesizes user input.
+   */
+  readonly reattachSession: (input: {
+    readonly threadId: ThreadId;
+  }) => Effect.Effect<ProviderSession, ProviderServiceError>;
+
+  /**
    * Send a provider turn.
    */
   readonly sendTurn: (

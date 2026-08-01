@@ -541,6 +541,16 @@ function readCodexCliImportVersion(runtimePayload: unknown): number | undefined 
     : undefined;
 }
 
+function hasDetachedSessionPersistence(runtimePayload: unknown): boolean {
+  return (
+    runtimePayload !== null &&
+    typeof runtimePayload === "object" &&
+    !Array.isArray(runtimePayload) &&
+    "sessionPersistence" in runtimePayload &&
+    runtimePayload.sessionPersistence === "detached"
+  );
+}
+
 function readCodexResumeCursorThreadId(resumeCursor: unknown): string | undefined {
   if (
     resumeCursor === null ||
@@ -581,7 +591,11 @@ export function isDifferentlyKeyedCodexCliOwnerBinding(
 }
 
 export function isLiveCodexBinding(binding: ProviderRuntimeBinding | undefined): boolean {
-  return binding?.status === "starting" || binding?.status === "running";
+  return (
+    binding?.status === "starting" ||
+    binding?.status === "running" ||
+    (binding?.status === "error" && hasDetachedSessionPersistence(binding.runtimePayload))
+  );
 }
 
 export function shouldInterruptStaleCodexCliSession(

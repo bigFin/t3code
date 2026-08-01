@@ -7,6 +7,7 @@ import {
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Path from "effect/Path";
+import { it as effectIt } from "@effect/vitest";
 import { describe, expect, it } from "vite-plus/test";
 import type * as CodexSchema from "effect-codex-app-server/schema";
 
@@ -33,8 +34,6 @@ import {
   shouldReconcileCurrentCodexCliSessionWithoutRead,
   shouldSkipCurrentCodexCliImport,
 } from "./CodexCliSessionImporter.ts";
-
-const path = Effect.runSync(Path.Path.pipe(Effect.provide(Path.layer)));
 
 function makeThread(): CodexSchema.V2ThreadReadResponse["thread"] {
   return {
@@ -284,29 +283,32 @@ describe("CodexCliSessionImporter transcript conversion", () => {
     expect(otherThread[0]?.turnId).not.toBe(first[0]?.turnId);
   });
 
-  it("rejects rollout paths outside the configured sessions root", () => {
-    expect(
-      isCodexRolloutPathWithinSessionsRoot(
-        path,
-        "/home/fin/.codex/sessions",
-        "/home/fin/.codex/sessions/2026/07/16/rollout.jsonl",
-      ),
-    ).toBe(true);
-    expect(
-      isCodexRolloutPathWithinSessionsRoot(
-        path,
-        "/home/fin/.codex/sessions",
-        "/home/fin/.codex/sessions-other/rollout.jsonl",
-      ),
-    ).toBe(false);
-    expect(
-      isCodexRolloutPathWithinSessionsRoot(
-        path,
-        "/home/fin/.codex/sessions",
-        "/home/fin/.codex/auth.json",
-      ),
-    ).toBe(false);
-  });
+  effectIt.effect("rejects rollout paths outside the configured sessions root", () =>
+    Effect.gen(function* () {
+      const path = yield* Path.Path;
+      expect(
+        isCodexRolloutPathWithinSessionsRoot(
+          path,
+          "/home/fin/.codex/sessions",
+          "/home/fin/.codex/sessions/2026/07/16/rollout.jsonl",
+        ),
+      ).toBe(true);
+      expect(
+        isCodexRolloutPathWithinSessionsRoot(
+          path,
+          "/home/fin/.codex/sessions",
+          "/home/fin/.codex/sessions-other/rollout.jsonl",
+        ),
+      ).toBe(false);
+      expect(
+        isCodexRolloutPathWithinSessionsRoot(
+          path,
+          "/home/fin/.codex/sessions",
+          "/home/fin/.codex/auth.json",
+        ),
+      ).toBe(false);
+    }).pipe(Effect.provide(Path.layer)),
+  );
 
   it("uses stable command ids and changes them when projected content changes", () => {
     const [message] = collectCodexCliImportedMessages(makeThread());
@@ -565,6 +567,18 @@ describe("CodexCliSessionImporter transcript conversion", () => {
           provider: ProviderDriverKind.make("claudeAgent"),
         },
         { status: "interrupted" },
+      ),
+    ).toBe(false);
+    expect(
+      shouldInspectInterruptedCodexCliMirror(
+        {
+          ...importedBinding,
+          status: "error",
+          runtimePayload: {
+            sessionPersistence: "detached",
+          },
+        },
+        { status: "error" },
       ),
     ).toBe(false);
     expect(

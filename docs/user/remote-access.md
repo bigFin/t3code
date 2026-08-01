@@ -152,8 +152,9 @@ the conversation and in **Settings** → **Connections**. Follow the action show
 be able to update and reconnect the server for you, or it may ask you to update the desktop app or
 run a copied command on the server machine.
 
-Finish active work before updating because the server restarts briefly. For step-by-step guidance,
-see [Keeping T3 Code in Sync](./updating.md).
+The server restarts briefly during an update. Active Codex turns on Linux and macOS continue in
+their independent provider host, but terminal commands and other providers can still be
+interrupted. For step-by-step guidance, see [Keeping T3 Code in Sync](./updating.md).
 
 On a Linux host, you can keep the server running after logout and manage it independently of the
 connection method. See [Running T3 Code in the Background](./background-service.md).
@@ -166,9 +167,11 @@ environment as reconnecting and replaces stale in-flight **Working** or **Retryi
 **Disconnected**. These checks pause while the app is hidden and do not poll each thread.
 
 When the host and T3 server return, the client reconnects automatically. T3 Code does not send a
-message or automatically resume an agent turn. If the server restarted while a turn was active, the
-recovered thread is marked **Interrupted** with the transcript available up to the last persisted
-event. Open the thread and send a message when you are ready to continue.
+message or automatically resume an agent turn. If only the T3 server restarted and an independent
+Codex provider host survived, T3 reattaches and restores the provider's current status. If the
+machine restart or eviction stopped the provider execution, the recovered thread is marked
+**Interrupted** with the transcript available up to the last persisted event. Open the thread and
+send a message when you are ready to continue.
 
 ## How Pairing Works
 

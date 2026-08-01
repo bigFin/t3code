@@ -99,6 +99,8 @@ export function renderBootServiceUnit(plan: BootServicePlan): string {
     "",
     "[Service]",
     "Type=simple",
+    // Detached provider hosts intentionally outlive the T3 server process.
+    "KillMode=process",
     "WorkingDirectory=%h",
     `Environment=T3CODE_HOME=${quoteSystemdValue(plan.baseDir)}`,
     `Environment=${BOOT_SERVICE_UNIT_ENV}=${BOOT_SERVICE_UNIT_FILE}`,

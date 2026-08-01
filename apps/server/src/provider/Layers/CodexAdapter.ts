@@ -16,23 +16,31 @@ import {
   ProviderInstanceId,
   type ProviderRuntimeEvent,
   type ProviderRequestKind,
+  type ProviderSession,
+  type ProviderSessionStartInput,
   type ThreadTokenUsageSnapshot,
   type ProviderUserInputAnswers,
   RuntimeItemId,
   RuntimeRequestId,
   ProviderApprovalDecision,
   ThreadId,
+  TurnId,
   ProviderSendTurnInput,
 } from "@t3tools/contracts";
+import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Crypto from "effect/Crypto";
+import * as Duration from "effect/Duration";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
+import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
+import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
+import * as SynchronizedRef from "effect/SynchronizedRef";
 import { ChildProcessSpawner } from "effect/unstable/process";
 import * as CodexErrors from "effect-codex-app-server/errors";
 import * as EffectCodexSchema from "effect-codex-app-server/schema";
@@ -60,6 +68,8 @@ import {
   type CodexSessionRuntimeOptions,
   type CodexSessionRuntimeShape,
 } from "./CodexSessionRuntime.ts";
+import { makeCodexAppServerHost, type CodexAppServerHostShape } from "./CodexAppServerHost.ts";
+import { makeCodexProviderHostRuntime } from "../host/CodexProviderHostClient.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
 import { resolveCodexLaunchArgs } from "./codexLaunchArgs.ts";
 const isCodexAppServerProcessExitedError = Schema.is(CodexErrors.CodexAppServerProcessExitedError);
@@ -68,6 +78,11 @@ const isCodexSessionRuntimeThreadIdMissingError = Schema.is(
   CodexSessionRuntimeThreadIdMissingError,
 );
 const isCodexResumeCursorSchema = Schema.is(CodexResumeCursorSchema);
+const CodexProviderHostReattachedPayload = Schema.Struct({
+  status: Schema.Literals(["connecting", "ready", "running", "error", "closed"]),
+  activeTurnId: Schema.optional(TurnId),
+  lastError: Schema.optional(Schema.String),
+});
 
 const PROVIDER = ProviderDriverKind.make("codex");
 
@@ -81,8 +96,18 @@ export interface CodexAdapterLiveOptions {
     CodexSessionRuntimeError,
     ChildProcessSpawner.ChildProcessSpawner | Scope.Scope
   >;
+  readonly makeProviderHostRuntime?: (input: {
+    readonly controlSocketPath: string;
+    readonly options: CodexSessionRuntimeOptions;
+    readonly attachExisting?: boolean;
+  }) => Effect.Effect<
+    CodexSessionRuntimeShape,
+    CodexSessionRuntimeError,
+    ChildProcessSpawner.ChildProcessSpawner | Scope.Scope
+  >;
   readonly nativeEventLogPath?: string;
   readonly nativeEventLogger?: EventNdjsonLogger;
+  readonly appServerHost?: CodexAppServerHostShape;
 }
 
 interface CodexAdapterSessionContext {
@@ -91,6 +116,12 @@ interface CodexAdapterSessionContext {
   readonly runtime: CodexSessionRuntimeShape;
   readonly eventFiber: Fiber.Fiber<void, never>;
   stopped: boolean;
+}
+
+interface DesiredCodexSession {
+  readonly generation: number;
+  readonly input: ProviderSessionStartInput;
+  readonly attachExisting: boolean;
 }
 
 function mapCodexRuntimeError(
@@ -448,6 +479,7 @@ function runtimeEventBase(
     ...(event.itemId ? { itemId: asRuntimeItemId(event.itemId) } : {}),
     ...(event.requestId ? { requestId: asRuntimeRequestId(event.requestId) } : {}),
     ...(refs ? { providerRefs: refs } : {}),
+    ...(event.replay ? { replay: event.replay } : {}),
     raw: {
       source: eventRawSource(event),
       method: event.method,
@@ -630,6 +662,90 @@ function mapToRuntimeEvents(
         payload: {
           state: "ready",
           ...(event.message ? { reason: event.message } : {}),
+        },
+      },
+    ];
+  }
+
+  if (event.method === "session/reattached") {
+    const payload = readPayload(CodexProviderHostReattachedPayload, event.payload);
+    if (!payload) {
+      return [];
+    }
+    const state = (() => {
+      switch (payload.status) {
+        case "connecting":
+          return "starting" as const;
+        case "ready":
+          return "ready" as const;
+        case "running":
+          return "running" as const;
+        case "error":
+          return "error" as const;
+        case "closed":
+          return "stopped" as const;
+      }
+    })();
+    const activeTurnId =
+      state === "starting" || state === "running" ? (payload.activeTurnId ?? null) : null;
+    return [
+      {
+        ...runtimeEventBase(event, canonicalThreadId),
+        type: "session.state.changed",
+        payload: {
+          state,
+          activeTurnId,
+          ...((state === "error" ? payload.lastError : event.message)
+            ? { reason: state === "error" ? payload.lastError : event.message }
+            : {}),
+          detail: {
+            source: "provider-host-reattach",
+            providerStatus: payload.status,
+          },
+        },
+      },
+    ];
+  }
+
+  if (event.method === "session/waiting") {
+    return [
+      {
+        ...runtimeEventBase(event, canonicalThreadId),
+        type: "session.state.changed",
+        payload: {
+          state: "waiting",
+          ...(event.message ? { reason: event.message } : {}),
+        },
+      },
+    ];
+  }
+
+  if (event.method === "session/disconnected") {
+    return [
+      {
+        ...runtimeEventBase(event, canonicalThreadId),
+        type: "session.state.changed",
+        payload: {
+          state: "starting",
+          reason:
+            event.message ??
+            "T3 lost its attachment and will reconnect without interrupting Codex execution.",
+        },
+      },
+    ];
+  }
+
+  if (event.method === "session/replay-truncated") {
+    return [
+      {
+        ...runtimeEventBase(event, canonicalThreadId),
+        type: "runtime.warning",
+        payload: {
+          message:
+            event.message ?? "T3 reattached after the provider-host replay window was truncated.",
+          detail: {
+            source: "provider-host-replay",
+          },
         },
       },
     ];
@@ -1362,6 +1478,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
   const fileSystem = yield* FileSystem.FileSystem;
   const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const crypto = yield* Crypto.Crypto;
+  const adapterScope = yield* Scope.Scope;
   const serverConfig = yield* Effect.service(ServerConfig);
   const nativeEventLogger =
     options?.nativeEventLogger ??
@@ -1374,34 +1491,125 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     options?.nativeEventLogger === undefined ? nativeEventLogger : undefined;
   const runtimeEventQueue = yield* Queue.unbounded<ProviderRuntimeEvent>();
   const sessions = new Map<ThreadId, CodexAdapterSessionContext>();
+  const desiredSessions = new Map<ThreadId, DesiredCodexSession>();
+  const reconnectingThreads = new Set<ThreadId>();
+  const threadLocksRef = yield* SynchronizedRef.make(
+    new Map<string, { readonly semaphore: Semaphore.Semaphore; readonly users: number }>(),
+  );
+  let adapterClosing = false;
+  const launchArgs = resolveCodexLaunchArgs(codexConfig.launchArgs, options?.environment);
+  const appServerHost =
+    options?.appServerHost ??
+    (options?.makeRuntime
+      ? undefined
+      : yield* makeCodexAppServerHost({
+          binaryPath: codexConfig.binaryPath,
+          launchArgs,
+          ...(codexConfig.homePath ? { homePath: codexConfig.homePath } : {}),
+          ...(options?.environment ? { environment: options.environment } : {}),
+          cwd: serverConfig.cwd,
+          stateDir: serverConfig.stateDir,
+          providerLogsDir: serverConfig.providerLogsDir,
+          providerInstanceId: boundInstanceId,
+        }));
 
-  const startSession: CodexAdapterShape["startSession"] = (input) =>
+  const acquireThreadSemaphore = (threadId: string) =>
+    SynchronizedRef.modifyEffect(threadLocksRef, (current) => {
+      const existing = Option.fromNullishOr(current.get(threadId));
+      return Option.match(existing, {
+        onNone: () =>
+          Semaphore.make(1).pipe(
+            Effect.map((semaphore) => {
+              const next = new Map(current);
+              next.set(threadId, { semaphore, users: 1 });
+              return [semaphore, next] as const;
+            }),
+          ),
+        onSome: (entry) => {
+          const next = new Map(current);
+          next.set(threadId, { ...entry, users: entry.users + 1 });
+          return Effect.succeed([entry.semaphore, next] as const);
+        },
+      });
+    });
+
+  const releaseThreadSemaphore = (threadId: string, semaphore: Semaphore.Semaphore) =>
+    SynchronizedRef.update(threadLocksRef, (current) => {
+      const entry = current.get(threadId);
+      if (!entry || entry.semaphore !== semaphore) return current;
+      const next = new Map(current);
+      if (entry.users === 1) {
+        next.delete(threadId);
+      } else {
+        next.set(threadId, { ...entry, users: entry.users - 1 });
+      }
+      return next;
+    });
+
+  const withThreadLock = <A, E, R>(threadId: string, effect: Effect.Effect<A, E, R>) =>
+    Effect.acquireUseRelease(
+      acquireThreadSemaphore(threadId),
+      (semaphore) => semaphore.withPermit(effect),
+      (semaphore) => releaseThreadSemaphore(threadId, semaphore),
+    );
+
+  const attachSession: (
+    input: ProviderSessionStartInput,
+    replaceExisting: "stop" | "detach",
+    attachExisting: boolean,
+  ) => Effect.Effect<ProviderSession, ProviderAdapterError> = (
+    input,
+    replaceExisting,
+    attachExisting,
+  ) =>
     Effect.scoped(
       Effect.gen(function* () {
         if (input.provider !== undefined && input.provider !== PROVIDER) {
           return yield* new ProviderAdapterValidationError({
             provider: PROVIDER,
-            operation: "startSession",
+            operation: attachExisting ? "reattachSession" : "startSession",
             issue: `Expected provider '${PROVIDER}' but received '${input.provider}'.`,
+          });
+        }
+        if (attachExisting && !appServerHost) {
+          return yield* new ProviderAdapterProcessError({
+            provider: PROVIDER,
+            threadId: input.threadId,
+            detail: "Cannot attach an existing Codex session without a detached provider host.",
           });
         }
 
         const existing = sessions.get(input.threadId);
         if (existing && !existing.stopped) {
-          yield* Effect.suspend(() => stopSessionInternal(existing));
+          yield* Effect.suspend(() =>
+            replaceExisting === "detach"
+              ? discardAttachmentInternal(existing)
+              : stopSessionInternal(existing),
+          );
         }
 
         const serviceTier =
           input.modelSelection?.instanceId === boundInstanceId
             ? getCodexServiceTierOptionValue(input.modelSelection)
             : undefined;
-        const mcpSession = McpProviderSession.readMcpProviderSession(input.threadId);
+        const mcpSession = attachExisting
+          ? undefined
+          : McpProviderSession.readMcpProviderSession(input.threadId);
+        const providerHostSocketPath = appServerHost ? yield* appServerHost.ensure : undefined;
+        if (appServerHost && !providerHostSocketPath) {
+          return yield* new ProviderAdapterProcessError({
+            provider: PROVIDER,
+            threadId: input.threadId,
+            detail:
+              "The independent Codex provider host could not be started. T3 did not fall back to a process-bound session because that would break detached-session lifecycle guarantees.",
+          });
+        }
         const runtimeInput: CodexSessionRuntimeOptions = {
           threadId: input.threadId,
           providerInstanceId: boundInstanceId,
           cwd: input.cwd ?? process.cwd(),
           binaryPath: codexConfig.binaryPath,
-          launchArgs: resolveCodexLaunchArgs(codexConfig.launchArgs, options?.environment),
+          launchArgs,
           ...(options?.environment ? { environment: options.environment } : {}),
           ...(codexConfig.homePath ? { homePath: codexConfig.homePath } : {}),
           ...(isCodexResumeCursorSchema(input.resumeCursor)
@@ -1414,16 +1622,16 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
           ...(serviceTier ? { serviceTier } : {}),
           ...(mcpSession
             ? {
-                environment: {
-                  ...(options?.environment ?? process.env),
-                  T3_MCP_BEARER_TOKEN: mcpSession.authorizationHeader.replace(/^Bearer\s+/, ""),
+                threadConfig: {
+                  mcp_servers: {
+                    "t3-code": {
+                      url: mcpSession.endpoint,
+                      http_headers: {
+                        Authorization: mcpSession.authorizationHeader,
+                      },
+                    },
+                  },
                 },
-                appServerArgs: [
-                  "-c",
-                  `mcp_servers.t3-code.url=${mcpSession.endpoint}`,
-                  "-c",
-                  'mcp_servers.t3-code.bearer_token_env_var="T3_MCP_BEARER_TOKEN"',
-                ],
               }
             : {}),
         };
@@ -1432,57 +1640,79 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
         yield* Effect.addFinalizer(() =>
           sessionScopeTransferred ? Effect.void : Scope.close(sessionScope, Exit.void),
         );
-        const createRuntime = options?.makeRuntime ?? makeCodexSessionRuntime;
+        const createRuntime = providerHostSocketPath
+          ? (runtimeOptions: CodexSessionRuntimeOptions) =>
+              (options?.makeProviderHostRuntime ?? makeCodexProviderHostRuntime)({
+                controlSocketPath: providerHostSocketPath,
+                options: runtimeOptions,
+                ...(attachExisting ? { attachExisting: true } : {}),
+              })
+          : (options?.makeRuntime ?? makeCodexSessionRuntime);
         const runtime = yield* createRuntime(runtimeInput).pipe(
           Effect.provideService(Scope.Scope, sessionScope),
           Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, childProcessSpawner),
           Effect.provideService(Crypto.Crypto, crypto),
-          Effect.mapError(
-            (cause) =>
-              new ProviderAdapterProcessError({
-                provider: PROVIDER,
-                threadId: input.threadId,
-                detail: cause.message,
-                cause,
-              }),
+          Effect.mapError((cause) =>
+            attachExisting
+              ? mapCodexRuntimeError(input.threadId, "session/reattach", cause)
+              : new ProviderAdapterProcessError({
+                  provider: PROVIDER,
+                  threadId: input.threadId,
+                  detail: cause.message,
+                  cause,
+                }),
           ),
         );
 
-        const eventFiber = yield* Stream.runForEach(runtime.events, (event) =>
-          Effect.gen(function* () {
-            yield* writeNativeEvent(event);
-            const runtimeEvents = mapToRuntimeEvents(event, event.threadId);
-            if (runtimeEvents.length === 0) {
-              yield* Effect.logDebug("ignoring unhandled Codex provider event", {
-                method: event.method,
-                threadId: event.threadId,
-                turnId: event.turnId,
-                itemId: event.itemId,
-              });
-              return;
-            }
-            yield* Queue.offerAll(runtimeEventQueue, runtimeEvents);
-          }),
+        const eventFiber: Fiber.Fiber<void, never> = yield* Stream.runForEach(
+          runtime.events,
+          (event) =>
+            Effect.gen(function* () {
+              yield* writeNativeEvent(event);
+              const runtimeEvents = mapToRuntimeEvents(event, event.threadId);
+              if (runtimeEvents.length === 0) {
+                yield* Effect.logDebug("ignoring unhandled Codex provider event", {
+                  method: event.method,
+                  threadId: event.threadId,
+                  turnId: event.turnId,
+                  itemId: event.itemId,
+                });
+                return;
+              }
+              yield* Queue.offerAll(runtimeEventQueue, runtimeEvents);
+              if (event.method === "session/disconnected" && appServerHost) {
+                yield* scheduleReconnect(event.threadId);
+              }
+            }),
         ).pipe(Effect.forkChild);
 
-        const started = yield* runtime.start().pipe(
-          Effect.mapError(
-            (cause) =>
-              new ProviderAdapterProcessError({
-                provider: PROVIDER,
-                threadId: input.threadId,
-                detail: cause.message,
-                cause,
-              }),
+        const started: ProviderSession = yield* runtime.start().pipe(
+          Effect.mapError((cause) =>
+            attachExisting
+              ? mapCodexRuntimeError(input.threadId, "session/reattach", cause)
+              : new ProviderAdapterProcessError({
+                  provider: PROVIDER,
+                  threadId: input.threadId,
+                  detail: cause.message,
+                  cause,
+                }),
           ),
           Effect.onError(() =>
-            runtime.close.pipe(
+            (attachExisting ? runtime.detach : runtime.close).pipe(
               Effect.andThen(Effect.ignore(Scope.close(sessionScope, Exit.void))),
               Effect.andThen(Fiber.interrupt(eventFiber)),
               Effect.ignore,
             ),
           ),
         );
+        if (attachExisting && started.status === "closed") {
+          yield* runtime.detach.pipe(Effect.ignore);
+          yield* Fiber.await(eventFiber);
+          return yield* new ProviderAdapterSessionNotFoundError({
+            provider: PROVIDER,
+            threadId: input.threadId,
+          });
+        }
 
         sessions.set(input.threadId, {
           threadId: input.threadId,
@@ -1563,9 +1793,32 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
       .pipe(Effect.mapError((cause) => mapCodexRuntimeError(input.threadId, "turn/start", cause)));
   });
 
+  const discardAttachmentInternal = Effect.fn("discardAttachmentInternal")(function* (
+    session: CodexAdapterSessionContext,
+  ) {
+    if (session.stopped) {
+      return;
+    }
+    session.stopped = true;
+    if (sessions.get(session.threadId) === session) {
+      sessions.delete(session.threadId);
+    }
+    yield* session.runtime.detach.pipe(Effect.ignore);
+    yield* Fiber.await(session.eventFiber);
+    yield* Effect.ignore(Scope.close(session.scope, Exit.void));
+  });
+
   const requireSession = Effect.fn("requireSession")(function* (threadId: ThreadId) {
     const session = sessions.get(threadId);
     if (!session || session.stopped) {
+      return yield* new ProviderAdapterSessionNotFoundError({
+        provider: PROVIDER,
+        threadId,
+      });
+    }
+    const snapshot = yield* session.runtime.getSession;
+    if (snapshot.status === "closed") {
+      yield* Effect.suspend(() => discardAttachmentInternal(session));
       return yield* new ProviderAdapterSessionNotFoundError({
         provider: PROVIDER,
         threadId,
@@ -1660,21 +1913,169 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     if (session.stopped) {
       return;
     }
+    const closeExit = yield* Effect.exit(session.runtime.close);
+    if (Exit.isFailure(closeExit)) {
+      const cause = Cause.squash(closeExit.cause);
+      return yield* new ProviderAdapterProcessError({
+        provider: PROVIDER,
+        threadId: session.threadId,
+        detail: cause instanceof Error ? cause.message : String(cause),
+        cause,
+      });
+    }
     session.stopped = true;
-    sessions.delete(session.threadId);
-    yield* session.runtime.close.pipe(Effect.ignore);
+    if (sessions.get(session.threadId) === session) {
+      sessions.delete(session.threadId);
+    }
+    yield* Fiber.await(session.eventFiber);
     yield* Effect.ignore(Scope.close(session.scope, Exit.void));
-    yield* Fiber.interrupt(session.eventFiber).pipe(Effect.ignore);
   });
 
+  const reconnectThread: (threadId: ThreadId) => Effect.Effect<void> = Effect.fn("reconnectThread")(
+    function* (threadId) {
+      return yield* Effect.gen(function* () {
+        let delayMs = 250;
+        while (true) {
+          if (adapterClosing) {
+            return;
+          }
+          const desiredBeforeLock = desiredSessions.get(threadId);
+          if (!desiredBeforeLock) {
+            return;
+          }
+
+          const reattachResult = yield* withThreadLock(
+            threadId,
+            Effect.gen(function* () {
+              const desired = desiredSessions.get(threadId);
+              if (!desired || desired.generation !== desiredBeforeLock.generation) {
+                return;
+              }
+
+              const existing = sessions.get(threadId);
+              if (existing && !existing.stopped) {
+                const snapshot = yield* existing.runtime.getSession;
+                if (snapshot.status !== "error" && snapshot.status !== "closed") {
+                  return;
+                }
+              }
+
+              yield* attachSession(desired.input, "detach", true);
+            }),
+          ).pipe(
+            Effect.as({ _tag: "attached" as const }),
+            Effect.catchTag("ProviderAdapterSessionNotFoundError", (error) =>
+              Effect.succeed({ _tag: "missing" as const, error }),
+            ),
+            Effect.catchCause((cause) => Effect.succeed({ _tag: "failed" as const, cause })),
+          );
+          if (reattachResult._tag === "attached") {
+            yield* Effect.logInfo("codex.adapter.attachment-reconnected", {
+              threadId,
+              providerInstanceId: boundInstanceId,
+            });
+            return;
+          }
+          if (reattachResult._tag === "missing") {
+            if (desiredSessions.get(threadId)?.generation === desiredBeforeLock.generation) {
+              desiredSessions.delete(threadId);
+            }
+            yield* Effect.logInfo("codex.adapter.attachment-missing", {
+              threadId,
+              providerInstanceId: boundInstanceId,
+              cause: reattachResult.error,
+            });
+            return;
+          }
+
+          yield* Effect.logWarning("codex.adapter.attachment-reconnect-failed", {
+            threadId,
+            providerInstanceId: boundInstanceId,
+            retryDelayMs: delayMs,
+            cause: reattachResult.cause,
+          });
+          yield* Effect.sleep(Duration.millis(delayMs));
+          delayMs = Math.min(delayMs * 2, 10_000);
+        }
+      }).pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            reconnectingThreads.delete(threadId);
+          }),
+        ),
+      );
+    },
+  );
+
+  const scheduleReconnect: (threadId: ThreadId) => Effect.Effect<void> = Effect.fn(
+    "scheduleReconnect",
+  )(function* (threadId) {
+    if (adapterClosing || !desiredSessions.has(threadId) || reconnectingThreads.has(threadId)) {
+      return;
+    }
+    reconnectingThreads.add(threadId);
+    yield* reconnectThread(threadId).pipe(Effect.forkIn(adapterScope));
+  });
+
+  const startSession: CodexAdapterShape["startSession"] = (input) =>
+    withThreadLock(
+      input.threadId,
+      Effect.gen(function* () {
+        const previousGeneration = desiredSessions.get(input.threadId)?.generation ?? 0;
+        const desired = {
+          generation: previousGeneration + 1,
+          input,
+          attachExisting: false,
+        } satisfies DesiredCodexSession;
+        desiredSessions.set(input.threadId, desired);
+        return yield* attachSession(input, "stop", false).pipe(
+          Effect.tapError(() =>
+            Effect.sync(() => {
+              if (desiredSessions.get(input.threadId)?.generation === desired.generation) {
+                desiredSessions.delete(input.threadId);
+              }
+            }),
+          ),
+        );
+      }),
+    );
+
+  const reattachSession: NonNullable<CodexAdapterShape["reattachSession"]> = (input) =>
+    withThreadLock(
+      input.threadId,
+      Effect.gen(function* () {
+        const previousGeneration = desiredSessions.get(input.threadId)?.generation ?? 0;
+        const desired = {
+          generation: previousGeneration + 1,
+          input,
+          attachExisting: true,
+        } satisfies DesiredCodexSession;
+        desiredSessions.set(input.threadId, desired);
+        return yield* attachSession(input, "detach", true).pipe(
+          Effect.tapError(() =>
+            Effect.sync(() => {
+              if (desiredSessions.get(input.threadId)?.generation === desired.generation) {
+                desiredSessions.delete(input.threadId);
+              }
+            }),
+          ),
+        );
+      }),
+    );
+
   const stopSession: CodexAdapterShape["stopSession"] = (threadId) =>
-    Effect.gen(function* () {
-      const session = sessions.get(threadId);
-      if (!session) {
-        return;
-      }
-      yield* stopSessionInternal(session);
-    });
+    withThreadLock(
+      threadId,
+      Effect.gen(function* () {
+        const session = sessions.get(threadId);
+        if (!session) {
+          desiredSessions.delete(threadId);
+          return;
+        }
+        yield* stopSessionInternal(session);
+        desiredSessions.delete(threadId);
+      }),
+    );
 
   const listSessions: CodexAdapterShape["listSessions"] = () =>
     Effect.forEach(
@@ -1683,14 +2084,32 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
       { concurrency: 1 },
     );
 
-  const hasSession: CodexAdapterShape["hasSession"] = (threadId) =>
-    Effect.succeed(Boolean(sessions.get(threadId) && !sessions.get(threadId)?.stopped));
+  const hasSession: CodexAdapterShape["hasSession"] = Effect.fn("hasSession")(function* (threadId) {
+    const session = sessions.get(threadId);
+    if (!session || session.stopped) {
+      return false;
+    }
+    const snapshot = yield* session.runtime.getSession;
+    if (snapshot.status === "closed") {
+      yield* discardAttachmentInternal(session);
+      return false;
+    }
+    return true;
+  });
 
   const stopAll: CodexAdapterShape["stopAll"] = () =>
-    Effect.forEach(Array.from(sessions.values()), stopSessionInternal, {
-      concurrency: 1,
-      discard: true,
-    }).pipe(Effect.asVoid);
+    Effect.gen(function* () {
+      adapterClosing = true;
+      desiredSessions.clear();
+      yield* Effect.forEach(
+        Array.from(sessions.values()),
+        appServerHost ? discardAttachmentInternal : stopSessionInternal,
+        {
+          concurrency: "unbounded",
+          discard: true,
+        },
+      );
+    });
 
   yield* Effect.acquireRelease(Effect.void, () =>
     stopAll().pipe(
@@ -1704,8 +2123,10 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     provider: PROVIDER,
     capabilities: {
       sessionModelSwitch: "in-session",
+      sessionPersistence: appServerHost ? "detached" : "process-bound",
     },
     startSession,
+    ...(appServerHost ? { reattachSession } : {}),
     sendTurn,
     interruptTurn,
     readThread,

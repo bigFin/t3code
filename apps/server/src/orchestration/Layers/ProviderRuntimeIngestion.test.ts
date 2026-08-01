@@ -100,6 +100,7 @@ function createProviderServiceHarness() {
   const unsupported = () => Effect.die(new Error("Unsupported provider call in test")) as never;
   const service: ProviderServiceShape = {
     startSession: () => unsupported(),
+    reattachSession: () => unsupported(),
     sendTurn: () => unsupported(),
     interruptTurn: () => unsupported(),
     respondToRequest: () => unsupported(),
@@ -449,6 +450,31 @@ describe("ProviderRuntimeIngestion", () => {
     expect(thread.session?.lastError).toBeNull();
   });
 
+  it("deduplicates a replayed provider event by its stable event id", async () => {
+    const harness = await createHarness();
+    const replayedEvent = {
+      type: "runtime.warning",
+      eventId: asEventId("evt-replayed-runtime-warning"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      createdAt: "2026-01-01T00:00:00.000Z",
+      payload: {
+        message: "Replayed provider output",
+      },
+    } satisfies ProviderRuntimeEvent;
+
+    harness.emit(replayedEvent);
+    harness.emit(replayedEvent);
+    await harness.drain();
+
+    const thread = (await harness.readModel()).threads.find(
+      (entry) => entry.id === asThreadId("thread-1"),
+    );
+    expect(
+      thread?.activities.filter((activity) => activity.id === replayedEvent.eventId),
+    ).toHaveLength(1);
+  });
+
   it("clears active turn when provider session becomes ready", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";
@@ -492,6 +518,60 @@ describe("ProviderRuntimeIngestion", () => {
     expect(thread.session?.status).toBe("ready");
     expect(thread.session?.activeTurnId).toBeNull();
     expect(thread.session?.lastError).toBeNull();
+  });
+
+  it("reconciles the authoritative active turn from a provider session snapshot", async () => {
+    const harness = await createHarness();
+    const staleTurnId = asTurnId("turn-stale-before-reattach");
+    const activeTurnId = asTurnId("turn-active-after-reattach");
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-turn-stale-before-reattach"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      createdAt: "2026-01-01T00:00:00.000Z",
+      turnId: staleTurnId,
+    });
+    await waitForThread(
+      harness.readModel,
+      (thread) => thread.session?.activeTurnId === staleTurnId,
+    );
+
+    harness.emit({
+      type: "session.state.changed",
+      eventId: asEventId("evt-session-running-after-reattach"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      createdAt: "2026-01-01T00:00:01.000Z",
+      turnId: activeTurnId,
+      payload: {
+        state: "running",
+        activeTurnId,
+      },
+    });
+    await waitForThread(
+      harness.readModel,
+      (thread) =>
+        thread.session?.status === "running" && thread.session.activeTurnId === activeTurnId,
+    );
+
+    harness.emit({
+      type: "session.state.changed",
+      eventId: asEventId("evt-session-running-without-active-turn"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      createdAt: "2026-01-01T00:00:02.000Z",
+      payload: {
+        state: "running",
+        activeTurnId: null,
+      },
+    });
+    const thread = await waitForThread(
+      harness.readModel,
+      (entry) => entry.session?.status === "running" && entry.session.activeTurnId === null,
+    );
+    expect(thread.session?.activeTurnId).toBeNull();
   });
 
   effectIt.effect(
@@ -1805,6 +1885,108 @@ describe("ProviderRuntimeIngestion", () => {
     expect(proposedPlan?.planMarkdown).toBe("## Buffered plan\n\n- first\n- second");
   });
 
+  it("prefers authoritative completed plan text when replay history was truncated", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    const turnId = asTurnId("turn-plan-truncated-replay");
+
+    harness.emit({
+      type: "turn.proposed.delta",
+      eventId: asEventId("evt-plan-delta-before-truncated-replay"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId,
+      payload: {
+        delta: "## Stale partial plan",
+      },
+    });
+    harness.emit({
+      type: "turn.proposed.delta",
+      eventId: asEventId("evt-plan-delta-truncated-replay"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId,
+      replay: {
+        truncated: true,
+      },
+      payload: {
+        delta: "\n- retained suffix only",
+      },
+    });
+    harness.emit({
+      type: "turn.proposed.completed",
+      eventId: asEventId("evt-plan-completed-truncated-replay"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId,
+      replay: {
+        truncated: true,
+      },
+      payload: {
+        planMarkdown: "## Authoritative plan\n\n- first\n- second",
+      },
+    });
+
+    const thread = await waitForThread(harness.readModel, (entry) =>
+      entry.proposedPlans.some(
+        (plan: ProviderRuntimeTestProposedPlan) =>
+          plan.id === "plan:thread-1:turn:turn-plan-truncated-replay",
+      ),
+    );
+    expect(
+      thread.proposedPlans.find(
+        (plan: ProviderRuntimeTestProposedPlan) =>
+          plan.id === "plan:thread-1:turn:turn-plan-truncated-replay",
+      )?.planMarkdown,
+    ).toBe("## Authoritative plan\n\n- first\n- second");
+  });
+
+  it("does not append a replayed proposed-plan delta twice", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    const deltaEvent = {
+      type: "turn.proposed.delta" as const,
+      eventId: asEventId("evt-plan-delta-duplicate"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-plan-duplicate"),
+      payload: {
+        delta: "one copy",
+      },
+    };
+
+    harness.emit(deltaEvent);
+    harness.emit(deltaEvent);
+    harness.emit({
+      type: "turn.completed",
+      eventId: asEventId("evt-turn-completed-plan-duplicate"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-plan-duplicate"),
+      payload: {
+        state: "completed",
+      },
+    });
+
+    const thread = await waitForThread(harness.readModel, (entry) =>
+      entry.proposedPlans.some(
+        (plan: ProviderRuntimeTestProposedPlan) =>
+          plan.id === "plan:thread-1:turn:turn-plan-duplicate",
+      ),
+    );
+    expect(
+      thread.proposedPlans.find(
+        (plan: ProviderRuntimeTestProposedPlan) =>
+          plan.id === "plan:thread-1:turn:turn-plan-duplicate",
+      )?.planMarkdown,
+    ).toBe("one copy");
+  });
+
   it("buffers assistant deltas by default until completion", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";
@@ -1871,6 +2053,52 @@ describe("ProviderRuntimeIngestion", () => {
     );
     expect(message?.text).toBe("buffer me");
     expect(message?.streaming).toBe(false);
+  });
+
+  it("does not append a replayed buffered assistant delta twice", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    const deltaEvent = {
+      type: "content.delta" as const,
+      eventId: asEventId("evt-message-delta-buffered-duplicate"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-buffered-duplicate"),
+      itemId: asItemId("item-buffered-duplicate"),
+      payload: {
+        streamKind: "assistant_text" as const,
+        delta: "one copy",
+      },
+    };
+
+    harness.emit(deltaEvent);
+    harness.emit(deltaEvent);
+    harness.emit({
+      type: "item.completed",
+      eventId: asEventId("evt-message-completed-buffered-duplicate"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-buffered-duplicate"),
+      itemId: asItemId("item-buffered-duplicate"),
+      payload: {
+        itemType: "assistant_message",
+        status: "completed",
+      },
+    });
+
+    const thread = await waitForThread(harness.readModel, (entry) =>
+      entry.messages.some(
+        (message: ProviderRuntimeTestMessage) =>
+          message.id === "assistant:item-buffered-duplicate" && !message.streaming,
+      ),
+    );
+    expect(
+      thread.messages.find(
+        (message: ProviderRuntimeTestMessage) => message.id === "assistant:item-buffered-duplicate",
+      )?.text,
+    ).toBe("one copy");
   });
 
   it("flushes and completes buffered assistant text when an approval request opens", async () => {
@@ -2452,6 +2680,278 @@ describe("ProviderRuntimeIngestion", () => {
     expect(message?.streaming).toBe(false);
   });
 
+  it("reconciles authoritative completion after truncated replay and resumes in the next segment", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    const turnId = asTurnId("turn-truncated-replay-fence");
+    const itemId = asItemId("item-truncated-replay-fence");
+    const firstMessageId = asMessageId("assistant:item-truncated-replay-fence");
+    const secondMessageId = asMessageId("assistant:item-truncated-replay-fence:segment:1");
+    const persistedText = "persisted before disconnect";
+    const ambiguousReplayText = "ambiguous replay text";
+    const authoritativeText = "persisted before disconnect plus offline completion";
+    const liveText = "new live text";
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-turn-started-truncated-replay-fence"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId,
+    });
+    await waitForThread(
+      harness.readModel,
+      (thread) => thread.session?.status === "running" && thread.session?.activeTurnId === turnId,
+    );
+
+    await runtime!.runPromise(
+      harness.engine.dispatch({
+        type: "thread.message.assistant.delta",
+        commandId: CommandId.make("cmd-persisted-truncated-replay-segment"),
+        threadId: asThreadId("thread-1"),
+        messageId: firstMessageId,
+        turnId,
+        delta: persistedText,
+        createdAt: now,
+      }),
+    );
+
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-message-delta-truncated-replay-fence"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId,
+      itemId,
+      replay: {
+        truncated: true,
+      },
+      payload: {
+        streamKind: "assistant_text",
+        delta: ambiguousReplayText,
+      },
+    });
+    harness.emit({
+      type: "request.opened",
+      eventId: asEventId("evt-request-opened-truncated-replay-fence"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId,
+      requestId: ApprovalRequestId.make("request-truncated-replay-fence"),
+      replay: {
+        truncated: true,
+      },
+      payload: {
+        requestType: "command_execution_approval",
+        detail: "ambiguous boundary",
+      },
+    });
+    harness.emit({
+      type: "item.completed",
+      eventId: asEventId("evt-message-completed-truncated-replay-fence"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId,
+      itemId,
+      replay: {
+        truncated: true,
+      },
+      payload: {
+        itemType: "assistant_message",
+        status: "completed",
+        detail: authoritativeText,
+      },
+    });
+    harness.emit({
+      type: "turn.completed",
+      eventId: asEventId("evt-turn-completed-truncated-replay-fence"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId,
+      replay: {
+        truncated: true,
+      },
+      payload: {
+        state: "completed",
+      },
+    });
+    harness.emit({
+      type: "session.state.changed",
+      eventId: asEventId("evt-session-reattached-truncated-replay-fence"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: "2026-01-01T00:00:01.000Z",
+      threadId: asThreadId("thread-1"),
+      turnId,
+      payload: {
+        state: "running",
+        activeTurnId: turnId,
+        detail: {
+          source: "provider-host-reattach",
+          providerStatus: "running",
+        },
+      },
+    });
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-message-delta-live-after-replay-fence"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: "2026-01-01T00:00:02.000Z",
+      threadId: asThreadId("thread-1"),
+      turnId,
+      itemId,
+      payload: {
+        streamKind: "assistant_text",
+        delta: liveText,
+      },
+    });
+    harness.emit({
+      type: "item.completed",
+      eventId: asEventId("evt-message-completed-live-after-replay-fence"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: "2026-01-01T00:00:03.000Z",
+      threadId: asThreadId("thread-1"),
+      turnId,
+      itemId,
+      payload: {
+        itemType: "assistant_message",
+        status: "completed",
+      },
+    });
+
+    const thread = await waitForThread(harness.readModel, (entry) =>
+      entry.messages.some(
+        (message: ProviderRuntimeTestMessage) =>
+          message.id === secondMessageId && !message.streaming && message.text === liveText,
+      ),
+    );
+    const firstMessage = thread.messages.find(
+      (entry: ProviderRuntimeTestMessage) => entry.id === firstMessageId,
+    );
+    const secondMessage = thread.messages.find(
+      (entry: ProviderRuntimeTestMessage) => entry.id === secondMessageId,
+    );
+    expect(firstMessage?.text).toBe(authoritativeText);
+    expect(firstMessage?.streaming).toBe(false);
+    expect(secondMessage?.text).toBe(liveText);
+    expect(secondMessage?.streaming).toBe(false);
+    expect(thread.messages.some((message) => message.text.includes(ambiguousReplayText))).toBe(
+      false,
+    );
+  });
+
+  it("preserves provider base keys that end in a generated-segment-shaped suffix", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    const turnId = asTurnId("turn-native-segment-shaped-id");
+    const itemId = asItemId("item-native:segment:1");
+    const firstMessageId = asMessageId("assistant:item-native:segment:1");
+    const secondMessageId = asMessageId("assistant:item-native:segment:1:segment:1");
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-turn-started-native-segment-shaped-id"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId,
+    });
+    await waitForThread(
+      harness.readModel,
+      (thread) => thread.session?.status === "running" && thread.session?.activeTurnId === turnId,
+    );
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.message.assistant.delta",
+        commandId: CommandId.make("cmd-persisted-native-segment-shaped-id"),
+        threadId: asThreadId("thread-1"),
+        messageId: firstMessageId,
+        turnId,
+        delta: "persisted",
+        createdAt: now,
+      }),
+    );
+
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-truncated-native-segment-shaped-id"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId,
+      itemId,
+      replay: {
+        truncated: true,
+      },
+      payload: {
+        streamKind: "assistant_text",
+        delta: "ambiguous replay",
+      },
+    });
+    harness.emit({
+      type: "session.state.changed",
+      eventId: asEventId("evt-reattached-native-segment-shaped-id"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: "2026-01-01T00:00:01.000Z",
+      threadId: asThreadId("thread-1"),
+      turnId,
+      payload: {
+        state: "running",
+        activeTurnId: turnId,
+        detail: {
+          source: "provider-host-reattach",
+          providerStatus: "running",
+        },
+      },
+    });
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-live-native-segment-shaped-id"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: "2026-01-01T00:00:02.000Z",
+      threadId: asThreadId("thread-1"),
+      turnId,
+      itemId,
+      payload: {
+        streamKind: "assistant_text",
+        delta: "live",
+      },
+    });
+    harness.emit({
+      type: "item.completed",
+      eventId: asEventId("evt-completed-native-segment-shaped-id"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: "2026-01-01T00:00:03.000Z",
+      threadId: asThreadId("thread-1"),
+      turnId,
+      itemId,
+      payload: {
+        itemType: "assistant_message",
+        status: "completed",
+      },
+    });
+
+    const thread = await waitForThread(harness.readModel, (entry) =>
+      entry.messages.some(
+        (message: ProviderRuntimeTestMessage) =>
+          message.id === secondMessageId && !message.streaming && message.text === "live",
+      ),
+    );
+    expect(
+      thread.messages.find((message: ProviderRuntimeTestMessage) => message.id === firstMessageId)
+        ?.text,
+    ).toBe("persisted");
+    expect(
+      thread.messages.find((message: ProviderRuntimeTestMessage) => message.id === secondMessageId)
+        ?.text,
+    ).toBe("live");
+  });
+
   it("does not duplicate assistant completion when item.completed is followed by turn.completed", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";
@@ -2521,7 +3021,7 @@ describe("ProviderRuntimeIngestion", () => {
         ),
     );
 
-    const events = await Effect.runPromise(
+    const events = await runtime!.runPromise(
       Stream.runCollect(harness.engine.readEvents(0)).pipe(
         Effect.map((chunk) => Array.from(chunk)),
       ),

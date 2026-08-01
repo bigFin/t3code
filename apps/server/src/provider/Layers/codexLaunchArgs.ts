@@ -10,9 +10,38 @@ export const resolveCodexLaunchArgs = (
 export const codexLaunchArgv = (launchArgs?: string): ReadonlyArray<string> =>
   tokenizeCliArgs(launchArgs);
 
+/**
+ * T3 owns the app-server transport. Ignore user-supplied transport flags so a
+ * configured listener cannot break either the scoped stdio client or the
+ * detached Unix-socket host.
+ */
+export const codexAppServerLaunchArgv = (launchArgs?: string): ReadonlyArray<string> => {
+  const args = codexLaunchArgv(launchArgs);
+  const appServerArgs: Array<string> = [];
+
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index];
+    if (arg === undefined) continue;
+
+    if (arg === "--listen") {
+      const value = args[index + 1];
+      if (value !== undefined && !value.startsWith("-")) {
+        index++;
+      }
+      continue;
+    }
+    if (arg.startsWith("--listen=") || arg === "--stdio" || arg.startsWith("--stdio=")) {
+      continue;
+    }
+    appServerArgs.push(arg);
+  }
+
+  return appServerArgs;
+};
+
 export const codexAppServerArgs = (launchArgs?: string) => [
   "app-server",
-  ...codexLaunchArgv(launchArgs),
+  ...codexAppServerLaunchArgv(launchArgs),
 ];
 
 export const codexExecLaunchArgs = (launchArgs?: string) => {
@@ -37,12 +66,4 @@ export const codexExecLaunchArgs = (launchArgs?: string) => {
   }
 
   return execArgs;
-};
-
-export const codexSessionAppServerArgs = (
-  appServerArgs: ReadonlyArray<string> | undefined,
-  launchArgs: string | undefined,
-) => {
-  const launchAppServerArgs = codexAppServerArgs(launchArgs);
-  return appServerArgs ? [...launchAppServerArgs, ...appServerArgs] : launchAppServerArgs;
 };

@@ -1,8 +1,9 @@
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
-import { Argument, Command } from "effect/unstable/cli";
+import { Argument, Command, Flag } from "effect/unstable/cli";
 import * as CliError from "effect/unstable/cli/CliError";
 
 import * as NetService from "@t3tools/shared/Net";
@@ -14,6 +15,8 @@ import { sharedServerCommandFlags } from "./cli/config.ts";
 import { projectCommand } from "./cli/project.ts";
 import { runServerCommand, serveCommand, startCommand } from "./cli/server.ts";
 import { serviceCommand } from "./cli/service.ts";
+import { readCodexProviderHostConfig } from "./provider/host/CodexProviderHostConfig.ts";
+import { runCodexProviderHost } from "./provider/host/CodexProviderHostServer.ts";
 
 const CliRuntimeLayer = Layer.mergeAll(NodeServices.layer, NetService.layer);
 
@@ -41,6 +44,28 @@ const connectUnavailableCommand = Command.make("connect", {
   ),
 );
 
+const providerHostCommand = Command.make("__provider-host", {
+  config: Flag.string("config"),
+}).pipe(
+  Command.withDescription("Run an internal detached provider host."),
+  Command.withHidden,
+  Command.withHandler(({ config }) =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const hostConfig = yield* readCodexProviderHostConfig(config);
+      yield* fileSystem.remove(config, { force: true }).pipe(
+        Effect.catch((cause) =>
+          Effect.logWarning("Failed to remove consumed provider-host config.", {
+            path: config,
+            cause,
+          }),
+        ),
+      );
+      return yield* runCodexProviderHost(hostConfig);
+    }),
+  ),
+);
+
 export const makeCli = ({ cloudEnabled = hasCloudPublicConfig } = {}) =>
   Command.make("t3", { ...sharedServerCommandFlags }).pipe(
     Command.withDescription("Run the T3 Code server."),
@@ -51,6 +76,7 @@ export const makeCli = ({ cloudEnabled = hasCloudPublicConfig } = {}) =>
       authCommand,
       projectCommand,
       serviceCommand,
+      providerHostCommand,
       cloudEnabled ? connectCommand : connectUnavailableCommand,
     ]),
   );

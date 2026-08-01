@@ -14,6 +14,7 @@ import {
   ProviderSessionDirectory,
   type ProviderRuntimeBindingWithMetadata,
 } from "../Services/ProviderSessionDirectory.ts";
+import type { ProviderSessionPersistence } from "../Services/ProviderAdapter.ts";
 import {
   ProviderSessionReaper,
   type ProviderSessionReaperShape,
@@ -22,12 +23,18 @@ import { ProviderService } from "../Services/ProviderService.ts";
 
 const DEFAULT_INACTIVITY_THRESHOLD_MS = 30 * 60 * 1000;
 const DEFAULT_SWEEP_INTERVAL_MS = 5 * 60 * 1000;
+const DEFAULT_REATTACH_RETRY_INTERVAL_MS = 15 * 1000;
 const RESTART_INTERRUPTION_MESSAGE =
   "The T3 server restarted while this turn was running. T3 recovered the available transcript. Send a message to continue.";
+const DETACHED_RUNTIME_RECONNECTING_MESSAGE =
+  "T3 could not reattach to the detached provider execution yet. The provider was not interrupted; T3 will keep retrying.";
+const DETACHED_RUNTIME_MISSING_MESSAGE =
+  "The detached provider execution is no longer present. T3 did not resume it automatically. Send a message to continue.";
 
 export interface ProviderSessionReaperLiveOptions {
   readonly inactivityThresholdMs?: number;
   readonly sweepIntervalMs?: number;
+  readonly reattachRetryIntervalMs?: number;
 }
 
 function wasStoppedByServerShutdown(binding: ProviderRuntimeBindingWithMetadata): boolean {
@@ -39,6 +46,55 @@ function wasStoppedByServerShutdown(binding: ProviderRuntimeBindingWithMetadata)
     !Array.isArray(runtimePayload) &&
     "lastRuntimeEvent" in runtimePayload &&
     runtimePayload.lastRuntimeEvent === "provider.stopAll"
+  );
+}
+
+function wasDetachedByServerShutdown(binding: ProviderRuntimeBindingWithMetadata): boolean {
+  const runtimePayload = binding.runtimePayload;
+  return (
+    runtimePayload !== null &&
+    typeof runtimePayload === "object" &&
+    !Array.isArray(runtimePayload) &&
+    "lastRuntimeEvent" in runtimePayload &&
+    runtimePayload.lastRuntimeEvent === "provider.detachAll"
+  );
+}
+
+function hasDetachedReattachPending(binding: ProviderRuntimeBindingWithMetadata): boolean {
+  const runtimePayload = binding.runtimePayload;
+  return (
+    runtimePayload !== null &&
+    typeof runtimePayload === "object" &&
+    !Array.isArray(runtimePayload) &&
+    "lastRuntimeEvent" in runtimePayload &&
+    runtimePayload.lastRuntimeEvent === "provider.session.detached-reattach-pending"
+  );
+}
+
+function readPersistedSessionPersistence(
+  binding: ProviderRuntimeBindingWithMetadata,
+): ProviderSessionPersistence | undefined {
+  const runtimePayload = binding.runtimePayload;
+  if (
+    runtimePayload === null ||
+    typeof runtimePayload !== "object" ||
+    Array.isArray(runtimePayload) ||
+    !("sessionPersistence" in runtimePayload)
+  ) {
+    return undefined;
+  }
+  return runtimePayload.sessionPersistence === "detached" ||
+    runtimePayload.sessionPersistence === "process-bound"
+    ? runtimePayload.sessionPersistence
+    : undefined;
+}
+
+function startupStatusCommandId(
+  transition: "startup-detached-missing" | "startup-reattach-pending",
+  binding: ProviderRuntimeBindingWithMetadata,
+): CommandId {
+  return CommandId.make(
+    ["provider-session-reaper", transition, binding.threadId, binding.lastSeenAt].join(":"),
   );
 }
 
@@ -54,6 +110,10 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
       options?.inactivityThresholdMs ?? DEFAULT_INACTIVITY_THRESHOLD_MS,
     );
     const sweepIntervalMs = Math.max(1, options?.sweepIntervalMs ?? DEFAULT_SWEEP_INTERVAL_MS);
+    const reattachRetryIntervalMs = Math.max(
+      1,
+      options?.reattachRetryIntervalMs ?? DEFAULT_REATTACH_RETRY_INTERVAL_MS,
+    );
 
     const reconcileOrphanedSessions = Effect.fn("ProviderSessionReaper.reconcileOrphanedSessions")(
       function* () {
@@ -93,7 +153,10 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
           return (
             binding.status === "starting" ||
             binding.status === "running" ||
-            wasStoppedByServerShutdown(binding)
+            (binding.status === "error" &&
+              readPersistedSessionPersistence(binding) === "detached") ||
+            wasStoppedByServerShutdown(binding) ||
+            wasDetachedByServerShutdown(binding)
           );
         });
         if (orphanedCandidates.length === 0) {
@@ -119,10 +182,140 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
           "ProviderSessionReaper.reconcileOrphanedSession",
         )(function* (binding: (typeof orphanedBindings)[number]) {
           if (binding.providerInstanceId === undefined) {
-            return { reconciled: false, interrupted: false };
+            return { reconciled: false, interrupted: false, reattached: false };
           }
 
           const session = threadShells.get(binding.threadId)?.session;
+          const capabilitiesExit = yield* Effect.exit(
+            providerService.getCapabilities(binding.providerInstanceId),
+          );
+          const persistedSessionPersistence = readPersistedSessionPersistence(binding);
+          if (
+            !wasDetachedByServerShutdown(binding) &&
+            persistedSessionPersistence === undefined &&
+            Exit.isFailure(capabilitiesExit)
+          ) {
+            yield* Effect.logWarning("provider.session.reaper.startup-capabilities-unavailable", {
+              threadId: binding.threadId,
+              provider: binding.provider,
+              providerInstanceId: binding.providerInstanceId,
+              cause: capabilitiesExit.cause,
+            });
+            return { reconciled: false, interrupted: false, reattached: false };
+          }
+          const detached =
+            wasDetachedByServerShutdown(binding) ||
+            persistedSessionPersistence === "detached" ||
+            (Exit.isSuccess(capabilitiesExit) &&
+              capabilitiesExit.value.sessionPersistence === "detached");
+          if (detached) {
+            const reattachResult = yield* providerService
+              .reattachSession({ threadId: binding.threadId })
+              .pipe(
+                Effect.map((reattached) => ({ _tag: "reattached" as const, reattached })),
+                Effect.catchTag("ProviderAdapterSessionNotFoundError", (error) =>
+                  Effect.succeed({ _tag: "missing" as const, error }),
+                ),
+                Effect.catchCause((cause) => Effect.succeed({ _tag: "failed" as const, cause })),
+              );
+            if (reattachResult._tag === "reattached") {
+              const reattached = reattachResult.reattached;
+              yield* Effect.logInfo("provider.session.reaper.startup-reattached", {
+                threadId: binding.threadId,
+                provider: binding.provider,
+                providerInstanceId: binding.providerInstanceId,
+                status: reattached.status,
+                activeTurnId: reattached.activeTurnId,
+              });
+              return { reconciled: true, interrupted: false, reattached: true };
+            }
+            if (reattachResult._tag === "missing") {
+              const interrupted = session?.status === "starting" || session?.status === "running";
+              yield* orchestrationEngine.dispatch({
+                type: "thread.session.set",
+                commandId: startupStatusCommandId("startup-detached-missing", binding),
+                threadId: binding.threadId,
+                session: {
+                  threadId: binding.threadId,
+                  status: interrupted ? "interrupted" : "stopped",
+                  providerName: session?.providerName ?? binding.provider,
+                  providerInstanceId: binding.providerInstanceId,
+                  runtimeMode: session?.runtimeMode ?? binding.runtimeMode ?? "full-access",
+                  activeTurnId: null,
+                  lastError: DETACHED_RUNTIME_MISSING_MESSAGE,
+                  retrying: false,
+                  updatedAt: reconciledAt,
+                },
+                createdAt: reconciledAt,
+              });
+              yield* directory.upsert({
+                threadId: binding.threadId,
+                provider: binding.provider,
+                providerInstanceId: binding.providerInstanceId,
+                status: "stopped",
+                runtimePayload: {
+                  activeTurnId: null,
+                  lastRuntimeEvent: "provider.session.detached-runtime-missing-on-startup",
+                  lastRuntimeEventAt: reconciledAt,
+                  sessionPersistence: "detached",
+                },
+              });
+              yield* Effect.logInfo("provider.session.reaper.startup-detached-runtime-missing", {
+                threadId: binding.threadId,
+                provider: binding.provider,
+                providerInstanceId: binding.providerInstanceId,
+                interrupted,
+                cause: reattachResult.error,
+              });
+              return { reconciled: true, interrupted, reattached: false };
+            }
+            const alreadyPending = hasDetachedReattachPending(binding);
+            if (alreadyPending) {
+              yield* Effect.logDebug("provider.session.reaper.startup-reattach-still-pending", {
+                threadId: binding.threadId,
+                provider: binding.provider,
+                providerInstanceId: binding.providerInstanceId,
+              });
+              return { reconciled: false, interrupted: false, reattached: false };
+            }
+            yield* Effect.logWarning("provider.session.reaper.startup-reattach-failed", {
+              threadId: binding.threadId,
+              provider: binding.provider,
+              providerInstanceId: binding.providerInstanceId,
+              cause: reattachResult.cause,
+            });
+            yield* orchestrationEngine.dispatch({
+              type: "thread.session.set",
+              commandId: startupStatusCommandId("startup-reattach-pending", binding),
+              threadId: binding.threadId,
+              session: {
+                threadId: binding.threadId,
+                status: "starting",
+                providerName: session?.providerName ?? binding.provider,
+                providerInstanceId: binding.providerInstanceId,
+                runtimeMode: session?.runtimeMode ?? binding.runtimeMode ?? "full-access",
+                activeTurnId: session?.activeTurnId ?? null,
+                lastError: DETACHED_RUNTIME_RECONNECTING_MESSAGE,
+                retrying: true,
+                updatedAt: reconciledAt,
+              },
+              createdAt: reconciledAt,
+            });
+            yield* directory.upsert({
+              threadId: binding.threadId,
+              provider: binding.provider,
+              providerInstanceId: binding.providerInstanceId,
+              status: "starting",
+              runtimePayload: {
+                activeTurnId: session?.activeTurnId ?? null,
+                lastRuntimeEvent: "provider.session.detached-reattach-pending",
+                lastRuntimeEventAt: reconciledAt,
+                sessionPersistence: "detached",
+              },
+            });
+            return { reconciled: true, interrupted: false, reattached: false };
+          }
+
           const interrupted = session?.status === "starting" || session?.status === "running";
           if (interrupted) {
             yield* orchestrationEngine.dispatch({
@@ -155,11 +348,13 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
             status: "stopped",
             runtimePayload: {
               activeTurnId: null,
-              lastRuntimeEvent: "provider.session.orphaned-on-startup",
+              lastRuntimeEvent: detached
+                ? "provider.session.detached-runtime-missing-on-startup"
+                : "provider.session.orphaned-on-startup",
               lastRuntimeEventAt: reconciledAt,
             },
           });
-          return { reconciled: true, interrupted };
+          return { reconciled: true, interrupted, reattached: false };
         });
         const reconciliationResults = yield* Effect.forEach(
           orphanedBindings,
@@ -170,22 +365,26 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
                   threadId: binding.threadId,
                   provider: binding.provider,
                   cause,
-                }).pipe(Effect.as({ reconciled: false, interrupted: false })),
+                }).pipe(Effect.as({ reconciled: false, interrupted: false, reattached: false })),
               ),
             ),
-          { concurrency: 1 },
+          { concurrency: 4 },
         );
         const reconciledCount = reconciliationResults.filter((result) => result.reconciled).length;
         const interruptedCount = reconciliationResults.filter(
           (result) => result.interrupted,
         ).length;
+        const reattachedCount = reconciliationResults.filter((result) => result.reattached).length;
 
-        yield* Effect.logInfo("provider.session.reaper.startup-reconciled", {
-          orphanedCount: orphanedBindings.length,
-          reconciledCount,
-          interruptedCount,
-          shutdownStoppedCount: orphanedBindings.filter(wasStoppedByServerShutdown).length,
-        });
+        if (reconciledCount > 0) {
+          yield* Effect.logInfo("provider.session.reaper.startup-reconciled", {
+            orphanedCount: orphanedBindings.length,
+            reconciledCount,
+            interruptedCount,
+            reattachedCount,
+            shutdownStoppedCount: orphanedBindings.filter(wasStoppedByServerShutdown).length,
+          });
+        }
       },
     );
 
@@ -193,9 +392,46 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
       const bindings = yield* directory.listBindings();
       const now = yield* Clock.currentTimeMillis;
       let reapedCount = 0;
+      const persistenceByInstance = new Map<
+        ProviderInstanceId,
+        ProviderSessionPersistence | "unknown"
+      >();
 
       for (const binding of bindings) {
         if (binding.status === "stopped") {
+          continue;
+        }
+        if (hasDetachedReattachPending(binding)) {
+          continue;
+        }
+        if (binding.providerInstanceId === undefined) {
+          continue;
+        }
+        const persistedSessionPersistence = readPersistedSessionPersistence(binding);
+        let sessionPersistence = persistedSessionPersistence;
+        if (sessionPersistence === undefined) {
+          const cached = persistenceByInstance.get(binding.providerInstanceId);
+          if (cached !== undefined) {
+            sessionPersistence = cached === "unknown" ? undefined : cached;
+          } else {
+            const capabilitiesExit = yield* Effect.exit(
+              providerService.getCapabilities(binding.providerInstanceId),
+            );
+            if (Exit.isFailure(capabilitiesExit)) {
+              persistenceByInstance.set(binding.providerInstanceId, "unknown");
+              yield* Effect.logWarning("provider.session.reaper.sweep-capabilities-unavailable", {
+                threadId: binding.threadId,
+                provider: binding.provider,
+                providerInstanceId: binding.providerInstanceId,
+                cause: capabilitiesExit.cause,
+              });
+              continue;
+            }
+            sessionPersistence = capabilitiesExit.value.sessionPersistence ?? "process-bound";
+            persistenceByInstance.set(binding.providerInstanceId, sessionPersistence);
+          }
+        }
+        if (sessionPersistence === "detached") {
           continue;
         }
 
@@ -270,6 +506,22 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
         );
 
         yield* Effect.forkScoped(
+          Effect.forever(
+            Effect.sleep(Duration.millis(reattachRetryIntervalMs)).pipe(
+              Effect.andThen(
+                reconcileOrphanedSessions().pipe(
+                  Effect.catchCause((cause) =>
+                    Effect.logWarning("provider.session.reaper.retry-reconcile-failed", {
+                      cause,
+                    }),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        );
+
+        yield* Effect.forkScoped(
           sweep.pipe(
             Effect.catch((error: unknown) =>
               Effect.logWarning("provider.session.reaper.sweep-failed", {
@@ -288,6 +540,7 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
         yield* Effect.logInfo("provider.session.reaper.started", {
           inactivityThresholdMs,
           sweepIntervalMs,
+          reattachRetryIntervalMs,
         });
       });
 

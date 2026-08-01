@@ -29,7 +29,8 @@ Stop it and remove it from startup:
 npx t3@latest service uninstall
 ```
 
-Updating restarts T3 Code briefly. Let active agent work and terminal commands finish first.
+Updating restarts T3 Code briefly. Active Codex turns continue in their independent provider host,
+but terminal commands and other providers can still be interrupted. Let those finish first.
 
 ## Using It with T3 Connect
 

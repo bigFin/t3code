@@ -12,6 +12,7 @@ import type {
 } from "@t3tools/contracts";
 import {
   ApprovalRequestId,
+  EnvironmentId,
   EventId,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -20,7 +21,7 @@ import {
   TurnId,
 } from "@t3tools/contracts";
 import { createModelSelection } from "@t3tools/shared/model";
-import { it, assert, vi } from "@effect/vitest";
+import { expect, it, assert, vi } from "@effect/vitest";
 
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -51,6 +52,7 @@ import * as ProviderEventLoggers from "./ProviderEventLoggers.ts";
 import { ProviderSessionDirectoryLive } from "./ProviderSessionDirectory.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as ProviderSessionRuntime from "../../persistence/ProviderSessionRuntime.ts";
+import * as McpSessionRegistry from "../../mcp/McpSessionRegistry.ts";
 import {
   makeSqlitePersistenceLive,
   SqlitePersistenceMemory,
@@ -84,31 +86,54 @@ type LegacyProviderRuntimeEvent = {
   readonly [key: string]: unknown;
 };
 
-function makeFakeCodexAdapter(provider: ProviderDriverKind = CODEX_DRIVER) {
+function makeFakeCodexAdapter(
+  provider: ProviderDriverKind = CODEX_DRIVER,
+  options?: {
+    readonly sessionPersistence?: "process-bound" | "detached";
+    readonly reattachSessionImplementation?: (
+      input: ProviderSessionStartInput,
+    ) => Effect.Effect<ProviderSession, ProviderAdapterError>;
+    readonly stopSessionImplementation?: (
+      threadId: ThreadId,
+    ) => Effect.Effect<void, ProviderAdapterError>;
+  },
+) {
   const sessions = new Map<ThreadId, ProviderSession>();
   const runtimeEventPubSub = Effect.runSync(PubSub.unbounded<ProviderRuntimeEvent>());
 
-  const startSession = vi.fn((input: ProviderSessionStartInput) =>
-    Effect.sync(() => {
-      const now = "2026-01-01T00:00:00.000Z";
-      const session: ProviderSession = {
-        provider,
-        ...(input.providerInstanceId !== undefined
-          ? { providerInstanceId: input.providerInstanceId }
-          : {}),
-        status: "ready",
-        runtimeMode: input.runtimeMode,
-        threadId: input.threadId,
-        resumeCursor: input.resumeCursor ?? {
-          opaque: `resume-${String(input.threadId)}`,
-        },
-        cwd: input.cwd ?? process.cwd(),
-        createdAt: now,
-        updatedAt: now,
-      };
-      sessions.set(session.threadId, session);
-      return session;
-    }),
+  const startSession = vi.fn(
+    (input: ProviderSessionStartInput): Effect.Effect<ProviderSession, ProviderAdapterError> =>
+      Effect.sync(() => {
+        const now = "2026-01-01T00:00:00.000Z";
+        const session: ProviderSession = {
+          provider,
+          ...(input.providerInstanceId !== undefined
+            ? { providerInstanceId: input.providerInstanceId }
+            : {}),
+          status: "ready",
+          runtimeMode: input.runtimeMode,
+          threadId: input.threadId,
+          resumeCursor: input.resumeCursor ?? {
+            opaque: `resume-${String(input.threadId)}`,
+          },
+          cwd: input.cwd ?? process.cwd(),
+          createdAt: now,
+          updatedAt: now,
+        };
+        sessions.set(session.threadId, session);
+        return session;
+      }),
+  );
+  const reattachSession = vi.fn(
+    (input: ProviderSessionStartInput): Effect.Effect<ProviderSession, ProviderAdapterError> =>
+      options?.reattachSessionImplementation
+        ? options.reattachSessionImplementation(input)
+        : Effect.fail(
+            new ProviderAdapterSessionNotFoundError({
+              provider,
+              threadId: input.threadId,
+            }),
+          ),
   );
 
   const sendTurn = vi.fn(
@@ -154,9 +179,11 @@ function makeFakeCodexAdapter(provider: ProviderDriverKind = CODEX_DRIVER) {
 
   const stopSession = vi.fn(
     (threadId: ThreadId): Effect.Effect<void, ProviderAdapterError> =>
-      Effect.sync(() => {
-        sessions.delete(threadId);
-      }),
+      options?.stopSessionImplementation
+        ? options.stopSessionImplementation(threadId)
+        : Effect.sync(() => {
+            sessions.delete(threadId);
+          }),
   );
 
   const listSessions = vi.fn(
@@ -203,8 +230,10 @@ function makeFakeCodexAdapter(provider: ProviderDriverKind = CODEX_DRIVER) {
     provider,
     capabilities: {
       sessionModelSwitch: "in-session",
+      ...(options?.sessionPersistence ? { sessionPersistence: options.sessionPersistence } : {}),
     },
     startSession,
+    ...(options?.reattachSessionImplementation ? { reattachSession } : {}),
     sendTurn,
     interruptTurn,
     respondToRequest,
@@ -240,6 +269,7 @@ function makeFakeCodexAdapter(provider: ProviderDriverKind = CODEX_DRIVER) {
     emit,
     updateSession,
     startSession,
+    reattachSession,
     sendTurn,
     interruptTurn,
     respondToRequest,
@@ -365,6 +395,615 @@ it.effect("ProviderServiceLive catches stopAll failures during shutdown", () =>
     assert.equal(codex.stopAll.mock.calls.length, 1);
   }),
 );
+
+it.effect(
+  "ProviderServiceLive detaches persistent sessions on shutdown without stopping bindings or revoking MCP credentials",
+  () => {
+    const revokeThread = vi.spyOn(McpSessionRegistry, "revokeActiveMcpThread");
+
+    return Effect.gen(function* () {
+      const tempDir = NodeFS.mkdtempSync(
+        NodePath.join(NodeOS.tmpdir(), "t3-provider-service-detach-"),
+      );
+      const dbPath = NodePath.join(tempDir, "orchestration.sqlite");
+      const persistenceLayer = makeSqlitePersistenceLive(dbPath);
+      const runtimeRepositoryLayer = ProviderSessionRuntime.layer.pipe(
+        Layer.provide(persistenceLayer),
+      );
+      const directoryLayer = ProviderSessionDirectoryLive.pipe(
+        Layer.provide(runtimeRepositoryLayer),
+      );
+      const codex = makeFakeCodexAdapter(CODEX_DRIVER, {
+        sessionPersistence: "detached",
+      });
+      const registry = makeAdapterRegistryMock({
+        [CODEX_DRIVER]: codex.adapter,
+      });
+      const providerLayer = makeProviderServiceLive().pipe(
+        Layer.provide(Layer.succeed(ProviderAdapterRegistry.ProviderAdapterRegistry, registry)),
+        Layer.provide(directoryLayer),
+        Layer.provide(defaultServerSettingsLayer),
+        Layer.provideMerge(AnalyticsService.layerTest),
+        Layer.provide(
+          Layer.succeed(
+            ProviderEventLoggers.ProviderEventLoggers,
+            ProviderEventLoggers.NoOpProviderEventLoggers,
+          ),
+        ),
+      );
+      const threadId = asThreadId("thread-detached-shutdown");
+      const turnId = asTurnId("turn-detached-shutdown");
+
+      yield* Effect.gen(function* () {
+        const provider = yield* ProviderService.ProviderService;
+        yield* provider.startSession(threadId, {
+          provider: CODEX_DRIVER,
+          providerInstanceId: codexInstanceId,
+          cwd: "/tmp/project",
+          runtimeMode: "full-access",
+          threadId,
+        });
+        codex.updateSession(threadId, (session) => ({
+          ...session,
+          status: "running",
+          activeTurnId: turnId,
+          updatedAt: "2026-01-01T00:00:01.000Z",
+        }));
+      }).pipe(Effect.provide(providerLayer));
+
+      assert.equal(codex.stopAll.mock.calls.length, 1);
+      assert.equal(revokeThread.mock.calls.length, 0);
+
+      const persisted = yield* Effect.gen(function* () {
+        const repository = yield* ProviderSessionRuntime.ProviderSessionRuntimeRepository;
+        return yield* repository.getByThreadId({ threadId });
+      }).pipe(Effect.provide(runtimeRepositoryLayer));
+      assert.equal(Option.isSome(persisted), true);
+      if (Option.isSome(persisted)) {
+        assert.equal(persisted.value.status, "running");
+        expect(persisted.value.runtimePayload).toMatchObject({
+          activeTurnId: turnId,
+          cwd: "/tmp/project",
+          lastRuntimeEvent: "provider.detachAll",
+          lastRuntimeEventAt: persisted.value.lastSeenAt,
+          sessionPersistence: "detached",
+        });
+      }
+
+      NodeFS.rmSync(tempDir, { recursive: true, force: true });
+    }).pipe(
+      Effect.ensuring(
+        Effect.sync(() => {
+          revokeThread.mockRestore();
+        }),
+      ),
+      Effect.provide(NodeServices.layer),
+    );
+  },
+);
+
+it.effect("ProviderServiceLive marks a successful detached reattachment in runtime state", () =>
+  Effect.gen(function* () {
+    const tempDir = NodeFS.mkdtempSync(
+      NodePath.join(NodeOS.tmpdir(), "t3-provider-service-reattach-state-"),
+    );
+    const dbPath = NodePath.join(tempDir, "orchestration.sqlite");
+    const persistenceLayer = makeSqlitePersistenceLive(dbPath);
+    const runtimeRepositoryLayer = ProviderSessionRuntime.layer.pipe(
+      Layer.provide(persistenceLayer),
+    );
+    const directoryLayer = ProviderSessionDirectoryLive.pipe(Layer.provide(runtimeRepositoryLayer));
+    const threadId = asThreadId("thread-detached-reattach-state");
+    const turnId = asTurnId("turn-detached-reattach-state");
+    const codex = makeFakeCodexAdapter(CODEX_DRIVER, {
+      sessionPersistence: "detached",
+      reattachSessionImplementation: (input) =>
+        Effect.succeed({
+          provider: CODEX_DRIVER,
+          providerInstanceId: input.providerInstanceId,
+          status: "running",
+          runtimeMode: input.runtimeMode,
+          threadId: input.threadId,
+          activeTurnId: turnId,
+          resumeCursor: input.resumeCursor,
+          cwd: input.cwd,
+          createdAt: "2026-01-01T00:00:00.000Z",
+          updatedAt: "2026-01-01T00:00:01.000Z",
+        }),
+    });
+    const registry = makeAdapterRegistryMock({
+      [CODEX_DRIVER]: codex.adapter,
+    });
+    const providerLayer = makeProviderServiceLive().pipe(
+      Layer.provide(Layer.succeed(ProviderAdapterRegistry.ProviderAdapterRegistry, registry)),
+      Layer.provide(directoryLayer),
+      Layer.provide(defaultServerSettingsLayer),
+      Layer.provideMerge(AnalyticsService.layerTest),
+      Layer.provide(
+        Layer.succeed(
+          ProviderEventLoggers.ProviderEventLoggers,
+          ProviderEventLoggers.NoOpProviderEventLoggers,
+        ),
+      ),
+    );
+
+    yield* Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      yield* provider.startSession(threadId, {
+        provider: CODEX_DRIVER,
+        providerInstanceId: codexInstanceId,
+        cwd: "/tmp/project",
+        runtimeMode: "full-access",
+        threadId,
+      });
+    }).pipe(Effect.provide(providerLayer));
+
+    yield* Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const reattached = yield* provider.reattachSession({ threadId });
+      assert.equal(reattached.status, "running");
+      assert.equal(reattached.activeTurnId, turnId);
+    }).pipe(Effect.provide(providerLayer));
+
+    const persisted = yield* Effect.gen(function* () {
+      const repository = yield* ProviderSessionRuntime.ProviderSessionRuntimeRepository;
+      return yield* repository.getByThreadId({ threadId });
+    }).pipe(Effect.provide(runtimeRepositoryLayer));
+    assert.equal(Option.isSome(persisted), true);
+    if (Option.isSome(persisted)) {
+      assert.equal(persisted.value.status, "running");
+      expect(persisted.value.runtimePayload).toMatchObject({
+        activeTurnId: turnId,
+        lastRuntimeEvent: "provider.session.detached-reattached",
+        sessionPersistence: "detached",
+      });
+    }
+
+    NodeFS.rmSync(tempDir, { recursive: true, force: true });
+  }).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.effect("ProviderServiceLive reattaches a detached session before explicit stop", () => {
+  const revokeThread = vi.spyOn(McpSessionRegistry, "revokeActiveMcpThread");
+
+  return Effect.gen(function* () {
+    const tempDir = NodeFS.mkdtempSync(
+      NodePath.join(NodeOS.tmpdir(), "t3-provider-service-explicit-stop-"),
+    );
+    const dbPath = NodePath.join(tempDir, "orchestration.sqlite");
+    const persistenceLayer = makeSqlitePersistenceLive(dbPath);
+    const runtimeRepositoryLayer = ProviderSessionRuntime.layer.pipe(
+      Layer.provide(persistenceLayer),
+    );
+    const directoryLayer = ProviderSessionDirectoryLive.pipe(Layer.provide(runtimeRepositoryLayer));
+    const codex = makeFakeCodexAdapter(CODEX_DRIVER, {
+      sessionPersistence: "detached",
+      reattachSessionImplementation: (input) =>
+        Effect.succeed({
+          provider: CODEX_DRIVER,
+          providerInstanceId: input.providerInstanceId,
+          status: "ready",
+          runtimeMode: input.runtimeMode,
+          threadId: input.threadId,
+          resumeCursor: input.resumeCursor,
+          cwd: input.cwd,
+          createdAt: "2026-01-01T00:00:00.000Z",
+          updatedAt: "2026-01-01T00:00:01.000Z",
+        }),
+    });
+    const registry = makeAdapterRegistryMock({
+      [CODEX_DRIVER]: codex.adapter,
+    });
+    const providerLayer = makeProviderServiceLive().pipe(
+      Layer.provide(Layer.succeed(ProviderAdapterRegistry.ProviderAdapterRegistry, registry)),
+      Layer.provide(directoryLayer),
+      Layer.provide(defaultServerSettingsLayer),
+      Layer.provideMerge(AnalyticsService.layerTest),
+      Layer.provide(
+        Layer.succeed(
+          ProviderEventLoggers.ProviderEventLoggers,
+          ProviderEventLoggers.NoOpProviderEventLoggers,
+        ),
+      ),
+    );
+    const threadId = asThreadId("thread-detached-explicit-stop");
+
+    yield* Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      yield* provider.startSession(threadId, {
+        provider: CODEX_DRIVER,
+        providerInstanceId: codexInstanceId,
+        cwd: "/tmp/project",
+        runtimeMode: "full-access",
+        threadId,
+      });
+      yield* codex.stopAll();
+      yield* provider.stopSession({ threadId });
+    }).pipe(Effect.provide(providerLayer));
+
+    assert.deepEqual(codex.stopSession.mock.calls, [[threadId]]);
+    assert.equal(codex.reattachSession.mock.calls.length, 1);
+    assert.equal(codex.startSession.mock.calls.length, 1);
+    assert.deepEqual(revokeThread.mock.calls, [[threadId]]);
+
+    const persisted = yield* Effect.gen(function* () {
+      const repository = yield* ProviderSessionRuntime.ProviderSessionRuntimeRepository;
+      return yield* repository.getByThreadId({ threadId });
+    }).pipe(Effect.provide(runtimeRepositoryLayer));
+    assert.equal(Option.isSome(persisted), true);
+    if (Option.isSome(persisted)) {
+      assert.equal(persisted.value.status, "stopped");
+      expect(persisted.value.runtimePayload).toMatchObject({
+        activeTurnId: null,
+        cwd: "/tmp/project",
+      });
+    }
+
+    NodeFS.rmSync(tempDir, { recursive: true, force: true });
+  }).pipe(
+    Effect.ensuring(Effect.sync(() => revokeThread.mockRestore())),
+    Effect.provide(NodeServices.layer),
+  );
+});
+
+it.effect("ProviderServiceLive preserves MCP credentials when detached reattachment fails", () => {
+  let credentialSequence = 0;
+  const issueCredential = vi
+    .spyOn(McpSessionRegistry, "issueActiveMcpCredential")
+    .mockImplementation((request) => {
+      credentialSequence += 1;
+      return Effect.succeed({
+        config: {
+          environmentId: EnvironmentId.make("environment-provider-service-test"),
+          threadId: request.threadId,
+          providerSessionId:
+            credentialSequence === 1 ? "provider-session-original" : "provider-session-replacement",
+          providerInstanceId: request.providerInstanceId,
+          endpoint: "http://127.0.0.1:43123/mcp",
+          authorizationHeader: `Bearer credential-${credentialSequence}`,
+        },
+      });
+    });
+  const revokeThread = vi.spyOn(McpSessionRegistry, "revokeActiveMcpThread");
+  const revokeProviderSession = vi
+    .spyOn(McpSessionRegistry, "revokeActiveMcpProviderSession")
+    .mockReturnValue(Effect.void);
+
+  return Effect.gen(function* () {
+    const tempDir = NodeFS.mkdtempSync(
+      NodePath.join(NodeOS.tmpdir(), "t3-provider-service-reattach-failure-"),
+    );
+    const dbPath = NodePath.join(tempDir, "orchestration.sqlite");
+    const persistenceLayer = makeSqlitePersistenceLive(dbPath);
+    const runtimeRepositoryLayer = ProviderSessionRuntime.layer.pipe(
+      Layer.provide(persistenceLayer),
+    );
+    const directoryLayer = ProviderSessionDirectoryLive.pipe(Layer.provide(runtimeRepositoryLayer));
+    const codex = makeFakeCodexAdapter(CODEX_DRIVER, {
+      sessionPersistence: "detached",
+      reattachSessionImplementation: () =>
+        Effect.fail(
+          new ProviderAdapterRequestError({
+            provider: CODEX_DRIVER,
+            method: "session/reattach",
+            detail: "Detached provider host is temporarily unavailable.",
+          }),
+        ),
+    });
+    const registry = makeAdapterRegistryMock({
+      [CODEX_DRIVER]: codex.adapter,
+    });
+    const providerLayer = makeProviderServiceLive().pipe(
+      Layer.provide(Layer.succeed(ProviderAdapterRegistry.ProviderAdapterRegistry, registry)),
+      Layer.provide(directoryLayer),
+      Layer.provide(defaultServerSettingsLayer),
+      Layer.provideMerge(AnalyticsService.layerTest),
+      Layer.provide(
+        Layer.succeed(
+          ProviderEventLoggers.ProviderEventLoggers,
+          ProviderEventLoggers.NoOpProviderEventLoggers,
+        ),
+      ),
+    );
+    const threadId = asThreadId("thread-detached-reattach-failure");
+
+    const reattachExit = yield* Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      yield* provider.startSession(threadId, {
+        provider: CODEX_DRIVER,
+        providerInstanceId: codexInstanceId,
+        cwd: "/tmp/project",
+        runtimeMode: "full-access",
+        threadId,
+      });
+
+      // Simulate a new T3 generation that has lost its local attachment while
+      // the detached provider host still uses the credential from the first start.
+      yield* codex.stopAll();
+
+      return yield* Effect.exit(provider.reattachSession({ threadId }));
+    }).pipe(Effect.provide(providerLayer));
+
+    assert.equal(Exit.isFailure(reattachExit), true);
+    assert.equal(codex.reattachSession.mock.calls.length, 1);
+    assert.equal(codex.startSession.mock.calls.length, 1);
+    assert.equal(issueCredential.mock.calls.length, 1);
+    assert.deepEqual(revokeThread.mock.calls, []);
+    assert.deepEqual(revokeProviderSession.mock.calls, []);
+
+    NodeFS.rmSync(tempDir, { recursive: true, force: true });
+  }).pipe(
+    Effect.ensuring(
+      Effect.sync(() => {
+        issueCredential.mockRestore();
+        revokeThread.mockRestore();
+        revokeProviderSession.mockRestore();
+      }),
+    ),
+    Effect.provide(NodeServices.layer),
+  );
+});
+
+it.effect(
+  "ProviderServiceLive does not resume a detached session that is authoritatively absent",
+  () =>
+    Effect.gen(function* () {
+      const tempDir = NodeFS.mkdtempSync(
+        NodePath.join(NodeOS.tmpdir(), "t3-provider-service-reattach-missing-"),
+      );
+      const dbPath = NodePath.join(tempDir, "orchestration.sqlite");
+      const persistenceLayer = makeSqlitePersistenceLive(dbPath);
+      const runtimeRepositoryLayer = ProviderSessionRuntime.layer.pipe(
+        Layer.provide(persistenceLayer),
+      );
+      const directoryLayer = ProviderSessionDirectoryLive.pipe(
+        Layer.provide(runtimeRepositoryLayer),
+      );
+      const codex = makeFakeCodexAdapter(CODEX_DRIVER, {
+        sessionPersistence: "detached",
+        reattachSessionImplementation: (input) =>
+          Effect.fail(
+            new ProviderAdapterSessionNotFoundError({
+              provider: CODEX_DRIVER,
+              threadId: input.threadId,
+            }),
+          ),
+      });
+      const registry = makeAdapterRegistryMock({
+        [CODEX_DRIVER]: codex.adapter,
+      });
+      const providerLayer = makeProviderServiceLive().pipe(
+        Layer.provide(Layer.succeed(ProviderAdapterRegistry.ProviderAdapterRegistry, registry)),
+        Layer.provide(directoryLayer),
+        Layer.provide(defaultServerSettingsLayer),
+        Layer.provideMerge(AnalyticsService.layerTest),
+        Layer.provide(
+          Layer.succeed(
+            ProviderEventLoggers.ProviderEventLoggers,
+            ProviderEventLoggers.NoOpProviderEventLoggers,
+          ),
+        ),
+      );
+      const threadId = asThreadId("thread-detached-reattach-missing");
+
+      const reattachExit = yield* Effect.gen(function* () {
+        const provider = yield* ProviderService.ProviderService;
+        yield* provider.startSession(threadId, {
+          provider: CODEX_DRIVER,
+          providerInstanceId: codexInstanceId,
+          cwd: "/tmp/project",
+          runtimeMode: "full-access",
+          threadId,
+        });
+        yield* codex.stopAll();
+        return yield* Effect.exit(provider.reattachSession({ threadId }));
+      }).pipe(Effect.provide(providerLayer));
+
+      assert.equal(Exit.isFailure(reattachExit), true);
+      assert.equal(codex.reattachSession.mock.calls.length, 1);
+      assert.equal(codex.startSession.mock.calls.length, 1);
+
+      NodeFS.rmSync(tempDir, { recursive: true, force: true });
+    }).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.effect(
+  "ProviderServiceLive revokes only newly prepared MCP credentials when detached starts fail",
+  () => {
+    let credentialSequence = 0;
+    const providerSessionIds = [
+      "provider-session-original",
+      "provider-session-failed",
+      "provider-session-mismatch",
+    ] as const;
+    const issueCredential = vi
+      .spyOn(McpSessionRegistry, "issueActiveMcpCredential")
+      .mockImplementation((request) => {
+        const providerSessionId = providerSessionIds[credentialSequence];
+        credentialSequence += 1;
+        return Effect.succeed({
+          config: {
+            environmentId: EnvironmentId.make("environment-provider-service-test"),
+            threadId: request.threadId,
+            providerSessionId: providerSessionId ?? "provider-session-unexpected",
+            providerInstanceId: request.providerInstanceId,
+            endpoint: "http://127.0.0.1:43123/mcp",
+            authorizationHeader: `Bearer credential-${credentialSequence}`,
+          },
+        });
+      });
+    const revokeThread = vi.spyOn(McpSessionRegistry, "revokeActiveMcpThread");
+    const revokeProviderSession = vi
+      .spyOn(McpSessionRegistry, "revokeActiveMcpProviderSession")
+      .mockReturnValue(Effect.void);
+
+    return Effect.gen(function* () {
+      const codex = makeFakeCodexAdapter(CODEX_DRIVER, {
+        sessionPersistence: "detached",
+      });
+      const registry = makeAdapterRegistryMock({
+        [CODEX_DRIVER]: codex.adapter,
+      });
+      const runtimeRepositoryLayer = ProviderSessionRuntime.layer.pipe(
+        Layer.provide(SqlitePersistenceMemory),
+      );
+      const directoryLayer = ProviderSessionDirectoryLive.pipe(
+        Layer.provide(runtimeRepositoryLayer),
+      );
+      const providerLayer = makeProviderServiceLive().pipe(
+        Layer.provide(Layer.succeed(ProviderAdapterRegistry.ProviderAdapterRegistry, registry)),
+        Layer.provide(directoryLayer),
+        Layer.provide(defaultServerSettingsLayer),
+        Layer.provideMerge(AnalyticsService.layerTest),
+        Layer.provide(
+          Layer.succeed(
+            ProviderEventLoggers.ProviderEventLoggers,
+            ProviderEventLoggers.NoOpProviderEventLoggers,
+          ),
+        ),
+      );
+      const threadId = asThreadId("thread-detached-start-failure");
+
+      const results = yield* Effect.gen(function* () {
+        const provider = yield* ProviderService.ProviderService;
+        const originalSession = yield* provider.startSession(threadId, {
+          provider: CODEX_DRIVER,
+          providerInstanceId: codexInstanceId,
+          cwd: "/tmp/project",
+          runtimeMode: "full-access",
+          threadId,
+        });
+
+        codex.startSession.mockImplementationOnce(() =>
+          Effect.fail(
+            new ProviderAdapterRequestError({
+              provider: CODEX_DRIVER,
+              method: "session/start",
+              detail: "Failed to attach detached session.",
+            }),
+          ),
+        );
+        const failedStart = yield* Effect.exit(
+          provider.startSession(threadId, {
+            provider: CODEX_DRIVER,
+            providerInstanceId: codexInstanceId,
+            cwd: "/tmp/project",
+            runtimeMode: "full-access",
+            threadId,
+          }),
+        );
+
+        codex.startSession.mockImplementationOnce((input) =>
+          Effect.succeed({
+            ...originalSession,
+            threadId: asThreadId("thread-returned-by-wrong-host"),
+            runtimeMode: input.runtimeMode,
+          }),
+        );
+        const mismatchedStart = yield* Effect.exit(
+          provider.startSession(threadId, {
+            provider: CODEX_DRIVER,
+            providerInstanceId: codexInstanceId,
+            cwd: "/tmp/project",
+            runtimeMode: "full-access",
+            threadId,
+          }),
+        );
+
+        return { failedStart, mismatchedStart };
+      }).pipe(Effect.provide(providerLayer));
+
+      assert.equal(Exit.isFailure(results.failedStart), true);
+      assert.equal(Exit.isFailure(results.mismatchedStart), true);
+      assert.deepEqual(revokeThread.mock.calls, []);
+      assert.deepEqual(revokeProviderSession.mock.calls, [
+        ["provider-session-failed"],
+        ["provider-session-mismatch"],
+      ]);
+    }).pipe(
+      Effect.ensuring(
+        Effect.sync(() => {
+          issueCredential.mockRestore();
+          revokeThread.mockRestore();
+          revokeProviderSession.mockRestore();
+        }),
+      ),
+      Effect.provide(NodeServices.layer),
+    );
+  },
+);
+
+it.effect("ProviderServiceLive does not revoke or persist stopped when detached stop fails", () => {
+  const revokeThread = vi.spyOn(McpSessionRegistry, "revokeActiveMcpThread");
+
+  return Effect.gen(function* () {
+    const tempDir = NodeFS.mkdtempSync(
+      NodePath.join(NodeOS.tmpdir(), "t3-provider-service-stop-failure-"),
+    );
+    const dbPath = NodePath.join(tempDir, "orchestration.sqlite");
+    const persistenceLayer = makeSqlitePersistenceLive(dbPath);
+    const runtimeRepositoryLayer = ProviderSessionRuntime.layer.pipe(
+      Layer.provide(persistenceLayer),
+    );
+    const directoryLayer = ProviderSessionDirectoryLive.pipe(Layer.provide(runtimeRepositoryLayer));
+    const codex = makeFakeCodexAdapter(CODEX_DRIVER, {
+      sessionPersistence: "detached",
+      stopSessionImplementation: (threadId) =>
+        Effect.fail(
+          new ProviderAdapterRequestError({
+            provider: CODEX_DRIVER,
+            method: "session/stop",
+            detail: `Failed to stop ${threadId}.`,
+          }),
+        ),
+    });
+    const registry = makeAdapterRegistryMock({
+      [CODEX_DRIVER]: codex.adapter,
+    });
+    const providerLayer = makeProviderServiceLive().pipe(
+      Layer.provide(Layer.succeed(ProviderAdapterRegistry.ProviderAdapterRegistry, registry)),
+      Layer.provide(directoryLayer),
+      Layer.provide(defaultServerSettingsLayer),
+      Layer.provideMerge(AnalyticsService.layerTest),
+      Layer.provide(
+        Layer.succeed(
+          ProviderEventLoggers.ProviderEventLoggers,
+          ProviderEventLoggers.NoOpProviderEventLoggers,
+        ),
+      ),
+    );
+    const threadId = asThreadId("thread-detached-stop-failure");
+
+    const stopExit = yield* Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      yield* provider.startSession(threadId, {
+        provider: CODEX_DRIVER,
+        providerInstanceId: codexInstanceId,
+        cwd: "/tmp/project",
+        runtimeMode: "full-access",
+        threadId,
+      });
+      return yield* Effect.exit(provider.stopSession({ threadId }));
+    }).pipe(Effect.provide(providerLayer));
+
+    assert.equal(Exit.isFailure(stopExit), true);
+    assert.deepEqual(revokeThread.mock.calls, []);
+
+    const persisted = yield* Effect.gen(function* () {
+      const repository = yield* ProviderSessionRuntime.ProviderSessionRuntimeRepository;
+      return yield* repository.getByThreadId({ threadId });
+    }).pipe(Effect.provide(runtimeRepositoryLayer));
+    assert.equal(Option.isSome(persisted), true);
+    if (Option.isSome(persisted)) {
+      assert.notEqual(persisted.value.status, "stopped");
+    }
+
+    NodeFS.rmSync(tempDir, { recursive: true, force: true });
+  }).pipe(
+    Effect.ensuring(Effect.sync(() => revokeThread.mockRestore())),
+    Effect.provide(NodeServices.layer),
+  );
+});
 
 it.effect("ProviderServiceLive rejects new sessions for disabled providers", () =>
   Effect.gen(function* () {

@@ -83,12 +83,27 @@ interface AssistantSegmentState {
   activeMessageId: MessageId | null;
 }
 
+interface TruncatedReplayAssistantFence {
+  readonly turnIds: Set<TurnId>;
+  readonly baseKeyByTurnId: Map<TurnId, string>;
+  readonly completedMessages: Map<
+    MessageId,
+    {
+      readonly turnId?: TurnId;
+      readonly text: string;
+      readonly createdAt: string;
+    }
+  >;
+}
+
 const TURN_MESSAGE_IDS_BY_TURN_CACHE_CAPACITY = 10_000;
 const TURN_MESSAGE_IDS_BY_TURN_TTL = Duration.minutes(120);
 const BUFFERED_MESSAGE_TEXT_BY_MESSAGE_ID_CACHE_CAPACITY = 20_000;
 const BUFFERED_MESSAGE_TEXT_BY_MESSAGE_ID_TTL = Duration.minutes(120);
 const BUFFERED_PROPOSED_PLAN_BY_ID_CACHE_CAPACITY = 10_000;
 const BUFFERED_PROPOSED_PLAN_BY_ID_TTL = Duration.minutes(120);
+const PROVIDER_MUTATION_DEDUPE_CACHE_CAPACITY = 20_000;
+const PROVIDER_MUTATION_DEDUPE_TTL = Duration.minutes(120);
 const TASK_DESCRIPTION_BY_TASK_CACHE_CAPACITY = 10_000;
 const TASK_DESCRIPTION_BY_TASK_TTL = Duration.minutes(120);
 const MAX_BUFFERED_ASSISTANT_CHARS = 24_000;
@@ -240,6 +255,92 @@ function assistantSegmentMessageId(baseKey: string, segmentIndex: number): Messa
     segmentIndex === 0 ? `assistant:${baseKey}` : `assistant:${baseKey}:segment:${segmentIndex}`,
   );
 }
+
+function parseAssistantSegmentMessageId(
+  messageId: MessageId,
+  knownMessageIds: ReadonlySet<string>,
+  preferredBaseKey?: string,
+): { readonly baseKey: string; readonly segmentIndex: number } | undefined {
+  const value = String(messageId);
+  if (!value.startsWith("assistant:")) {
+    return undefined;
+  }
+  const segmentValue = value.slice("assistant:".length);
+  if (preferredBaseKey !== undefined) {
+    if (segmentValue === preferredBaseKey) {
+      return { baseKey: preferredBaseKey, segmentIndex: 0 };
+    }
+    const preferredSegmentPrefix = `${preferredBaseKey}:segment:`;
+    if (segmentValue.startsWith(preferredSegmentPrefix)) {
+      const segmentIndexValue = segmentValue.slice(preferredSegmentPrefix.length);
+      const segmentIndex = Number(segmentIndexValue);
+      if (/^\d+$/.test(segmentIndexValue) && Number.isSafeInteger(segmentIndex)) {
+        return { baseKey: preferredBaseKey, segmentIndex };
+      }
+    }
+  }
+  const segmentMatch = /^(.*):segment:(\d+)$/.exec(segmentValue);
+  if (!segmentMatch) {
+    return { baseKey: segmentValue, segmentIndex: 0 };
+  }
+  const segmentIndex = Number(segmentMatch[2]);
+  if (!Number.isSafeInteger(segmentIndex)) {
+    return undefined;
+  }
+  const baseKey = segmentMatch[1]!;
+  if (!knownMessageIds.has(`assistant:${baseKey}`)) {
+    return { baseKey: segmentValue, segmentIndex: 0 };
+  }
+  return {
+    baseKey,
+    segmentIndex,
+  };
+}
+
+function isTruncatedReplayAssistantMutation(event: ProviderRuntimeEvent): boolean {
+  if (event.replay?.truncated !== true) {
+    return false;
+  }
+  switch (event.type) {
+    case "content.delta":
+      return event.payload.streamKind === "assistant_text";
+    case "item.completed":
+      return event.payload.itemType === "assistant_message";
+    case "request.opened":
+    case "user-input.requested":
+    case "turn.completed":
+      return true;
+    default:
+      return false;
+  }
+}
+
+function isProviderHostReattachBarrier(event: ProviderRuntimeEvent): boolean {
+  if (event.type !== "session.state.changed") {
+    return false;
+  }
+  const detail = event.payload.detail;
+  return (
+    typeof detail === "object" &&
+    detail !== null &&
+    "source" in detail &&
+    detail.source === "provider-host-reattach"
+  );
+}
+
+function isProviderHostReplayTruncatedWarning(event: ProviderRuntimeEvent): boolean {
+  if (event.type !== "runtime.warning") {
+    return false;
+  }
+  const detail = event.payload.detail;
+  return (
+    typeof detail === "object" &&
+    detail !== null &&
+    "source" in detail &&
+    detail.source === "provider-host-replay"
+  );
+}
+
 function buildContextWindowActivityPayload(
   event: ProviderRuntimeEvent,
 ): ThreadTokenUsageSnapshot | undefined {
@@ -693,10 +794,17 @@ const make = Effect.gen(function* () {
   const providerService = yield* ProviderService;
   const projectionTurnRepository = yield* ProjectionTurnRepository;
   const serverSettingsService = yield* ServerSettingsService;
+  const truncatedReplayAssistantFenceByThreadId = new Map<
+    ThreadId,
+    TruncatedReplayAssistantFence
+  >();
   const providerCommandId = (event: ProviderRuntimeEvent, tag: string) =>
-    crypto.randomUUIDv4.pipe(
-      Effect.map((uuid) => CommandId.make(`provider:${event.eventId}:${tag}:${uuid}`)),
-    );
+    Effect.succeed(CommandId.make(`provider:${event.eventId}:${tag}`));
+  const providerMessageCommandId = (
+    event: ProviderRuntimeEvent,
+    tag: string,
+    messageId: MessageId,
+  ) => providerCommandId(event, `${tag}:${messageId}`);
 
   const turnMessageIdsByTurnKey = yield* Cache.make<string, Set<MessageId>>({
     capacity: TURN_MESSAGE_IDS_BY_TURN_CACHE_CAPACITY,
@@ -723,6 +831,12 @@ const make = Effect.gen(function* () {
     capacity: BUFFERED_PROPOSED_PLAN_BY_ID_CACHE_CAPACITY,
     timeToLive: BUFFERED_PROPOSED_PLAN_BY_ID_TTL,
     lookup: () => Effect.succeed({ text: "", createdAt: "" }),
+  });
+
+  const processedProviderMutations = yield* Cache.make<string, boolean>({
+    capacity: PROVIDER_MUTATION_DEDUPE_CACHE_CAPACITY,
+    timeToLive: PROVIDER_MUTATION_DEDUPE_TTL,
+    lookup: () => Effect.succeed(false),
   });
 
   // Task names arrive on task.started/task.progress but not on task.completed,
@@ -935,6 +1049,19 @@ const make = Effect.gen(function* () {
   const clearBufferedProposedPlan = (planId: string) =>
     Cache.invalidate(bufferedProposedPlanById, planId);
 
+  const providerMutationKey = (event: ProviderRuntimeEvent, mutation: string) =>
+    `${event.threadId}:${event.eventId}:${mutation}`;
+
+  const hasProcessedProviderMutation = (event: ProviderRuntimeEvent, mutation: string) => {
+    const key = providerMutationKey(event, mutation);
+    return Cache.getOption(processedProviderMutations, key).pipe(Effect.map(Option.isSome));
+  };
+
+  const markProviderMutationProcessed = (event: ProviderRuntimeEvent, mutation: string) => {
+    const key = providerMutationKey(event, mutation);
+    return Cache.set(processedProviderMutations, key, true);
+  };
+
   const clearAssistantMessageState = (messageId: MessageId) =>
     clearBufferedAssistantText(messageId);
 
@@ -954,7 +1081,7 @@ const make = Effect.gen(function* () {
 
       yield* orchestrationEngine.dispatch({
         type: "thread.message.assistant.delta",
-        commandId: yield* providerCommandId(input.event, input.commandTag),
+        commandId: yield* providerMessageCommandId(input.event, input.commandTag, input.messageId),
         threadId: input.threadId,
         messageId: input.messageId,
         delta: bufferedText,
@@ -1021,7 +1148,11 @@ const make = Effect.gen(function* () {
       if (hasRenderableText) {
         yield* orchestrationEngine.dispatch({
           type: "thread.message.assistant.delta",
-          commandId: yield* providerCommandId(input.event, input.finalDeltaCommandTag),
+          commandId: yield* providerMessageCommandId(
+            input.event,
+            input.finalDeltaCommandTag,
+            input.messageId,
+          ),
           threadId: input.threadId,
           messageId: input.messageId,
           delta: text,
@@ -1033,7 +1164,11 @@ const make = Effect.gen(function* () {
       if (input.hasProjectedMessage || hasRenderableText) {
         yield* orchestrationEngine.dispatch({
           type: "thread.message.assistant.complete",
-          commandId: yield* providerCommandId(input.event, input.commandTag),
+          commandId: yield* providerMessageCommandId(
+            input.event,
+            input.commandTag,
+            input.messageId,
+          ),
           threadId: input.threadId,
           messageId: input.messageId,
           ...(input.turnId ? { turnId: input.turnId } : {}),
@@ -1136,13 +1271,16 @@ const make = Effect.gen(function* () {
     planId: string;
     turnId?: TurnId;
     fallbackMarkdown?: string;
+    preferFallbackMarkdown?: boolean;
     updatedAt: string;
   }) =>
     Effect.gen(function* () {
       const bufferedPlan = yield* takeBufferedProposedPlan(input.planId);
       const bufferedMarkdown = normalizeProposedPlanMarkdown(bufferedPlan?.text);
       const fallbackMarkdown = normalizeProposedPlanMarkdown(input.fallbackMarkdown);
-      const planMarkdown = bufferedMarkdown ?? fallbackMarkdown;
+      const planMarkdown = input.preferFallbackMarkdown
+        ? (fallbackMarkdown ?? bufferedMarkdown)
+        : (bufferedMarkdown ?? fallbackMarkdown);
       if (!planMarkdown) {
         return;
       }
@@ -1165,11 +1303,13 @@ const make = Effect.gen(function* () {
 
   const clearTurnStateForSession = (threadId: ThreadId) =>
     Effect.gen(function* () {
+      truncatedReplayAssistantFenceByThreadId.delete(threadId);
       const prefix = `${threadId}:`;
       const proposedPlanPrefix = `plan:${threadId}:`;
       const turnKeys = Array.from(yield* Cache.keys(turnMessageIdsByTurnKey));
       const assistantSegmentKeys = Array.from(yield* Cache.keys(assistantSegmentStateByTurnKey));
       const proposedPlanKeys = Array.from(yield* Cache.keys(bufferedProposedPlanById));
+      const processedMutationKeys = Array.from(yield* Cache.keys(processedProviderMutations));
       const taskDescriptionKeys = Array.from(yield* Cache.keys(taskDescriptionByTaskKey));
       yield* Effect.forEach(
         turnKeys,
@@ -1207,12 +1347,174 @@ const make = Effect.gen(function* () {
         { concurrency: 1 },
       ).pipe(Effect.asVoid);
       yield* Effect.forEach(
+        processedMutationKeys,
+        (key) =>
+          key.startsWith(prefix) ? Cache.invalidate(processedProviderMutations, key) : Effect.void,
+        { concurrency: 1 },
+      ).pipe(Effect.asVoid);
+      yield* Effect.forEach(
         taskDescriptionKeys,
         (key) =>
           key.startsWith(prefix) ? Cache.invalidate(taskDescriptionByTaskKey, key) : Effect.void,
         { concurrency: 1 },
       ).pipe(Effect.asVoid);
     });
+
+  const rememberTruncatedReplayAssistantFence = (event: ProviderRuntimeEvent) =>
+    Effect.sync(() => {
+      const current =
+        truncatedReplayAssistantFenceByThreadId.get(event.threadId) ??
+        ({
+          turnIds: new Set<TurnId>(),
+          baseKeyByTurnId: new Map<TurnId, string>(),
+          completedMessages: new Map(),
+        } satisfies TruncatedReplayAssistantFence);
+      const turnId = toTurnId(event.turnId);
+      if (turnId) {
+        current.turnIds.add(turnId);
+        if (
+          (event.type === "content.delta" && event.payload.streamKind === "assistant_text") ||
+          (event.type === "item.completed" && event.payload.itemType === "assistant_message")
+        ) {
+          current.baseKeyByTurnId.set(turnId, assistantSegmentBaseKeyFromEvent(event));
+        }
+      }
+      if (
+        event.type === "item.completed" &&
+        event.payload.itemType === "assistant_message" &&
+        hasRenderableAssistantText(event.payload.detail)
+      ) {
+        current.completedMessages.set(
+          MessageId.make(`assistant:${event.itemId ?? event.turnId ?? event.eventId}`),
+          {
+            ...(turnId ? { turnId } : {}),
+            text: event.payload.detail!,
+            createdAt: event.createdAt,
+          },
+        );
+      }
+      truncatedReplayAssistantFenceByThreadId.set(event.threadId, current);
+    });
+
+  const takeTruncatedReplayAssistantFence = (
+    threadId: ThreadId,
+  ): TruncatedReplayAssistantFence | undefined => {
+    const fence = truncatedReplayAssistantFenceByThreadId.get(threadId);
+    truncatedReplayAssistantFenceByThreadId.delete(threadId);
+    return fence;
+  };
+
+  const reconcileTruncatedReplayAssistantFence = Effect.fn(
+    "ProviderRuntimeIngestion.reconcileTruncatedReplayAssistantFence",
+  )(function* (
+    event: ProviderRuntimeEvent,
+    threadId: ThreadId,
+    fence: TruncatedReplayAssistantFence | undefined,
+  ) {
+    if (!fence) {
+      return;
+    }
+
+    const postBarrierThread = yield* resolveThreadDetail(threadId);
+    const projectedMessages = postBarrierThread?.messages ?? [];
+    const staleStreamingMessages = projectedMessages.filter(
+      (message) => message.role === "assistant" && message.streaming,
+    );
+    const affectedTurnIds = new Set(fence.turnIds);
+    for (const message of staleStreamingMessages) {
+      if (message.turnId) {
+        affectedTurnIds.add(message.turnId);
+      }
+      yield* clearAssistantMessageState(message.id);
+    }
+
+    for (const turnId of affectedTurnIds) {
+      const trackedMessageIds = yield* getAssistantMessageIdsForTurn(threadId, turnId);
+      yield* Effect.forEach(trackedMessageIds, clearAssistantMessageState, {
+        concurrency: 1,
+      }).pipe(Effect.asVoid);
+      yield* clearAssistantMessageIdsForTurn(threadId, turnId);
+      yield* clearAssistantSegmentStateForTurn(threadId, turnId);
+    }
+
+    yield* Effect.forEach(
+      staleStreamingMessages,
+      (message) =>
+        providerMessageCommandId(event, "assistant-complete-replay-fence", message.id).pipe(
+          Effect.flatMap((commandId) =>
+            orchestrationEngine.dispatch({
+              type: "thread.message.assistant.complete",
+              commandId,
+              threadId,
+              messageId: message.id,
+              ...(message.turnId ? { turnId: message.turnId } : {}),
+              createdAt: event.createdAt,
+            }),
+          ),
+        ),
+      { concurrency: 1 },
+    ).pipe(Effect.asVoid);
+
+    yield* Effect.forEach(
+      fence.completedMessages,
+      ([messageId, completion]) =>
+        providerMessageCommandId(event, "assistant-reconcile-replay-fence", messageId).pipe(
+          Effect.flatMap((commandId) =>
+            orchestrationEngine.dispatch({
+              type: "thread.message.import",
+              commandId,
+              threadId,
+              messageId,
+              role: "assistant",
+              text: completion.text,
+              ...(completion.turnId ? { turnId: completion.turnId } : {}),
+              createdAt: completion.createdAt,
+            }),
+          ),
+        ),
+      { concurrency: 1 },
+    ).pipe(Effect.asVoid);
+
+    for (const turnId of affectedTurnIds) {
+      const projectedAssistantMessages = projectedMessages.filter(
+        (message) => message.role === "assistant" && message.turnId === turnId,
+      );
+      const projectedMessageIds = new Set(
+        projectedAssistantMessages.map((message) => String(message.id)),
+      );
+      const preferredBaseKey = fence.baseKeyByTurnId.get(turnId);
+      const projectedSegments = projectedAssistantMessages.flatMap((message) => {
+        if (message.role !== "assistant" || message.turnId !== turnId) {
+          return [];
+        }
+        const segment = parseAssistantSegmentMessageId(
+          message.id,
+          projectedMessageIds,
+          preferredBaseKey,
+        );
+        return segment ? [segment] : [];
+      });
+      const baseKey =
+        preferredBaseKey &&
+        projectedSegments.some((segment) => segment.baseKey === preferredBaseKey)
+          ? preferredBaseKey
+          : projectedSegments.at(-1)?.baseKey;
+      if (!baseKey) {
+        continue;
+      }
+      const nextSegmentIndex =
+        Math.max(
+          ...projectedSegments
+            .filter((segment) => segment.baseKey === baseKey)
+            .map((segment) => segment.segmentIndex),
+        ) + 1;
+      yield* setAssistantSegmentStateForTurn(threadId, turnId, {
+        baseKey,
+        nextSegmentIndex,
+        activeMessageId: null,
+      });
+    }
+  });
 
   const getSourceProposedPlanReferenceForPendingTurnStart = Effect.fn(
     "getSourceProposedPlanReferenceForPendingTurnStart",
@@ -1292,6 +1594,9 @@ const make = Effect.gen(function* () {
 
   const processRuntimeEvent = (event: ProviderRuntimeEvent) =>
     Effect.gen(function* () {
+      const reattachFence = isProviderHostReattachBarrier(event)
+        ? takeTruncatedReplayAssistantFence(event.threadId)
+        : undefined;
       const thread = yield* resolveThreadShell(event.threadId);
       if (!thread) return;
 
@@ -1307,6 +1612,10 @@ const make = Effect.gen(function* () {
 
       const now = event.createdAt;
       const eventTurnId = toTurnId(event.turnId);
+      const truncatedReplayAssistantMutation = isTruncatedReplayAssistantMutation(event);
+      if (truncatedReplayAssistantMutation || isProviderHostReplayTruncatedWarning(event)) {
+        yield* rememberTruncatedReplayAssistantFence(event);
+      }
       const activeTurnId = thread.session?.activeTurnId ?? null;
       const pendingTurnStart = yield* projectionTurnRepository.getPendingTurnStartByThreadId({
         threadId: thread.id,
@@ -1395,11 +1704,14 @@ const make = Effect.gen(function* () {
             ? (eventTurnId ?? null)
             : event.type === "turn.completed" || event.type === "session.exited"
               ? null
-              : event.type === "session.state.changed" &&
-                  !sessionStatusAllowsActiveTurn(
+              : event.type === "session.state.changed"
+                ? !sessionStatusAllowsActiveTurn(
                     orchestrationSessionStatusFromRuntimeState(event.payload.state),
                   )
-                ? null
+                  ? null
+                  : event.payload.activeTurnId !== undefined
+                    ? event.payload.activeTurnId
+                    : activeTurnId
                 : activeTurnId;
         const lastError =
           event.type === "session.state.changed" && event.payload.state === "error"
@@ -1454,14 +1766,25 @@ const make = Effect.gen(function* () {
         }
       }
 
+      if (isProviderHostReattachBarrier(event)) {
+        yield* reconcileTruncatedReplayAssistantFence(event, thread.id, reattachFence);
+      }
+
       const assistantDelta =
         event.type === "content.delta" && event.payload.streamKind === "assistant_text"
           ? event.payload.delta
           : undefined;
       const proposedPlanDelta =
         event.type === "turn.proposed.delta" ? event.payload.delta : undefined;
+      const truncatedReplayProposedPlanDelta =
+        event.type === "turn.proposed.delta" && event.replay?.truncated === true;
 
-      if (assistantDelta && assistantDelta.length > 0) {
+      const processAssistantDelta =
+        !truncatedReplayAssistantMutation &&
+        assistantDelta !== undefined &&
+        assistantDelta.length > 0 &&
+        !(yield* hasProcessedProviderMutation(event, "assistant-delta"));
+      if (processAssistantDelta) {
         const turnId = toTurnId(event.turnId);
         const assistantMessageId = yield* getOrCreateAssistantMessageId({
           threadId: thread.id,
@@ -1477,11 +1800,12 @@ const make = Effect.gen(function* () {
           (settings) => (settings.enableAssistantStreaming ? "streaming" : "buffered"),
         );
         if (assistantDeliveryMode === "buffered") {
+          const spillCommandId = yield* providerCommandId(event, "assistant-delta-buffer-spill");
           const spillChunk = yield* appendBufferedAssistantText(assistantMessageId, assistantDelta);
           if (spillChunk.length > 0) {
             yield* orchestrationEngine.dispatch({
               type: "thread.message.assistant.delta",
-              commandId: yield* providerCommandId(event, "assistant-delta-buffer-spill"),
+              commandId: spillCommandId,
               threadId: thread.id,
               messageId: assistantMessageId,
               delta: spillChunk,
@@ -1500,13 +1824,14 @@ const make = Effect.gen(function* () {
             createdAt: now,
           });
         }
+        yield* markProviderMutationProcessed(event, "assistant-delta");
       }
 
       const pauseForUserTurnId =
         event.type === "request.opened" || event.type === "user-input.requested"
           ? toTurnId(event.turnId)
           : undefined;
-      if (pauseForUserTurnId) {
+      if (!truncatedReplayAssistantMutation && pauseForUserTurnId) {
         const detailedThread = yield* getLoadedThreadDetail();
         const assistantDeliveryMode: AssistantDeliveryMode = yield* Effect.map(
           serverSettingsService.getSettings,
@@ -1547,9 +1872,15 @@ const make = Effect.gen(function* () {
         });
       }
 
-      if (proposedPlanDelta && proposedPlanDelta.length > 0) {
+      const processProposedPlanDelta =
+        proposedPlanDelta !== undefined &&
+        proposedPlanDelta.length > 0 &&
+        !truncatedReplayProposedPlanDelta &&
+        !(yield* hasProcessedProviderMutation(event, "proposed-plan-delta"));
+      if (processProposedPlanDelta) {
         const planId = proposedPlanIdFromEvent(event, thread.id);
         yield* appendBufferedProposedPlan(planId, proposedPlanDelta, now);
+        yield* markProviderMutationProcessed(event, "proposed-plan-delta");
       }
 
       const assistantCompletion =
@@ -1570,7 +1901,7 @@ const make = Effect.gen(function* () {
             }
           : undefined;
 
-      if (assistantCompletion) {
+      if (!truncatedReplayAssistantMutation && assistantCompletion) {
         const detailedThread = yield* getLoadedThreadDetail();
         const messages = detailedThread?.messages ?? [];
         const turnId = toTurnId(event.turnId);
@@ -1631,11 +1962,12 @@ const make = Effect.gen(function* () {
           planId: proposedPlanCompletion.planId,
           ...(proposedPlanCompletion.turnId ? { turnId: proposedPlanCompletion.turnId } : {}),
           fallbackMarkdown: proposedPlanCompletion.planMarkdown,
+          preferFallbackMarkdown: event.replay?.truncated === true,
           updatedAt: now,
         });
       }
 
-      if (event.type === "turn.completed") {
+      if (event.type === "turn.completed" && !truncatedReplayAssistantMutation) {
         const detailedThread = yield* getLoadedThreadDetail();
         const messages = detailedThread?.messages ?? [];
         const proposedPlans = detailedThread?.proposedPlans ?? [];

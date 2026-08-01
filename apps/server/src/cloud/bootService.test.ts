@@ -107,6 +107,7 @@ it("renders a systemd unit with absolute paths and append-mode logging", () => {
       "",
       "[Service]",
       "Type=simple",
+      "KillMode=process",
       "WorkingDirectory=%h",
       "Environment=T3CODE_HOME=/home/theo/.t3",
       "Environment=T3_BOOT_SERVICE_UNIT=t3code.service",

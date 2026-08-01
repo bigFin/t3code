@@ -24,12 +24,20 @@ import type * as Effect from "effect/Effect";
 import type * as Stream from "effect/Stream";
 
 export type ProviderSessionModelSwitchMode = "in-session" | "unsupported";
+export type ProviderSessionPersistence = "process-bound" | "detached";
 
 export interface ProviderAdapterCapabilities {
   /**
    * Declares whether changing the model on an existing session is supported.
    */
   readonly sessionModelSwitch: ProviderSessionModelSwitchMode;
+
+  /**
+   * Declares whether provider execution survives the T3 adapter scope.
+   *
+   * Omitted capabilities retain the historical process-bound behavior.
+   */
+  readonly sessionPersistence?: ProviderSessionPersistence;
 }
 
 export interface ProviderThreadTurnSnapshot {
@@ -53,6 +61,19 @@ export interface ProviderAdapterShape<TError> {
    * Start a provider-backed session.
    */
   readonly startSession: (
+    input: ProviderSessionStartInput,
+  ) => Effect.Effect<ProviderSession, TError>;
+
+  /**
+   * Attach to an already-running provider execution without creating or
+   * replacing it. Detached adapters implement this so a new T3 generation can
+   * observe the existing runtime before attempting resume-based recovery.
+   *
+   * The adapter's ordered event stream is the projection authority. A
+   * successful attachment must emit its authoritative session state there;
+   * callers use the returned snapshot for routing and persistence only.
+   */
+  readonly reattachSession?: (
     input: ProviderSessionStartInput,
   ) => Effect.Effect<ProviderSession, TError>;
 

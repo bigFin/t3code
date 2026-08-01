@@ -245,6 +245,11 @@ const ToolDeniedType = Schema.Literal("tool.denied");
 const RuntimeWarningType = Schema.Literal("runtime.warning");
 const RuntimeErrorType = Schema.Literal("runtime.error");
 
+export const ProviderRuntimeEventReplay = Schema.Struct({
+  truncated: Schema.Boolean,
+});
+export type ProviderRuntimeEventReplay = typeof ProviderRuntimeEventReplay.Type;
+
 const ProviderRuntimeEventBase = Schema.Struct({
   eventId: EventId,
   provider: ProviderDriverKind,
@@ -259,6 +264,7 @@ const ProviderRuntimeEventBase = Schema.Struct({
   requestId: Schema.optional(RuntimeRequestId),
   providerRefs: Schema.optional(ProviderRefs),
   raw: Schema.optional(RuntimeEventRaw),
+  replay: Schema.optional(ProviderRuntimeEventReplay),
 });
 export type ProviderRuntimeEventBase = typeof ProviderRuntimeEventBase.Type;
 
@@ -275,6 +281,14 @@ export type SessionConfiguredPayload = typeof SessionConfiguredPayload.Type;
 
 const SessionStateChangedPayload = Schema.Struct({
   state: RuntimeSessionState,
+  /**
+   * Authoritative active-turn reconciliation.
+   *
+   * Omitted preserves the projected turn, `null` clears it, and a turn id
+   * replaces it. This is used when an observer reattaches to a provider
+   * runtime whose lifecycle continued independently.
+   */
+  activeTurnId: Schema.optional(Schema.NullOr(TurnId)),
   reason: Schema.optional(TrimmedNonEmptyStringSchema),
   detail: Schema.optional(Schema.Unknown),
 });

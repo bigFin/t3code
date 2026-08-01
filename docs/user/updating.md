@@ -16,10 +16,12 @@ update the server, and the version difference remains visible in Connections.
 
 ## Before You Update
 
-Let active agent work and terminal commands finish first. Updating restarts the server, so the
-connection will disappear briefly and work that is still running may be interrupted.
+Updating restarts the server, so the connection disappears briefly. On Linux and macOS, active
+Codex turns continue in an independent provider host and T3 reattaches after the restart. Terminal
+commands and other providers can still be interrupted, so let those finish first.
 
-The update does not remove saved threads, settings, or project files.
+The update does not remove saved threads, settings, or project files. Restarting or evicting the
+machine itself still stops its running processes.
 
 ## Restart the Desktop App
 
@@ -28,7 +30,8 @@ palette. This uses the desktop app's graceful shutdown and relaunch flow rather 
 process kill or a hidden application menu.
 
 The desktop app and its local backend disconnect briefly. Remote environments reconnect
-automatically, but let active local agent work and terminal commands finish first.
+automatically. Active Codex turns on Linux and macOS continue independently, but let local terminal
+commands and work from other providers finish first.
 
 ## Choose the Action You See
 
