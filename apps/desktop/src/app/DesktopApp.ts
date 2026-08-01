@@ -215,12 +215,20 @@ const bootstrap = Effect.gen(function* () {
   }
 }).pipe(Effect.withSpan("desktop.bootstrap"));
 
+export const configureDesktopInstance = Effect.gen(function* () {
+  const appIdentity = yield* DesktopAppIdentity.DesktopAppIdentity;
+  const clerk = yield* DesktopClerk.DesktopClerk;
+  const lifecycle = yield* DesktopLifecycle.DesktopLifecycle;
+
+  yield* appIdentity.configure;
+  yield* lifecycle.register;
+  yield* clerk.configure;
+}).pipe(Effect.withSpan("desktop.startup.configureInstance"));
+
 const startup = Effect.gen(function* () {
   const appIdentity = yield* DesktopAppIdentity.DesktopAppIdentity;
   const applicationMenu = yield* DesktopApplicationMenu.DesktopApplicationMenu;
   const electronApp = yield* ElectronApp.ElectronApp;
-  const lifecycle = yield* DesktopLifecycle.DesktopLifecycle;
-  yield* DesktopClerk.DesktopClerk;
   const shellEnvironment = yield* DesktopShellEnvironment.DesktopShellEnvironment;
   const desktopSettings = yield* DesktopAppSettings.DesktopAppSettings;
   const updates = yield* DesktopUpdates.DesktopUpdates;
@@ -236,8 +244,7 @@ const startup = Effect.gen(function* () {
     yield* electronApp.appendCommandLineSwitch("class", environment.linuxWmClass);
   }
 
-  yield* appIdentity.configure;
-  yield* lifecycle.register;
+  yield* configureDesktopInstance;
 
   yield* electronApp.whenReady.pipe(
     Effect.withSpan("desktop.electron.whenReady"),
