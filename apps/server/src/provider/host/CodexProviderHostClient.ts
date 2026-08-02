@@ -1,4 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off
+// @effect-diagnostics globalDate:off - Command deadlines are wall-clock timestamps shared with the detached host.
 // @effect-diagnostics globalTimers:off - Socket timeouts use bounded timers.
 // @effect-diagnostics preferSchemaOverJson:off - NDJSON framing encodes already validated envelopes.
 import {
@@ -27,6 +28,7 @@ import * as Stream from "effect/Stream";
 import * as CodexErrors from "effect-codex-app-server/errors";
 
 import {
+  CodexSessionRuntimeMutationAmbiguousError,
   CodexSessionRuntimeThreadIdMissingError,
   type CodexSessionRuntimeError,
   type CodexSessionRuntimeOptions,
@@ -45,7 +47,9 @@ import {
 import {
   PROVIDER_HOST_PROTOCOL_VERSION,
   ProviderHostAttachmentId,
+  type ProviderHostAttachMode,
   ProviderHostClientId,
+  ProviderHostCommandDeadlineMs,
   ProviderHostCommandEnvelope,
   ProviderHostDetachEnvelope,
   ProviderHostReplayCursor,
@@ -60,10 +64,24 @@ import {
 
 const CONNECT_TIMEOUT_MS = 5_000;
 const RECONNECT_WINDOW_MS = 10_000;
+const COMMAND_TIMEOUT_MS = 120_000;
+const COMMAND_CLIENT_GRACE_MS = 5_000;
 const DETACH_CLOSE_TIMEOUT_MS = 1_000;
 const MAX_INBOUND_LINE_BYTES = 32 * 1024 * 1024;
 const MAX_PENDING_PROVIDER_EVENTS = 4_096;
 const MAX_PENDING_PROVIDER_EVENT_BYTES = 16 * 1024 * 1024;
+
+function commandDeadlineAtMs(timeoutMs: number, nowMs = Date.now()): ProviderHostCommandDeadlineMs {
+  return ProviderHostCommandDeadlineMs.make(nowMs + timeoutMs);
+}
+
+function commandResponseWaitMs(
+  deadlineAtMs: ProviderHostCommandDeadlineMs,
+  graceMs: number,
+  nowMs = Date.now(),
+): number {
+  return Math.max(0, Number(deadlineAtMs) - nowMs + graceMs);
+}
 
 const decodeServerEnvelope = Schema.decodeUnknownSync(
   Schema.fromJsonString(ProviderHostServerEnvelope),
@@ -91,6 +109,7 @@ type CodexProviderHostOperation =
 interface PendingCommand {
   readonly resolve: (result: ProviderHostCommandResultEnvelope) => void;
   readonly reject: (cause: Error) => void;
+  readonly timer: ReturnType<typeof setTimeout>;
 }
 
 interface HostConnection {
@@ -103,6 +122,8 @@ interface HostConnection {
     readonly retainedBytes: number;
   }>;
   readonly transportClosed: Promise<void>;
+  generationFingerprint?: ProviderHostGenerationFingerprint;
+  canAdoptSessions: boolean;
   replayTruncated: boolean;
   snapshotReceived: boolean;
   closed: boolean;
@@ -142,7 +163,9 @@ export const makeCodexProviderHostRuntime = Effect.fn("makeCodexProviderHostRunt
   function* (input: {
     readonly controlSocketPath: string;
     readonly options: CodexSessionRuntimeOptions;
-    readonly attachExisting?: boolean;
+    readonly sessionMode?: "create" | "reuse" | "adopt";
+    readonly commandTimeoutMs?: number;
+    readonly commandClientGraceMs?: number;
     readonly detachCloseTimeoutMs?: number;
     readonly maxPendingProviderEvents?: number;
     readonly maxPendingProviderEventBytes?: number;
@@ -165,7 +188,8 @@ export const makeCodexProviderHostRuntime = Effect.fn("makeCodexProviderHostRunt
     });
     const clientId = ProviderHostClientId.make(`t3-${process.pid}-${NodeCrypto.randomUUID()}`);
     const attachmentId = ProviderHostAttachmentId.make(NodeCrypto.randomUUID());
-    const sessionOptions = input.attachExisting ? undefined : toSessionOptions(input.options);
+    const sessionOptions = toSessionOptions(input.options);
+    const requestedSessionMode = input.sessionMode ?? "create";
     const runtimeContext = yield* Effect.context<never>();
     const runFork = Effect.runForkWith(runtimeContext);
     const runPromise = Effect.runPromiseWith(runtimeContext);
@@ -174,14 +198,19 @@ export const makeCodexProviderHostRuntime = Effect.fn("makeCodexProviderHostRunt
     let connecting: Promise<HostConnection> | undefined;
     let closing = false;
     let started = false;
+    let attachmentAttempted = false;
     let reconnecting = false;
     let replayCursor = ProviderHostReplayCursor.make(0);
     let generationFingerprint: ProviderHostGenerationFingerprint | undefined;
+    let latestResumeCursor = sessionOptions.resumeCursor;
+    let runtimeRecoveryRequired = false;
     let processing = Promise.resolve();
     let retainedProviderEvents = 0;
     let retainedProviderEventBytes = 0;
     const capacityWaiters = new Set<() => void>();
     const detachCloseTimeoutMs = Math.max(1, input.detachCloseTimeoutMs ?? DETACH_CLOSE_TIMEOUT_MS);
+    const commandTimeoutMs = Math.max(1, input.commandTimeoutMs ?? COMMAND_TIMEOUT_MS);
+    const commandClientGraceMs = Math.max(0, input.commandClientGraceMs ?? COMMAND_CLIENT_GRACE_MS);
     const maxPendingProviderEvents = Math.max(
       1,
       input.maxPendingProviderEvents ?? MAX_PENDING_PROVIDER_EVENTS,
@@ -313,6 +342,8 @@ export const makeCodexProviderHostRuntime = Effect.fn("makeCodexProviderHostRunt
         case "session/closed":
           return updateSession({ status: "closed", activeTurnId: undefined });
         case "session/exited":
+        case "session/disconnected":
+          runtimeRecoveryRequired = true;
           return updateSession({
             status: "error",
             activeTurnId: undefined,
@@ -324,7 +355,10 @@ export const makeCodexProviderHostRuntime = Effect.fn("makeCodexProviderHostRunt
     };
 
     const rejectPending = (current: HostConnection, cause: Error) => {
-      for (const pending of current.pending.values()) pending.reject(cause);
+      for (const pending of current.pending.values()) {
+        clearTimeout(pending.timer);
+        pending.reject(cause);
+      }
       current.pending.clear();
     };
 
@@ -436,6 +470,7 @@ export const makeCodexProviderHostRuntime = Effect.fn("makeCodexProviderHostRunt
           pending: new Map(),
           replayEvents: [],
           transportClosed,
+          canAdoptSessions: false,
           replayTruncated: false,
           snapshotReceived: false,
           closed: false,
@@ -443,8 +478,9 @@ export const makeCodexProviderHostRuntime = Effect.fn("makeCodexProviderHostRunt
         };
         let settled = false;
         let attached = false;
+        let attachMode: ProviderHostAttachMode | undefined;
         let helloReceived = false;
-        let inventoryReceived = false;
+        let generationChanged = false;
         const timeout = setTimeout(() => {
           socket.destroy(new Error("Timed out connecting to the Codex provider host."));
         }, CONNECT_TIMEOUT_MS);
@@ -459,10 +495,30 @@ export const makeCodexProviderHostRuntime = Effect.fn("makeCodexProviderHostRunt
         };
 
         const attach = () => {
-          if (attached || !helloReceived || (input.attachExisting === true && !inventoryReceived)) {
+          const needsExistingSession =
+            requestedSessionMode !== "create" || started || attachmentAttempted;
+          if (attached || !helloReceived) {
             return;
           }
+          let mode: ProviderHostAttachMode;
+          if (!needsExistingSession) {
+            mode = "create";
+          } else if (
+            current.canAdoptSessions &&
+            latestResumeCursor !== undefined &&
+            (requestedSessionMode === "adopt" || runtimeRecoveryRequired || generationChanged)
+          ) {
+            mode = "adopt";
+          } else {
+            mode = "reuse";
+          }
+          attachMode = mode;
           attached = true;
+          attachmentAttempted = true;
+          const effectiveSessionOptions =
+            latestResumeCursor === undefined
+              ? sessionOptions
+              : { ...sessionOptions, resumeCursor: latestResumeCursor };
           socket.write(
             `${JSON.stringify({
               version: PROVIDER_HOST_PROTOCOL_VERSION,
@@ -471,7 +527,8 @@ export const makeCodexProviderHostRuntime = Effect.fn("makeCodexProviderHostRunt
               attachmentId,
               threadId: input.options.threadId,
               replayFrom: replayCursor,
-              ...(sessionOptions ? { session: sessionOptions } : {}),
+              mode,
+              ...(mode === "reuse" ? {} : { session: effectiveSessionOptions }),
             })}\n`,
             (cause) => {
               if (cause) {
@@ -543,31 +600,35 @@ export const makeCodexProviderHostRuntime = Effect.fn("makeCodexProviderHostRunt
             switch (envelope.type) {
               case "hello": {
                 if (helloReceived) break;
+                generationChanged =
+                  generationFingerprint === undefined ||
+                  generationFingerprint !== envelope.generationFingerprint;
                 if (
                   generationFingerprint !== undefined &&
                   generationFingerprint !== envelope.generationFingerprint
                 ) {
                   replayCursor = ProviderHostReplayCursor.make(0);
                 }
-                generationFingerprint = envelope.generationFingerprint;
+                current.generationFingerprint = envelope.generationFingerprint;
+                current.canAdoptSessions = envelope.canAdoptSessions;
                 helloReceived = true;
                 attach();
                 break;
               }
               case "inventory": {
-                if (!input.attachExisting || inventoryReceived) break;
-                inventoryReceived = true;
                 if (
+                  attached &&
+                  attachMode === "reuse" &&
+                  !current.snapshotReceived &&
                   !envelope.threads.some((thread) => thread.threadId === input.options.threadId)
                 ) {
-                  const cause = new CodexSessionRuntimeThreadIdMissingError({
-                    threadId: input.options.threadId,
-                  });
-                  fail(cause);
+                  fail(
+                    new CodexSessionRuntimeThreadIdMissingError({
+                      threadId: input.options.threadId,
+                    }),
+                  );
                   socket.destroy();
-                  break;
                 }
-                attach();
                 break;
               }
               case "snapshot":
@@ -576,7 +637,21 @@ export const makeCodexProviderHostRuntime = Effect.fn("makeCodexProviderHostRunt
                   isProviderSession(envelope.state)
                 ) {
                   const snapshotState = envelope.state;
-                  const shouldEmitAuthoritativeBarrier = started || input.attachExisting === true;
+                  runtimeRecoveryRequired =
+                    snapshotState.status === "error" || snapshotState.status === "closed";
+                  if (
+                    snapshotState.resumeCursor !== undefined &&
+                    typeof snapshotState.resumeCursor === "object" &&
+                    snapshotState.resumeCursor !== null &&
+                    "threadId" in snapshotState.resumeCursor &&
+                    typeof snapshotState.resumeCursor.threadId === "string"
+                  ) {
+                    latestResumeCursor = {
+                      threadId: snapshotState.resumeCursor.threadId,
+                    };
+                  }
+                  const shouldEmitAuthoritativeBarrier =
+                    started || requestedSessionMode === "reuse";
                   current.replayTruncated = envelope.replayTruncated === true;
                   current.snapshotReceived = true;
                   for (const replayEvent of current.replayEvents.splice(0)) {
@@ -601,6 +676,7 @@ export const makeCodexProviderHostRuntime = Effect.fn("makeCodexProviderHostRunt
                         Effect.tap(() =>
                           Effect.sync(() => {
                             replayCursor = envelope.cursor;
+                            generationFingerprint = current.generationFingerprint;
                             settleSnapshot(snapshotState);
                             clearTimeout(timeout);
                             if (!settled) {
@@ -646,6 +722,7 @@ export const makeCodexProviderHostRuntime = Effect.fn("makeCodexProviderHostRunt
                 const pending = current.pending.get(envelope.commandId);
                 if (!pending) break;
                 current.pending.delete(envelope.commandId);
+                clearTimeout(pending.timer);
                 pending.resolve(envelope);
                 break;
               }
@@ -667,6 +744,83 @@ export const makeCodexProviderHostRuntime = Effect.fn("makeCodexProviderHostRunt
         });
       });
 
+    const sendCommandOnConnection = (
+      current: HostConnection,
+      commandInput: {
+        readonly commandId: CommandId;
+        readonly operation: CodexProviderHostOperation;
+        readonly payload: Schema.Json;
+        readonly deadlineAtMs: ProviderHostCommandDeadlineMs;
+      },
+    ): Promise<ProviderHostCommandResultEnvelope> =>
+      new Promise((resolve, reject) => {
+        const responseWaitMs = commandResponseWaitMs(
+          commandInput.deadlineAtMs,
+          commandClientGraceMs,
+        );
+        const timer = setTimeout(() => {
+          current.pending.delete(commandInput.commandId);
+          const cause = new Error(
+            `Provider-host command '${commandInput.operation}' exceeded its response deadline.`,
+          );
+          current.socket.destroy(cause);
+          reject(cause);
+        }, responseWaitMs);
+        current.pending.set(commandInput.commandId, { resolve, reject, timer });
+        const command = ProviderHostCommandEnvelope.make({
+          version: PROVIDER_HOST_PROTOCOL_VERSION,
+          type: "command",
+          clientId,
+          attachmentId,
+          commandId: commandInput.commandId,
+          threadId: input.options.threadId,
+          operation: commandInput.operation,
+          payload: commandInput.payload,
+          deadlineAtMs: commandInput.deadlineAtMs,
+        });
+        current.socket.write(`${JSON.stringify(command)}\n`, (cause) => {
+          if (!cause) return;
+          current.pending.delete(commandInput.commandId);
+          clearTimeout(timer);
+          reject(cause);
+        });
+      });
+
+    const readThreadAfterAmbiguousMutation = Effect.fn(
+      "CodexProviderHostClient.readThreadAfterAmbiguousMutation",
+    )(function* (current: HostConnection) {
+      const deadlineAtMs = commandDeadlineAtMs(commandTimeoutMs);
+      return yield* Effect.tryPromise({
+        try: () =>
+          sendCommandOnConnection(current, {
+            commandId: CommandId.make(NodeCrypto.randomUUID()),
+            operation: CODEX_PROVIDER_HOST_OPERATIONS.readThread,
+            payload: {},
+            deadlineAtMs,
+          }),
+        catch: () => undefined,
+      }).pipe(
+        Effect.flatMap((result) => {
+          if (!result.ok || !isCodexThreadSnapshot(result.result)) {
+            return Effect.succeed(false);
+          }
+          latestResumeCursor = { threadId: result.result.threadId };
+          return updateSession({ resumeCursor: latestResumeCursor }).pipe(Effect.as(true));
+        }),
+        Effect.orElseSucceed(() => false),
+      );
+    });
+
+    const ambiguousMutationError = (
+      operation: CodexProviderHostOperation,
+      threadReadSucceeded: boolean,
+    ) =>
+      new CodexSessionRuntimeMutationAmbiguousError({
+        threadId: input.options.threadId,
+        operation,
+        threadReadSucceeded,
+      });
+
     const sendCommand = Effect.fn("CodexProviderHostClient.sendCommand")(function* (
       operation: CodexProviderHostOperation,
       payload: unknown,
@@ -675,33 +829,51 @@ export const makeCodexProviderHostRuntime = Effect.fn("makeCodexProviderHostRunt
         Effect.mapError((cause) => transportError(`${operation}.payload`, cause)),
       );
       const commandId = CommandId.make(NodeCrypto.randomUUID());
+      const deadlineAtMs = commandDeadlineAtMs(commandTimeoutMs);
       let lastError: CodexSessionRuntimeError | undefined;
+      let commandGeneration: ProviderHostGenerationFingerprint | undefined;
       for (let attempt = 0; attempt < 2; attempt += 1) {
-        const current = yield* ensureConnection();
+        const connectionResult = yield* ensureConnection().pipe(Effect.result);
+        if (Result.isFailure(connectionResult)) {
+          if (
+            attempt > 0 &&
+            operation !== CODEX_PROVIDER_HOST_OPERATIONS.readThread &&
+            commandGeneration !== undefined
+          ) {
+            return yield* ambiguousMutationError(operation, false);
+          }
+          return yield* connectionResult.failure;
+        }
+        const current = connectionResult.success;
+        if (
+          attempt > 0 &&
+          operation !== CODEX_PROVIDER_HOST_OPERATIONS.readThread &&
+          commandGeneration !== undefined &&
+          current.generationFingerprint !== commandGeneration
+        ) {
+          const threadReadSucceeded = yield* readThreadAfterAmbiguousMutation(current);
+          return yield* ambiguousMutationError(operation, threadReadSucceeded);
+        }
+        commandGeneration ??= current.generationFingerprint;
         const outcome = yield* Effect.tryPromise({
           try: () =>
-            new Promise<ProviderHostCommandResultEnvelope>((resolve, reject) => {
-              current.pending.set(commandId, { resolve, reject });
-              const command = ProviderHostCommandEnvelope.make({
-                version: PROVIDER_HOST_PROTOCOL_VERSION,
-                type: "command",
-                clientId,
-                attachmentId,
-                commandId,
-                threadId: input.options.threadId,
-                operation,
-                payload: jsonPayload,
-              });
-              current.socket.write(`${JSON.stringify(command)}\n`, (cause) => {
-                if (!cause) return;
-                current.pending.delete(commandId);
-                reject(cause);
-              });
+            sendCommandOnConnection(current, {
+              commandId,
+              operation,
+              payload: jsonPayload,
+              deadlineAtMs,
             }),
           catch: (cause) => transportError(operation, cause),
         }).pipe(Effect.result);
         if (Result.isSuccess(outcome)) {
           if (!outcome.success.ok) {
+            if (
+              outcome.success.errorCode === "deadline-exceeded" &&
+              operation !== CODEX_PROVIDER_HOST_OPERATIONS.readThread
+            ) {
+              const threadReadSucceeded = yield* readThreadAfterAmbiguousMutation(current);
+              return yield* ambiguousMutationError(operation, threadReadSucceeded);
+            }
             return yield* transportError(
               operation,
               new Error(outcome.success.error ?? "Provider-host command failed."),
@@ -711,6 +883,12 @@ export const makeCodexProviderHostRuntime = Effect.fn("makeCodexProviderHostRunt
         }
         lastError = outcome.failure;
         connection = undefined;
+      }
+      if (
+        operation !== CODEX_PROVIDER_HOST_OPERATIONS.readThread &&
+        commandGeneration !== undefined
+      ) {
+        return yield* ambiguousMutationError(operation, false);
       }
       return yield* lastError ?? transportError(operation, "Provider-host request failed.");
     });
@@ -871,6 +1049,7 @@ export const makeCodexProviderHostRuntime = Effect.fn("makeCodexProviderHostRunt
 );
 
 export const __testing = {
+  commandResponseWaitMs,
   detachCloseTimeoutMs: DETACH_CLOSE_TIMEOUT_MS,
   maxPendingProviderEventBytes: MAX_PENDING_PROVIDER_EVENT_BYTES,
   maxPendingProviderEvents: MAX_PENDING_PROVIDER_EVENTS,
