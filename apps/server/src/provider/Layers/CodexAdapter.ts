@@ -11,6 +11,7 @@ import {
   type CanonicalItemType,
   type CanonicalRequestType,
   type CodexSettings,
+  EventId,
   ProviderDriverKind,
   type ProviderEvent,
   ProviderInstanceId,
@@ -30,6 +31,7 @@ import {
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Crypto from "effect/Crypto";
+import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
@@ -62,6 +64,7 @@ import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import {
   CodexResumeCursorSchema,
+  CodexSessionRuntimeMutationAmbiguousError,
   CodexSessionRuntimeThreadIdMissingError,
   makeCodexSessionRuntime,
   type CodexSessionRuntimeError,
@@ -76,6 +79,9 @@ const isCodexAppServerProcessExitedError = Schema.is(CodexErrors.CodexAppServerP
 const isCodexAppServerTransportError = Schema.is(CodexErrors.CodexAppServerTransportError);
 const isCodexSessionRuntimeThreadIdMissingError = Schema.is(
   CodexSessionRuntimeThreadIdMissingError,
+);
+const isCodexSessionRuntimeMutationAmbiguousError = Schema.is(
+  CodexSessionRuntimeMutationAmbiguousError,
 );
 const isCodexResumeCursorSchema = Schema.is(CodexResumeCursorSchema);
 const CodexProviderHostReattachedPayload = Schema.Struct({
@@ -99,7 +105,7 @@ export interface CodexAdapterLiveOptions {
   readonly makeProviderHostRuntime?: (input: {
     readonly controlSocketPath: string;
     readonly options: CodexSessionRuntimeOptions;
-    readonly attachExisting?: boolean;
+    readonly sessionMode?: "create" | "reuse" | "adopt";
   }) => Effect.Effect<
     CodexSessionRuntimeShape,
     CodexSessionRuntimeError,
@@ -121,7 +127,6 @@ interface CodexAdapterSessionContext {
 interface DesiredCodexSession {
   readonly generation: number;
   readonly input: ProviderSessionStartInput;
-  readonly attachExisting: boolean;
 }
 
 function mapCodexRuntimeError(
@@ -129,6 +134,16 @@ function mapCodexRuntimeError(
   method: string,
   error: CodexSessionRuntimeError,
 ): ProviderAdapterError {
+  if (isCodexSessionRuntimeMutationAmbiguousError(error)) {
+    return new ProviderAdapterRequestError({
+      provider: PROVIDER,
+      method,
+      detail: error.message,
+      reconciled: error.threadReadSucceeded,
+      cause: error,
+    });
+  }
+
   if (isCodexAppServerProcessExitedError(error) || isCodexAppServerTransportError(error)) {
     return new ProviderAdapterSessionClosedError({
       provider: PROVIDER,
@@ -726,10 +741,33 @@ function mapToRuntimeEvents(
         ...runtimeEventBase(event, canonicalThreadId),
         type: "session.state.changed",
         payload: {
-          state: "starting",
+          state: "error",
+          activeTurnId: null,
           reason:
             event.message ??
             "T3 lost its attachment and will reconnect without interrupting Codex execution.",
+          detail: {
+            source: "provider-host-disconnect",
+          },
+        },
+      },
+    ];
+  }
+
+  if (event.method === "session/reconnecting") {
+    return [
+      {
+        ...runtimeEventBase(event, canonicalThreadId),
+        type: "session.state.changed",
+        payload: {
+          state: "error",
+          activeTurnId: null,
+          reason:
+            event.message ??
+            "T3 lost its attachment and is reconnecting without interrupting Codex execution.",
+          detail: {
+            source: "provider-host-reconnect",
+          },
         },
       },
     ];
@@ -1497,6 +1535,27 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     new Map<string, { readonly semaphore: Semaphore.Semaphore; readonly users: number }>(),
   );
   let adapterClosing = false;
+  const emitAttachmentMissing = Effect.fn("CodexAdapter.emitAttachmentMissing")(function* (
+    threadId: ThreadId,
+  ) {
+    yield* Queue.offer(runtimeEventQueue, {
+      eventId: EventId.make(yield* crypto.randomUUIDv4.pipe(Effect.orDie)),
+      provider: PROVIDER,
+      threadId,
+      createdAt: DateTime.formatIso(yield* DateTime.now),
+      type: "session.state.changed",
+      payload: {
+        state: "error",
+        activeTurnId: null,
+        reason:
+          "T3 could not reattach to the independent Codex execution. It may have ended or become unavailable while T3 was detached.",
+        detail: {
+          source: "provider-host-reattach",
+          providerStatus: "missing",
+        },
+      },
+    });
+  });
   const launchArgs = resolveCodexLaunchArgs(codexConfig.launchArgs, options?.environment);
   const appServerHost =
     options?.appServerHost ??
@@ -1556,22 +1615,23 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
   const attachSession: (
     input: ProviderSessionStartInput,
     replaceExisting: "stop" | "detach",
-    attachExisting: boolean,
+    sessionMode: "create" | "reuse" | "adopt",
   ) => Effect.Effect<ProviderSession, ProviderAdapterError> = (
     input,
     replaceExisting,
-    attachExisting,
+    sessionMode,
   ) =>
     Effect.scoped(
       Effect.gen(function* () {
+        const reattaching = sessionMode !== "create";
         if (input.provider !== undefined && input.provider !== PROVIDER) {
           return yield* new ProviderAdapterValidationError({
             provider: PROVIDER,
-            operation: attachExisting ? "reattachSession" : "startSession",
+            operation: reattaching ? "reattachSession" : "startSession",
             issue: `Expected provider '${PROVIDER}' but received '${input.provider}'.`,
           });
         }
-        if (attachExisting && !appServerHost) {
+        if (reattaching && !appServerHost) {
           return yield* new ProviderAdapterProcessError({
             provider: PROVIDER,
             threadId: input.threadId,
@@ -1592,7 +1652,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
           input.modelSelection?.instanceId === boundInstanceId
             ? getCodexServiceTierOptionValue(input.modelSelection)
             : undefined;
-        const mcpSession = attachExisting
+        const mcpSession = reattaching
           ? undefined
           : McpProviderSession.readMcpProviderSession(input.threadId);
         const providerHostSocketPath = appServerHost ? yield* appServerHost.ensure : undefined;
@@ -1645,7 +1705,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
               (options?.makeProviderHostRuntime ?? makeCodexProviderHostRuntime)({
                 controlSocketPath: providerHostSocketPath,
                 options: runtimeOptions,
-                ...(attachExisting ? { attachExisting: true } : {}),
+                sessionMode,
               })
           : (options?.makeRuntime ?? makeCodexSessionRuntime);
         const runtime = yield* createRuntime(runtimeInput).pipe(
@@ -1653,7 +1713,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
           Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, childProcessSpawner),
           Effect.provideService(Crypto.Crypto, crypto),
           Effect.mapError((cause) =>
-            attachExisting
+            reattaching
               ? mapCodexRuntimeError(input.threadId, "session/reattach", cause)
               : new ProviderAdapterProcessError({
                   provider: PROVIDER,
@@ -1688,7 +1748,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
 
         const started: ProviderSession = yield* runtime.start().pipe(
           Effect.mapError((cause) =>
-            attachExisting
+            reattaching
               ? mapCodexRuntimeError(input.threadId, "session/reattach", cause)
               : new ProviderAdapterProcessError({
                   provider: PROVIDER,
@@ -1698,14 +1758,14 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
                 }),
           ),
           Effect.onError(() =>
-            (attachExisting ? runtime.detach : runtime.close).pipe(
+            (providerHostSocketPath ? runtime.detach : runtime.close).pipe(
               Effect.andThen(Effect.ignore(Scope.close(sessionScope, Exit.void))),
               Effect.andThen(Fiber.interrupt(eventFiber)),
               Effect.ignore,
             ),
           ),
         );
-        if (attachExisting && started.status === "closed") {
+        if (reattaching && started.status === "closed") {
           yield* runtime.detach.pipe(Effect.ignore);
           yield* Fiber.await(eventFiber);
           return yield* new ProviderAdapterSessionNotFoundError({
@@ -1952,15 +2012,26 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
                 return;
               }
 
+              let reconnectInput = desired.input;
               const existing = sessions.get(threadId);
               if (existing && !existing.stopped) {
                 const snapshot = yield* existing.runtime.getSession;
                 if (snapshot.status !== "error" && snapshot.status !== "closed") {
                   return;
                 }
+                if (isCodexResumeCursorSchema(snapshot.resumeCursor)) {
+                  reconnectInput = {
+                    ...desired.input,
+                    resumeCursor: snapshot.resumeCursor,
+                  };
+                  desiredSessions.set(threadId, {
+                    ...desired,
+                    input: reconnectInput,
+                  });
+                }
               }
 
-              yield* attachSession(desired.input, "detach", true);
+              yield* attachSession(reconnectInput, "detach", "adopt");
             }),
           ).pipe(
             Effect.as({ _tag: "attached" as const }),
@@ -1980,6 +2051,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
             if (desiredSessions.get(threadId)?.generation === desiredBeforeLock.generation) {
               desiredSessions.delete(threadId);
             }
+            yield* emitAttachmentMissing(threadId);
             yield* Effect.logInfo("codex.adapter.attachment-missing", {
               threadId,
               providerInstanceId: boundInstanceId,
@@ -2025,10 +2097,9 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
         const desired = {
           generation: previousGeneration + 1,
           input,
-          attachExisting: false,
         } satisfies DesiredCodexSession;
         desiredSessions.set(input.threadId, desired);
-        return yield* attachSession(input, "stop", false).pipe(
+        return yield* attachSession(input, "stop", "create").pipe(
           Effect.tapError(() =>
             Effect.sync(() => {
               if (desiredSessions.get(input.threadId)?.generation === desired.generation) {
@@ -2048,10 +2119,9 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
         const desired = {
           generation: previousGeneration + 1,
           input,
-          attachExisting: true,
         } satisfies DesiredCodexSession;
         desiredSessions.set(input.threadId, desired);
-        return yield* attachSession(input, "detach", true).pipe(
+        return yield* attachSession(input, "detach", "adopt").pipe(
           Effect.tapError(() =>
             Effect.sync(() => {
               if (desiredSessions.get(input.threadId)?.generation === desired.generation) {

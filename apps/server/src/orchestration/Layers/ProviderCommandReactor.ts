@@ -1068,21 +1068,28 @@ const make = Effect.gen(function* () {
         return Effect.void;
       }
       const detail = formatFailureDetail(cause);
+      const providerError = findProviderAdapterRequestError(
+        cause as Cause.Cause<ProviderServiceError>,
+      );
+      const appendFailure = appendProviderFailureActivity({
+        threadId: event.payload.threadId,
+        kind: "provider.turn.start.failed",
+        summary: providerError?.reconciled
+          ? "Provider turn start result was ambiguous"
+          : "Provider turn start failed",
+        detail,
+        turnId: null,
+        createdAt: event.payload.createdAt,
+      });
+      if (providerError?.reconciled) {
+        return appendFailure.pipe(Effect.asVoid);
+      }
       return setThreadSessionErrorOnTurnStartFailure({
         threadId: event.payload.threadId,
         detail,
         createdAt: event.payload.createdAt,
       }).pipe(
-        Effect.flatMap(() =>
-          appendProviderFailureActivity({
-            threadId: event.payload.threadId,
-            kind: "provider.turn.start.failed",
-            summary: "Provider turn start failed",
-            detail,
-            turnId: null,
-            createdAt: event.payload.createdAt,
-          }),
-        ),
+        Effect.flatMap(() => appendFailure),
         Effect.asVoid,
       );
     };

@@ -36,9 +36,11 @@ import { ChildProcessSpawner } from "effect/unstable/process";
 import type * as EffectCodexSchema from "effect-codex-app-server/schema";
 
 import { expandHomePath } from "../../pathExpansion.ts";
+import { acquireSqliteTransactionLock } from "../../sqliteTransactionLock.ts";
 import { codexAppServerArgs } from "../Layers/codexLaunchArgs.ts";
 import {
   CodexResumeCursorSchema,
+  CodexSessionRuntimeThreadIdMissingError,
   makeCodexSessionRuntime,
   type CodexSessionRuntimeError,
   type CodexSessionRuntimeOptions,
@@ -62,9 +64,11 @@ import {
 import {
   PROVIDER_HOST_MANIFEST_SCHEMA_VERSION,
   persistProviderHostManifest,
+  readProviderHostManifest,
 } from "./ProviderHostManifest.ts";
 import {
   PROVIDER_HOST_PROTOCOL_VERSION,
+  ProviderHostAttachErrorEnvelope,
   ProviderHostAttachmentId,
   ProviderHostBuildFingerprint,
   type ProviderHostClientId,
@@ -106,6 +110,8 @@ const APP_SERVER_MONITOR_INITIAL_DELAY_MS = 5_000;
 const APP_SERVER_MONITOR_MAX_DELAY_MS = 60_000;
 const APP_SERVER_MONITOR_FAILURE_DELAY_MS = 1_000;
 const APP_SERVER_MONITOR_FAILURE_THRESHOLD = 3;
+const CHILD_TERMINATE_GRACE_MS = 2_000;
+const STARTUP_LOCK_TIMEOUT_MS = 30_000;
 
 const decodeClientEnvelope = Schema.decodeUnknownResult(
   Schema.fromJsonString(ProviderHostClientEnvelope),
@@ -117,6 +123,9 @@ const decodeRollback = Schema.decodeUnknownEffect(CodexProviderHostRollbackPaylo
 const decodeApproval = Schema.decodeUnknownEffect(CodexProviderHostApprovalPayload);
 const decodeUserInput = Schema.decodeUnknownEffect(CodexProviderHostUserInputPayload);
 const isCodexResumeCursor = Schema.is(CodexResumeCursorSchema);
+const isCodexSessionRuntimeThreadIdMissingError = Schema.is(
+  CodexSessionRuntimeThreadIdMissingError,
+);
 
 interface ReplayEntry {
   readonly envelope: ProviderHostEventEnvelope;
@@ -153,6 +162,7 @@ interface HostSession {
 function sessionOptionsRequireReplacement(
   current: CodexProviderHostSessionOptions,
   requested: CodexProviderHostSessionOptions,
+  preserveUnspecifiedThreadConfig = false,
 ): boolean {
   return (
     current.providerInstanceId !== requested.providerInstanceId ||
@@ -160,8 +170,21 @@ function sessionOptionsRequireReplacement(
     current.runtimeMode !== requested.runtimeMode ||
     current.model !== requested.model ||
     current.serviceTier !== requested.serviceTier ||
-    !NodeUtil.isDeepStrictEqual(current.threadConfig, requested.threadConfig)
+    ((!preserveUnspecifiedThreadConfig || requested.threadConfig !== undefined) &&
+      !NodeUtil.isDeepStrictEqual(current.threadConfig, requested.threadConfig))
   );
+}
+
+function preserveAdoptedThreadConfig(
+  current: CodexProviderHostSessionOptions,
+  requested: CodexProviderHostSessionOptions,
+  adoptionMode: "normal" | "resume-only",
+): CodexProviderHostSessionOptions {
+  return adoptionMode === "resume-only" &&
+    requested.threadConfig === undefined &&
+    current.threadConfig !== undefined
+    ? { ...requested, threadConfig: current.threadConfig }
+    : requested;
 }
 
 function sessionMatchesResumeCursor(
@@ -193,6 +216,7 @@ export interface CodexProviderHostServerOptions {
   readonly maxPendingEnvelopesPerConnection?: number;
   readonly maxPendingEnvelopeBytesPerConnection?: number;
   readonly probeAppServer?: (socketPath: string) => Promise<boolean>;
+  readonly waitForAppServerReady?: (socketPath: string) => Promise<boolean>;
   readonly inspectAppServerProcess?: (
     process: ResourceTelemetryProcessIdentity,
   ) => Promise<ProcessIdentityStatus>;
@@ -333,6 +357,50 @@ async function waitForCodexSocket(socketPath: string): Promise<boolean> {
   return false;
 }
 
+function terminateChild(child: NodeChildProcess.ChildProcess): Promise<void> {
+  return new Promise((resolve) => {
+    let settled = false;
+    let forceTimer: ReturnType<typeof setTimeout> | undefined;
+    const hasExited = () => child.exitCode !== null || child.signalCode !== null;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      if (forceTimer !== undefined) {
+        clearTimeout(forceTimer);
+        forceTimer = undefined;
+      }
+      child.off("exit", finish);
+      resolve();
+    };
+    child.once("exit", finish);
+
+    if (hasExited()) {
+      finish();
+      return;
+    }
+
+    forceTimer = setTimeout(() => {
+      forceTimer = undefined;
+      if (!hasExited()) {
+        try {
+          child.kill("SIGKILL");
+        } catch {
+          // The captured child already exited.
+        }
+      }
+      finish();
+    }, CHILD_TERMINATE_GRACE_MS);
+
+    try {
+      if (!child.kill("SIGTERM") && hasExited()) {
+        finish();
+      }
+    } catch {
+      finish();
+    }
+  });
+}
+
 type ProviderHostExit = { readonly _tag: "app-server-unavailable" } | { readonly _tag: "idle" };
 
 interface AppServerMonitorState {
@@ -462,8 +530,11 @@ export const runCodexProviderHost = Effect.fn("runCodexProviderHost")(function* 
   const sessionCreations = new Map<
     ThreadId,
     {
-      readonly mode: "normal" | "resume-only";
-      readonly deferred: Deferred.Deferred<HostSession, CodexSessionRuntimeError>;
+      readonly deferred: Deferred.Deferred<
+        HostSession,
+        CodexSessionRuntimeError | CodexProviderHostError
+      >;
+      readonly settled: Deferred.Deferred<void>;
     }
   >();
   const sessionStops = new Map<ThreadId, Deferred.Deferred<boolean>>();
@@ -503,13 +574,123 @@ export const runCodexProviderHost = Effect.fn("runCodexProviderHost")(function* 
   const canAdoptSessions = true;
   const startedAt = yield* DateTime.now;
   const hostExit = yield* Deferred.make<ProviderHostExit>();
+  const startupLock = yield* Effect.tryPromise({
+    try: () =>
+      acquireSqliteTransactionLock(config.startupLockPath, {
+        timeoutMs: STARTUP_LOCK_TIMEOUT_MS,
+      }),
+    catch: (cause) =>
+      new CodexProviderHostError({
+        operation: "acquire-startup-lock",
+        cause,
+      }),
+  });
+  let startupLockReleased = false;
+  const releaseStartupLock = Effect.suspend(() => {
+    if (startupLockReleased) return Effect.void;
+    startupLockReleased = true;
+    return Effect.tryPromise({
+      try: startupLock.release,
+      catch: (cause) =>
+        new CodexProviderHostError({
+          operation: "release-startup-lock",
+          cause,
+        }),
+    });
+  });
+  yield* Effect.addFinalizer(() => releaseStartupLock.pipe(Effect.ignore));
+  const startupManifest = Option.getOrUndefined(
+    yield* readProviderHostManifest(config.manifestPath),
+  );
+  const currentManifestGeneration = startupManifest?.generationFingerprint;
+  if (currentManifestGeneration !== config.expectedManifestGenerationFingerprint) {
+    return yield* new CodexProviderHostError({
+      operation: "claim-startup-generation",
+      cause: new Error(
+        "Another provider host published a newer manifest before this startup acquired the detached-host lease.",
+      ),
+    });
+  }
   const spawnCodex = options?.spawnCodex ?? defaultSpawnCodex;
   const probeAppServer = options?.probeAppServer ?? probeCodexAppServerWebSocket;
+  const waitForAppServerReady = options?.waitForAppServerReady ?? waitForCodexSocket;
   const inspectAppServerProcess = options?.inspectAppServerProcess ?? inspectProcessIdentity;
+  let effectiveAppServerMode = config.appServerMode;
+  let adoptedAppServer = config.adoptedAppServer;
+  if (effectiveAppServerMode === "spawn") {
+    const appServerAlreadyAvailable = yield* Effect.tryPromise({
+      try: () => probeAppServer(config.appServerSocketPath),
+      catch: (cause) =>
+        new CodexProviderHostError({
+          operation: "revalidate-app-server-socket",
+          cause,
+        }),
+    });
+    if (appServerAlreadyAvailable) {
+      const manifestAppServer =
+        startupManifest?.schemaVersion === 2 &&
+        startupManifest.codex.appServer.socketPath === config.appServerSocketPath
+          ? {
+              owner: startupManifest.codex.owner,
+              appServer: startupManifest.codex.appServer,
+            }
+          : undefined;
+      if (!manifestAppServer) {
+        return yield* new CodexProviderHostError({
+          operation: "claim-app-server-socket",
+          cause: new Error(
+            "The app-server socket became available under the startup lease without verified process provenance.",
+          ),
+        });
+      }
+      const processStatus = yield* Effect.tryPromise({
+        try: () => inspectAppServerProcess(manifestAppServer.appServer.process),
+        catch: (cause) =>
+          new CodexProviderHostError({
+            operation: "verify-adopted-codex",
+            cause,
+          }),
+      });
+      if (processStatus !== "current") {
+        return yield* new CodexProviderHostError({
+          operation: "verify-adopted-codex",
+          cause: new Error(
+            `Codex process identity became ${processStatus} before provider-host startup.`,
+          ),
+        });
+      }
+      effectiveAppServerMode = "attach";
+      adoptedAppServer = manifestAppServer;
+    }
+  }
+  if (effectiveAppServerMode === "attach") {
+    if (!adoptedAppServer || adoptedAppServer.appServer.socketPath !== config.appServerSocketPath) {
+      return yield* new CodexProviderHostError({
+        operation: "adopt-app-server",
+        cause: new Error("Attach-mode provider host requires matching app-server provenance."),
+      });
+    }
+    const processStatus = yield* Effect.tryPromise({
+      try: () => inspectAppServerProcess(adoptedAppServer.appServer.process),
+      catch: (cause) =>
+        new CodexProviderHostError({
+          operation: "verify-adopted-codex",
+          cause,
+        }),
+    });
+    if (processStatus !== "current") {
+      return yield* new CodexProviderHostError({
+        operation: "verify-adopted-codex",
+        cause: new Error(
+          `Adopted Codex process identity became ${processStatus} before provider-host startup.`,
+        ),
+      });
+    }
+  }
   const codexSpawnObservedAtMs = yield* Clock.currentTimeMillis;
-  const codexChild =
-    config.appServerMode === "spawn"
-      ? yield* Effect.tryPromise({
+  const appServerProvenance = yield* Effect.acquireUseRelease(
+    effectiveAppServerMode === "spawn"
+      ? Effect.tryPromise({
           try: () => spawnCodex(config),
           catch: (cause) =>
             new CodexProviderHostError({
@@ -517,54 +698,113 @@ export const runCodexProviderHost = Effect.fn("runCodexProviderHost")(function* 
               cause,
             }),
         })
-      : undefined;
-  const appServerProvenance = codexChild
-    ? {
-        owner: {
-          generationFingerprint,
-          process: hostProcess,
-        },
-        appServer: {
-          process: yield* Effect.promise(() =>
-            childProcessIdentity(codexChild, codexSpawnObservedAtMs),
-          ),
-          socketPath: config.appServerSocketPath,
-          resolvedBinary: config.codex.binaryPath,
-          version: yield* Effect.promise(() => readCodexVersion(config)),
-          launchConfig: {
-            arguments: [
-              ...codexAppServerArgs(config.codex.launchArgs),
-              "--listen",
-              `unix://${config.appServerSocketPath}`,
-            ],
-            workingDirectory: config.codex.cwd,
-            environmentKeys: Object.keys(inheritedEnvironment()).sort(),
+      : Effect.sync((): NodeChildProcess.ChildProcess | undefined => undefined),
+    (codexChild) =>
+      Effect.gen(function* () {
+        const provenance = codexChild
+          ? {
+              owner: {
+                generationFingerprint,
+                process: hostProcess,
+              },
+              appServer: {
+                process: yield* Effect.promise(() =>
+                  childProcessIdentity(codexChild, codexSpawnObservedAtMs),
+                ),
+                socketPath: config.appServerSocketPath,
+                resolvedBinary: config.codex.binaryPath,
+                version: yield* Effect.promise(() => readCodexVersion(config)),
+                launchConfig: {
+                  arguments: [
+                    ...codexAppServerArgs(config.codex.launchArgs),
+                    "--listen",
+                    `unix://${config.appServerSocketPath}`,
+                  ],
+                  workingDirectory: config.codex.cwd,
+                  environmentKeys: Object.keys(inheritedEnvironment()).sort(),
+                },
+              },
+            }
+          : adoptedAppServer;
+        if (!provenance) {
+          return yield* new CodexProviderHostError({
+            operation: "adopt-app-server",
+            cause: new Error("Attach-mode provider host requires verified app-server provenance."),
+          });
+        }
+        const ready = yield* Effect.tryPromise({
+          try: () => waitForAppServerReady(config.appServerSocketPath),
+          catch: (cause) =>
+            new CodexProviderHostError({
+              operation: "wait-for-codex",
+              cause,
+            }),
+        });
+        if (!ready) {
+          return yield* new CodexProviderHostError({
+            operation: "wait-for-codex",
+            cause: new Error(
+              `Codex app-server did not become ready at ${config.appServerSocketPath}.`,
+            ),
+          });
+        }
+        const appServerProcessStatus = yield* Effect.tryPromise({
+          try: () => inspectAppServerProcess(provenance.appServer.process),
+          catch: (cause) =>
+            new CodexProviderHostError({
+              operation: codexChild ? "verify-spawned-codex" : "verify-adopted-codex",
+              cause,
+            }),
+        });
+        if (appServerProcessStatus !== "current") {
+          return yield* new CodexProviderHostError({
+            operation: codexChild ? "verify-spawned-codex" : "verify-adopted-codex",
+            cause: new Error(
+              `${codexChild ? "Spawned" : "Adopted"} Codex process identity became ${appServerProcessStatus} before manifest publication.`,
+            ),
+          });
+        }
+        if (codexChild) {
+          const socketStillAvailable = yield* Effect.tryPromise({
+            try: () => probeAppServer(config.appServerSocketPath),
+            catch: (cause) =>
+              new CodexProviderHostError({
+                operation: "verify-spawned-codex-socket",
+                cause,
+              }),
+          });
+          if (!socketStillAvailable) {
+            return yield* new CodexProviderHostError({
+              operation: "verify-spawned-codex-socket",
+              cause: new Error(
+                `Spawned Codex app-server socket disappeared before manifest publication.`,
+              ),
+            });
+          }
+        }
+        yield* persistProviderHostManifest({
+          path: config.manifestPath,
+          manifest: {
+            schemaVersion: PROVIDER_HOST_MANIFEST_SCHEMA_VERSION,
+            protocolVersion: PROVIDER_HOST_PROTOCOL_VERSION,
+            buildFingerprint,
+            generationFingerprint,
+            hostProcess,
+            controlSocketPath: config.controlSocketPath,
+            codex: {
+              appServerMode: effectiveAppServerMode,
+              ...provenance,
+            },
+            startedAt,
           },
-        },
-      }
-    : config.adoptedAppServer;
-  if (!appServerProvenance) {
-    return yield* new CodexProviderHostError({
-      operation: "adopt-app-server",
-      cause: new Error("Attach-mode provider host requires verified app-server provenance."),
-    });
-  }
-  yield* persistProviderHostManifest({
-    path: config.manifestPath,
-    manifest: {
-      schemaVersion: PROVIDER_HOST_MANIFEST_SCHEMA_VERSION,
-      protocolVersion: PROVIDER_HOST_PROTOCOL_VERSION,
-      buildFingerprint,
-      generationFingerprint,
-      hostProcess,
-      controlSocketPath: config.controlSocketPath,
-      codex: {
-        appServerMode: config.appServerMode,
-        ...appServerProvenance,
-      },
-      startedAt,
-    },
-  });
+        });
+        return provenance;
+      }),
+    (codexChild, exit) =>
+      codexChild && Exit.isFailure(exit)
+        ? Effect.promise(() => terminateChild(codexChild))
+        : Effect.void,
+  );
   let idleTimer: ReturnType<typeof setTimeout> | undefined;
   let idleShutdownStarted = false;
   const hasAttachedClients = () =>
@@ -599,13 +839,6 @@ export const runCodexProviderHost = Effect.fn("runCodexProviderHost")(function* 
       cancelIdleShutdown();
     }),
   );
-  const ready = yield* Effect.promise(() => waitForCodexSocket(config.appServerSocketPath));
-  if (!ready) {
-    return yield* new CodexProviderHostError({
-      operation: "wait-for-codex",
-      cause: new Error(`Codex app-server did not become ready at ${config.appServerSocketPath}.`),
-    });
-  }
   yield* Effect.gen(function* () {
     let monitorState: AppServerMonitorState = {
       delayMs: APP_SERVER_MONITOR_INITIAL_DELAY_MS,
@@ -726,41 +959,60 @@ export const runCodexProviderHost = Effect.fn("runCodexProviderHost")(function* 
         const existing = sessions.get(requestedSessionOptions.threadId);
         if (existing) {
           const snapshot = yield* existing.runtime.getSession;
+          const effectiveRequestedSessionOptions = preserveAdoptedThreadConfig(
+            existing.options,
+            requestedSessionOptions,
+            adoptionMode,
+          );
           if (
             snapshot.status !== "error" &&
             snapshot.status !== "closed" &&
             (adoptionMode !== "resume-only" ||
-              sessionMatchesResumeCursor(snapshot, requestedSessionOptions)) &&
-            !sessionOptionsRequireReplacement(existing.options, requestedSessionOptions)
+              sessionMatchesResumeCursor(snapshot, effectiveRequestedSessionOptions)) &&
+            !sessionOptionsRequireReplacement(
+              existing.options,
+              effectiveRequestedSessionOptions,
+              adoptionMode === "resume-only",
+            )
           ) {
             return { _tag: "existing" as const, session: existing };
           }
-          const deferred = yield* Deferred.make<HostSession, CodexSessionRuntimeError>();
+          const deferred = yield* Deferred.make<
+            HostSession,
+            CodexSessionRuntimeError | CodexProviderHostError
+          >();
+          const settled = yield* Deferred.make<void>();
           sessionCreations.set(requestedSessionOptions.threadId, {
-            mode: adoptionMode,
             deferred,
+            settled,
           });
           return {
             _tag: "create" as const,
             deferred,
+            settled,
             previous: existing,
             sessionOptions: {
-              ...requestedSessionOptions,
-              ...(requestedSessionOptions.resumeCursor === undefined &&
+              ...effectiveRequestedSessionOptions,
+              ...(effectiveRequestedSessionOptions.resumeCursor === undefined &&
               isCodexResumeCursor(snapshot.resumeCursor)
                 ? { resumeCursor: snapshot.resumeCursor }
                 : {}),
             } satisfies CodexProviderHostSessionOptions,
           };
         }
-        const deferred = yield* Deferred.make<HostSession, CodexSessionRuntimeError>();
+        const deferred = yield* Deferred.make<
+          HostSession,
+          CodexSessionRuntimeError | CodexProviderHostError
+        >();
+        const settled = yield* Deferred.make<void>();
         sessionCreations.set(requestedSessionOptions.threadId, {
-          mode: adoptionMode,
           deferred,
+          settled,
         });
         return {
           _tag: "create" as const,
           deferred,
+          settled,
           previous: undefined,
           sessionOptions: requestedSessionOptions,
         };
@@ -768,15 +1020,32 @@ export const runCodexProviderHost = Effect.fn("runCodexProviderHost")(function* 
     );
     if (admission._tag === "existing") return admission.session;
     if (admission._tag === "pending") {
-      const session = yield* Deferred.await(admission.deferred);
-      if (adoptionMode === "resume-only" && admission.mode !== "resume-only") {
-        const snapshot = yield* session.runtime.getSession;
-        if (sessionMatchesResumeCursor(snapshot, requestedSessionOptions)) {
-          return session;
-        }
+      const pendingExit = yield* Deferred.await(admission.deferred).pipe(Effect.exit);
+      yield* Deferred.await(admission.settled);
+      if (Exit.isFailure(pendingExit)) {
         return yield* createSession(requestedSessionOptions, adoptionMode);
       }
-      return session;
+      const session = pendingExit.value;
+      const snapshot = yield* session.runtime.getSession;
+      const effectiveRequestedSessionOptions = preserveAdoptedThreadConfig(
+        session.options,
+        requestedSessionOptions,
+        adoptionMode,
+      );
+      if (
+        snapshot.status !== "error" &&
+        snapshot.status !== "closed" &&
+        (adoptionMode !== "resume-only" ||
+          sessionMatchesResumeCursor(snapshot, effectiveRequestedSessionOptions)) &&
+        !sessionOptionsRequireReplacement(
+          session.options,
+          effectiveRequestedSessionOptions,
+          adoptionMode === "resume-only",
+        )
+      ) {
+        return session;
+      }
+      return yield* createSession(effectiveRequestedSessionOptions, adoptionMode);
     }
     if (admission._tag === "stopping") {
       const stopped = yield* Deferred.await(admission.deferred);
@@ -877,10 +1146,31 @@ export const runCodexProviderHost = Effect.fn("runCodexProviderHost")(function* 
       sessions.set(sessionOptions.threadId, hostSession);
       yield* runtime.start();
       yield* waitForPublishedEvents(yield* runtime.emittedEventCount);
+      if (admission.previous && hostSession.attachments.size > 0) {
+        yield* eventLock.withPermit(
+          Effect.gen(function* () {
+            if (sessions.get(sessionOptions.threadId) !== hostSession) return;
+            const snapshot = yield* hostSession.runtime.getSession;
+            for (const connection of hostSession.attachments) {
+              if (connection.closed || connection.socket.destroyed) continue;
+              writeEnvelope(connection, inventoryEnvelope(sessionOptions.threadId));
+              writeEnvelope(
+                connection,
+                ProviderHostSnapshotEnvelope.make({
+                  version: PROVIDER_HOST_PROTOCOL_VERSION,
+                  type: "snapshot",
+                  threadId: sessionOptions.threadId,
+                  cursor: latestCursor,
+                  state: snapshot,
+                }),
+              );
+            }
+          }),
+        );
+      }
       yield* Deferred.succeed(admission.deferred, hostSession);
       return hostSession;
     }).pipe(
-      Effect.tapError((cause) => Deferred.fail(admission.deferred, cause)),
       Effect.onError(() =>
         Effect.gen(function* () {
           if (provisionalSession && sessions.get(sessionOptions.threadId) === provisionalSession) {
@@ -895,11 +1185,17 @@ export const runCodexProviderHost = Effect.fn("runCodexProviderHost")(function* 
           }
         }),
       ),
+      Effect.onExit((outcome) =>
+        Exit.isFailure(outcome)
+          ? Deferred.failCause(admission.deferred, outcome.cause)
+          : Effect.void,
+      ),
       Effect.ensuring(
-        Effect.sync(() => {
+        Effect.gen(function* () {
           if (sessionCreations.get(sessionOptions.threadId)?.deferred === admission.deferred) {
             sessionCreations.delete(sessionOptions.threadId);
           }
+          yield* Deferred.succeed(admission.settled, undefined);
           scheduleIdleShutdown();
         }),
       ),
@@ -916,7 +1212,11 @@ export const runCodexProviderHost = Effect.fn("runCodexProviderHost")(function* 
               Effect.sync(() => {
                 const pendingCreation = sessionCreations.get(threadId);
                 if (pendingCreation) {
-                  return { _tag: "creating" as const, deferred: pendingCreation.deferred };
+                  return {
+                    _tag: "creating" as const,
+                    deferred: pendingCreation.deferred,
+                    settled: pendingCreation.settled,
+                  };
                 }
                 const pendingStop = sessionStops.get(threadId);
                 if (pendingStop) {
@@ -933,7 +1233,8 @@ export const runCodexProviderHost = Effect.fn("runCodexProviderHost")(function* 
           );
 
           if (admission._tag === "creating") {
-            yield* restore(Deferred.await(admission.deferred));
+            yield* restore(Deferred.await(admission.deferred).pipe(Effect.exit));
+            yield* restore(Deferred.await(admission.settled));
             return yield* restore(Effect.suspend(() => stopSession(threadId)));
           }
           if (admission._tag === "stopping") {
@@ -981,6 +1282,21 @@ export const runCodexProviderHost = Effect.fn("runCodexProviderHost")(function* 
     return yield* commandResults.execute(
       command.commandId,
       Effect.gen(function* () {
+        const operation = command.operation;
+        const now = yield* Clock.currentTimeMillis;
+        const deadlineAtMs = command.deadlineAtMs ?? now + commandTimeoutMs;
+        const remainingMs = Number(deadlineAtMs) - now;
+        if (remainingMs <= 0) {
+          return ProviderHostCommandResultEnvelope.make({
+            version: PROVIDER_HOST_PROTOCOL_VERSION,
+            type: "commandResult",
+            commandId: command.commandId,
+            threadId: command.threadId,
+            ok: false,
+            error: `Provider-host command '${operation}' exceeded its deadline.`,
+            errorCode: "deadline-exceeded",
+          });
+        }
         const attachment = connection.attachments.get(command.attachmentId);
         if (attachment?.threadId !== command.threadId || attachment.clientId !== command.clientId) {
           return ProviderHostCommandResultEnvelope.make({
@@ -992,7 +1308,6 @@ export const runCodexProviderHost = Effect.fn("runCodexProviderHost")(function* 
             error: "Provider-host command requires an active matching attachment.",
           });
         }
-        const operation = command.operation;
         const session = sessions.get(command.threadId);
         if (
           operation !== CODEX_PROVIDER_HOST_OPERATIONS.stopSession &&
@@ -1098,9 +1413,6 @@ export const runCodexProviderHost = Effect.fn("runCodexProviderHost")(function* 
           })();
           return value;
         });
-        const deadlineAtMs =
-          command.deadlineAtMs ?? (yield* Clock.currentTimeMillis) + commandTimeoutMs;
-        const remainingMs = Math.max(0, Number(deadlineAtMs) - (yield* Clock.currentTimeMillis));
         const outcomeOption = yield* Effect.exit(
           operation === CODEX_PROVIDER_HOST_OPERATIONS.interruptTurn ||
             operation === CODEX_PROVIDER_HOST_OPERATIONS.stopSession
@@ -1302,8 +1614,23 @@ export const runCodexProviderHost = Effect.fn("runCodexProviderHost")(function* 
             }),
           );
         }).pipe(
-          Effect.onError(() =>
+          Effect.onError((cause) =>
             Effect.sync(() => {
+              const attachmentError = Cause.squash(cause);
+              if (isCodexSessionRuntimeThreadIdMissingError(attachmentError)) {
+                writeEnvelope(
+                  connection,
+                  ProviderHostAttachErrorEnvelope.make({
+                    version: PROVIDER_HOST_PROTOCOL_VERSION,
+                    type: "attachError",
+                    threadId: envelope.threadId,
+                    errorCode: "thread-id-missing",
+                    error: attachmentError.message,
+                  }),
+                );
+                connection.socket.end();
+                return;
+              }
               connection.socket.destroy(new Error("Provider-host attachment failed."));
             }),
           ),
@@ -1501,6 +1828,7 @@ export const runCodexProviderHost = Effect.fn("runCodexProviderHost")(function* 
         cause,
       }),
   });
+  yield* releaseStartupLock;
 
   yield* Effect.logInfo("codex.provider-host.ready", {
     providerInstanceId: config.providerInstanceId,

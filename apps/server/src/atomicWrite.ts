@@ -25,8 +25,5 @@ export const writeFileStringAtomically = (input: {
         yield* fs.chmod(tempPath, input.mode);
       }
       yield* fs.rename(tempPath, input.filePath);
-      if (input.mode !== undefined) {
-        yield* fs.chmod(input.filePath, input.mode);
-      }
     }),
   );

@@ -72,6 +72,19 @@ function hasDetachedReattachPending(binding: ProviderRuntimeBindingWithMetadata)
   );
 }
 
+function hasHonestDetachedReattachPending(binding: ProviderRuntimeBindingWithMetadata): boolean {
+  const runtimePayload = binding.runtimePayload;
+  return (
+    hasDetachedReattachPending(binding) &&
+    binding.status === "error" &&
+    runtimePayload !== null &&
+    typeof runtimePayload === "object" &&
+    !Array.isArray(runtimePayload) &&
+    "activeTurnId" in runtimePayload &&
+    runtimePayload.activeTurnId === null
+  );
+}
+
 function readPersistedSessionPersistence(
   binding: ProviderRuntimeBindingWithMetadata,
 ): ProviderSessionPersistence | undefined {
@@ -91,7 +104,7 @@ function readPersistedSessionPersistence(
 }
 
 function startupStatusCommandId(
-  transition: "startup-detached-missing" | "startup-reattach-pending",
+  transition: "startup-detached-missing" | "startup-reattach-retrying",
   binding: ProviderRuntimeBindingWithMetadata,
 ): CommandId {
   return CommandId.make(
@@ -270,8 +283,7 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
               });
               return { reconciled: true, interrupted, reattached: false };
             }
-            const alreadyPending = hasDetachedReattachPending(binding);
-            if (alreadyPending) {
+            if (hasHonestDetachedReattachPending(binding)) {
               yield* Effect.logDebug("provider.session.reaper.startup-reattach-still-pending", {
                 threadId: binding.threadId,
                 provider: binding.provider,
@@ -287,15 +299,15 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
             });
             yield* orchestrationEngine.dispatch({
               type: "thread.session.set",
-              commandId: startupStatusCommandId("startup-reattach-pending", binding),
+              commandId: startupStatusCommandId("startup-reattach-retrying", binding),
               threadId: binding.threadId,
               session: {
                 threadId: binding.threadId,
-                status: "starting",
+                status: "error",
                 providerName: session?.providerName ?? binding.provider,
                 providerInstanceId: binding.providerInstanceId,
                 runtimeMode: session?.runtimeMode ?? binding.runtimeMode ?? "full-access",
-                activeTurnId: session?.activeTurnId ?? null,
+                activeTurnId: null,
                 lastError: DETACHED_RUNTIME_RECONNECTING_MESSAGE,
                 retrying: true,
                 updatedAt: reconciledAt,
@@ -306,9 +318,9 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
               threadId: binding.threadId,
               provider: binding.provider,
               providerInstanceId: binding.providerInstanceId,
-              status: "starting",
+              status: "error",
               runtimePayload: {
-                activeTurnId: session?.activeTurnId ?? null,
+                activeTurnId: null,
                 lastRuntimeEvent: "provider.session.detached-reattach-pending",
                 lastRuntimeEventAt: reconciledAt,
                 sessionPersistence: "detached",

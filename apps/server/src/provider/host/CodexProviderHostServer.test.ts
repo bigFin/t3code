@@ -27,8 +27,10 @@ import * as NodeNet from "node:net";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as Cause from "effect/Cause";
+import * as Clock from "effect/Clock";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
@@ -36,6 +38,7 @@ import * as TestClock from "effect/testing/TestClock";
 import { describe } from "vite-plus/test";
 
 import {
+  CodexSessionRuntimeThreadIdMissingError,
   type CodexSessionRuntimeOptions,
   type CodexSessionRuntimeSendTurnInput,
   type CodexSessionRuntimeShape,
@@ -53,6 +56,7 @@ import {
   PROVIDER_HOST_PROTOCOL_VERSION,
   ProviderHostAttachmentId,
   ProviderHostClientId,
+  ProviderHostCommandDeadlineMs,
   ProviderHostGenerationFingerprint,
   ProviderHostReplayCursor,
   type ProviderHostAttachEnvelope,
@@ -332,7 +336,9 @@ interface HostTestContext {
   readonly runtimes: ReadonlyArray<FakeCodexRuntime>;
   readonly runtimeCreationCount: () => number;
   readonly spawnCodexCount: () => number;
+  readonly codexTerminationCount: () => number;
   readonly waitForRuntimeCreation: () => Promise<void>;
+  readonly waitForProviderHostExit: () => Promise<void>;
   readonly blockRuntimeCreation: () => () => void;
   readonly emitOnRuntimeStart: (event: ProviderEvent) => void;
   readonly failNextRuntimeStart: (cause: Error) => void;
@@ -342,6 +348,13 @@ interface HostTestContext {
 
 const decodeConfig = Schema.decodeUnknownSync(CodexProviderHostConfig);
 const decodeJson = Schema.decodeUnknownSync(Schema.Json);
+const decodeManifestControlSocket = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(
+    Schema.Struct({
+      controlSocketPath: Schema.String,
+    }),
+  ),
+);
 
 function makeAttach(
   context: HostTestContext,
@@ -408,6 +421,7 @@ function makeCommand(
     readonly commandId: string;
     readonly operation: string;
     readonly payload?: Schema.Json;
+    readonly deadlineAtMs?: number;
   },
 ): ProviderHostClientEnvelope {
   return {
@@ -419,6 +433,9 @@ function makeCommand(
     threadId: context.threadId,
     operation: input.operation,
     payload: input.payload ?? {},
+    ...(input.deadlineAtMs !== undefined
+      ? { deadlineAtMs: ProviderHostCommandDeadlineMs.make(input.deadlineAtMs) }
+      : {}),
   };
 }
 
@@ -471,18 +488,72 @@ type HostTestOptions = Pick<
   | "priorityCommandFiberReserve"
   | "inspectAppServerProcess"
   | "probeAppServer"
+  | "waitForAppServerReady"
 > & {
   readonly appServerMode?: CodexProviderHostConfig["appServerMode"];
+  readonly expectedManifestGenerationFingerprint?: ProviderHostGenerationFingerprint;
+  readonly failAppServerProvenance?: boolean;
+  readonly failManifestPersistence?: boolean;
+  readonly initialManifestGenerationFingerprint?: ProviderHostGenerationFingerprint;
+  readonly appServerAvailableBeforeSpawn?: boolean;
 };
 
 function withHostEffect<R>(
   run: (context: HostTestContext) => Effect.Effect<void, never, R>,
   hostOptions?: HostTestOptions,
 ): Effect.Effect<void, never, R> {
+  const {
+    appServerMode = "spawn",
+    expectedManifestGenerationFingerprint,
+    failAppServerProvenance = false,
+    failManifestPersistence = false,
+    initialManifestGenerationFingerprint,
+    appServerAvailableBeforeSpawn = false,
+    probeAppServer: monitorProbeAppServer,
+    ...providerHostOptions
+  } = hostOptions ?? {};
   const root = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-provider-host-server-"));
   const controlSocketPath = NodePath.join(root, "control.sock");
   const appServerSocketPath = NodePath.join(root, "app-server.sock");
-  const manifestPath = NodePath.join(root, "manifest.json");
+  const manifestParentPath = failManifestPersistence
+    ? NodePath.join(root, "manifest-parent-blocker")
+    : root;
+  if (failManifestPersistence) {
+    NodeFS.mkdirSync(manifestParentPath);
+  }
+  const manifestPath = NodePath.join(manifestParentPath, "manifest.json");
+  if (initialManifestGenerationFingerprint) {
+    NodeFS.writeFileSync(
+      manifestPath,
+      `${JSON.stringify({
+        schemaVersion: 2,
+        protocolVersion: PROVIDER_HOST_PROTOCOL_VERSION,
+        buildFingerprint: "build-existing",
+        generationFingerprint: initialManifestGenerationFingerprint,
+        hostProcess: { pid: process.pid, startTimeMs: 0 },
+        controlSocketPath: NodePath.join(root, "existing-control.sock"),
+        codex: {
+          appServerMode: "attach",
+          owner: {
+            generationFingerprint: initialManifestGenerationFingerprint,
+            process: { pid: process.pid, startTimeMs: 0 },
+          },
+          appServer: {
+            process: { pid: process.pid, startTimeMs: 0 },
+            socketPath: appServerSocketPath,
+            resolvedBinary: process.execPath,
+            version: "codex-test",
+            launchConfig: {
+              arguments: [],
+              workingDirectory: root,
+              environmentKeys: [],
+            },
+          },
+        },
+        startedAt: "2026-08-01T00:00:00.000Z",
+      })}\n`,
+    );
+  }
   const appServer = NodeHttp.createServer();
   const webSocketServer = new NodeSocket.NodeWS.WebSocketServer({
     perMessageDeflate: false,
@@ -514,24 +585,46 @@ function withHostEffect<R>(
       return runtime;
     });
   });
+  let codexTerminationCalls = 0;
   const codexChildEmitter = new NodeEvents.EventEmitter();
   const codexChild = Object.assign(codexChildEmitter, {
-    pid: 42_424,
     exitCode: null as number | null,
     signalCode: null as NodeJS.Signals | null,
     kill(signal: NodeJS.Signals = "SIGTERM") {
+      codexTerminationCalls += 1;
       if (this.exitCode !== null || this.signalCode !== null) return false;
       this.signalCode = signal;
       queueMicrotask(() => codexChildEmitter.emit("exit", null, signal));
       return true;
     },
   }) as NodeChildProcess.ChildProcess;
+  Object.defineProperty(codexChild, "pid", {
+    configurable: true,
+    enumerable: true,
+    get: failAppServerProvenance
+      ? () => {
+          throw new Error("app-server provenance unavailable");
+        }
+      : () => 42_424,
+  });
   let spawnCodexCalls = 0;
   const spawnCodex: NonNullable<CodexProviderHostServerOptions["spawnCodex"]> = () => {
     spawnCodexCalls += 1;
     return Promise.resolve(codexChild);
   };
-  const { appServerMode = "spawn", ...providerHostOptions } = hostOptions ?? {};
+  let startupProbeCalls = 0;
+  const probeAppServer = (socketPath: string) => {
+    if (appServerMode === "spawn") {
+      startupProbeCalls += 1;
+      if (startupProbeCalls === 1) {
+        return Promise.resolve(appServerAvailableBeforeSpawn);
+      }
+      if (!appServerAvailableBeforeSpawn && startupProbeCalls === 2) {
+        return Promise.resolve(true);
+      }
+    }
+    return monitorProbeAppServer?.(socketPath) ?? Promise.resolve(true);
+  };
   const config = decodeConfig({
     version: CODEX_PROVIDER_HOST_CONFIG_VERSION,
     providerInstanceId,
@@ -539,6 +632,8 @@ function withHostEffect<R>(
     configurationFingerprint: "configuration-test",
     controlSocketPath,
     appServerSocketPath,
+    startupLockPath: NodePath.join(root, "startup.sqlite"),
+    ...(expectedManifestGenerationFingerprint ? { expectedManifestGenerationFingerprint } : {}),
     appServerMode,
     ...(appServerMode === "attach"
       ? {
@@ -572,12 +667,31 @@ function withHostEffect<R>(
   return Effect.scoped(
     Effect.gen(function* () {
       yield* Effect.promise(() => listen(appServer, appServerSocketPath));
+      let resolveProviderHostExit: () => void = () => undefined;
+      const providerHostExit = new Promise<void>((resolve) => {
+        resolveProviderHostExit = resolve;
+      });
       yield* runCodexProviderHost(config, {
         makeRuntime,
         spawnCodex,
         inspectAppServerProcess: () => Promise.resolve("current"),
+        probeAppServer,
         ...providerHostOptions,
-      }).pipe(Effect.forkScoped);
+        ...(failManifestPersistence
+          ? {
+              waitForAppServerReady: async (socketPath: string) => {
+                const ready =
+                  providerHostOptions.waitForAppServerReady === undefined
+                    ? true
+                    : await providerHostOptions.waitForAppServerReady(socketPath);
+                if (!ready) return false;
+                NodeFS.rmSync(manifestParentPath, { recursive: true, force: true });
+                NodeFS.writeFileSync(manifestParentPath, "not a directory");
+                return true;
+              },
+            }
+          : {}),
+      }).pipe(Effect.ensuring(Effect.sync(resolveProviderHostExit)), Effect.forkScoped);
       const context: HostTestContext = {
         root,
         controlSocketPath,
@@ -588,7 +702,9 @@ function withHostEffect<R>(
         runtimes,
         runtimeCreationCount: () => makeRuntime.mock.calls.length,
         spawnCodexCount: () => spawnCodexCalls,
+        codexTerminationCount: () => codexTerminationCalls,
         waitForRuntimeCreation: () => runtimeCreationStarted,
+        waitForProviderHostExit: () => providerHostExit,
         blockRuntimeCreation: () => {
           let releaseGate: () => void = () => undefined;
           runtimeCreationGate = new Promise<void>((resolve) => {
@@ -736,6 +852,8 @@ describe("CodexProviderHostServer", () => {
         }
         NodeAssert.equal(NodeFS.existsSync(context.controlSocketPath), false);
         NodeAssert.equal(NodeFS.existsSync(context.appServerSocketPath), true);
+        NodeAssert.equal(NodeFS.existsSync(context.manifestPath), true);
+        NodeAssert.equal(context.codexTerminationCount(), 0);
         NodeAssert.equal(context.runtimes[0]?.detachImpl.mock.calls.length, 1);
         NodeAssert.equal(context.runtimes[0]?.closeImpl.mock.calls.length, 0);
       },
@@ -773,8 +891,248 @@ describe("CodexProviderHostServer", () => {
         NodeAssert.equal(NodeFS.existsSync(context.controlSocketPath), false);
         NodeAssert.equal(NodeFS.existsSync(context.appServerSocketPath), true);
         NodeAssert.equal(context.spawnCodexCount(), 0);
+        NodeAssert.equal(context.codexTerminationCount(), 0);
       },
       { appServerMode: "attach", idleTimeoutMs: 100 },
+    ),
+  );
+
+  it.effect.each(["stale", "unknown"] as const)(
+    "refuses to publish an adopted app-server whose process identity is %s",
+    (processStatus) =>
+      withHost(
+        async (context) => {
+          await context.waitForProviderHostExit();
+
+          NodeAssert.equal(context.spawnCodexCount(), 0);
+          NodeAssert.equal(context.codexTerminationCount(), 0);
+          NodeAssert.equal(NodeFS.existsSync(context.manifestPath), false);
+        },
+        {
+          appServerMode: "attach",
+          inspectAppServerProcess: () => Promise.resolve(processStatus),
+        },
+      ),
+  );
+
+  it.effect("adopts a verified app-server that becomes ready under the startup lease", () =>
+    withHost(
+      async (context) => {
+        const client = await context.connect();
+        await client.take((envelope) => envelope.type === "hello");
+        await client.close();
+
+        const manifest = JSON.parse(NodeFS.readFileSync(context.manifestPath, "utf8")) as {
+          readonly codex: {
+            readonly appServerMode: string;
+          };
+        };
+        NodeAssert.equal(context.spawnCodexCount(), 0);
+        NodeAssert.equal(context.codexTerminationCount(), 0);
+        NodeAssert.equal(manifest.codex.appServerMode, "attach");
+      },
+      {
+        appServerMode: "spawn",
+        appServerAvailableBeforeSpawn: true,
+        expectedManifestGenerationFingerprint:
+          ProviderHostGenerationFingerprint.make("generation-existing"),
+        initialManifestGenerationFingerprint:
+          ProviderHostGenerationFingerprint.make("generation-existing"),
+        idleTimeoutMs: 100,
+      },
+    ),
+  );
+
+  it.effect("terminates a newly spawned app-server when provenance capture fails", () =>
+    withHost(
+      async (context) => {
+        await context.waitForProviderHostExit();
+
+        NodeAssert.equal(context.spawnCodexCount(), 1);
+        NodeAssert.equal(context.codexTerminationCount(), 1);
+        NodeAssert.equal(NodeFS.existsSync(context.manifestPath), false);
+      },
+      { failAppServerProvenance: true },
+    ),
+  );
+
+  it.effect("terminates a newly spawned app-server when readiness fails", () =>
+    withHost(
+      async (context) => {
+        await context.waitForProviderHostExit();
+
+        NodeAssert.equal(context.spawnCodexCount(), 1);
+        NodeAssert.equal(context.codexTerminationCount(), 1);
+        NodeAssert.equal(NodeFS.existsSync(context.manifestPath), false);
+      },
+      { waitForAppServerReady: () => Promise.resolve(false) },
+    ),
+  );
+
+  it.effect("terminates a ready spawned app-server when manifest persistence fails", () =>
+    withHost(
+      async (context) => {
+        await context.waitForProviderHostExit();
+
+        NodeAssert.equal(context.spawnCodexCount(), 1);
+        NodeAssert.equal(context.codexTerminationCount(), 1);
+        NodeAssert.equal(NodeFS.existsSync(context.manifestPath), false);
+      },
+      { failManifestPersistence: true },
+    ),
+  );
+
+  it.effect("exits before spawning when another generation already won startup", () =>
+    withHost(
+      async (context) => {
+        await context.waitForProviderHostExit();
+
+        NodeAssert.equal(context.spawnCodexCount(), 0);
+        NodeAssert.equal(context.codexTerminationCount(), 0);
+        const manifest = JSON.parse(NodeFS.readFileSync(context.manifestPath, "utf8")) as {
+          readonly generationFingerprint: string;
+        };
+        NodeAssert.equal(manifest.generationFingerprint, "generation-newer");
+      },
+      {
+        expectedManifestGenerationFingerprint:
+          ProviderHostGenerationFingerprint.make("generation-expected"),
+        initialManifestGenerationFingerprint:
+          ProviderHostGenerationFingerprint.make("generation-newer"),
+      },
+    ),
+  );
+
+  it.effect.each(["stale", "unknown"] as const)(
+    "terminates a spawned app-server whose process identity becomes %s before publication",
+    (processStatus) =>
+      withHost(
+        async (context) => {
+          await context.waitForProviderHostExit();
+
+          NodeAssert.equal(context.spawnCodexCount(), 1);
+          NodeAssert.equal(context.codexTerminationCount(), 1);
+          NodeAssert.equal(NodeFS.existsSync(context.manifestPath), false);
+        },
+        { inspectAppServerProcess: () => Promise.resolve(processStatus) },
+      ),
+  );
+
+  it.effect("serializes competing detached-host startups until one generation publishes", () => {
+    const root = NodeFS.mkdtempSync(
+      NodePath.join(NodeOS.tmpdir(), "t3-provider-host-startup-race-"),
+    );
+    const appServerSocketPath = NodePath.join(root, "app-server.sock");
+    const manifestPath = NodePath.join(root, "manifest.json");
+    const startupLockPath = NodePath.join(root, "startup.sqlite");
+    const firstControlSocketPath = NodePath.join(root, "control-first.sock");
+    const secondControlSocketPath = NodePath.join(root, "control-second.sock");
+    const appServer = NodeHttp.createServer();
+    const webSocketServer = new NodeSocket.NodeWS.WebSocketServer({
+      perMessageDeflate: false,
+      server: appServer,
+    });
+    const providerInstanceId = ProviderInstanceId.make("codex");
+    let spawnCodexCalls = 0;
+    let resolveFirstSpawned: () => void = () => undefined;
+    const firstSpawned = new Promise<void>((resolve) => {
+      resolveFirstSpawned = resolve;
+    });
+    let releaseFirstReadiness: () => void = () => undefined;
+    const firstReadiness = new Promise<void>((resolve) => {
+      releaseFirstReadiness = resolve;
+    });
+    const makeConfig = (controlSocketPath: string) =>
+      decodeConfig({
+        version: CODEX_PROVIDER_HOST_CONFIG_VERSION,
+        providerInstanceId,
+        buildFingerprint: "build-startup-race",
+        configurationFingerprint: "configuration-startup-race",
+        controlSocketPath,
+        appServerSocketPath,
+        startupLockPath,
+        appServerMode: "spawn",
+        manifestPath,
+        codex: {
+          binaryPath: process.execPath,
+          cwd: root,
+        },
+      });
+    const spawnCodex = () => {
+      spawnCodexCalls += 1;
+      resolveFirstSpawned();
+      const emitter = new NodeEvents.EventEmitter();
+      return Promise.resolve(
+        Object.assign(emitter, {
+          pid: 42_424 + spawnCodexCalls,
+          exitCode: null,
+          signalCode: null,
+          kill: () => true,
+        }) as NodeChildProcess.ChildProcess,
+      );
+    };
+    let firstProbeCount = 0;
+
+    return Effect.scoped(
+      Effect.gen(function* () {
+        yield* Effect.promise(() => listen(appServer, appServerSocketPath));
+        const firstFiber = yield* runCodexProviderHost(makeConfig(firstControlSocketPath), {
+          spawnCodex,
+          probeAppServer: () => Promise.resolve((firstProbeCount += 1) > 1),
+          waitForAppServerReady: () => firstReadiness.then(() => true),
+          inspectAppServerProcess: () => Promise.resolve("current"),
+          idleTimeoutMs: 5_000,
+        }).pipe(Effect.forkScoped);
+        yield* Effect.promise(() => firstSpawned);
+
+        const secondFiber = yield* runCodexProviderHost(makeConfig(secondControlSocketPath), {
+          spawnCodex,
+          waitForAppServerReady: () => Promise.resolve(true),
+          inspectAppServerProcess: () => Promise.resolve("current"),
+          idleTimeoutMs: 5_000,
+        }).pipe(Effect.forkScoped);
+        yield* Effect.yieldNow;
+        releaseFirstReadiness();
+
+        const secondExit = yield* Fiber.await(secondFiber);
+        NodeAssert.equal(secondExit._tag, "Failure");
+        const deadline = (yield* Clock.currentTimeMillis) + 1_000;
+        while (!NodeFS.existsSync(manifestPath) || !NodeFS.existsSync(firstControlSocketPath)) {
+          if ((yield* Clock.currentTimeMillis) >= deadline) break;
+          yield* Effect.promise(nextImmediate);
+        }
+        const manifest = yield* decodeManifestControlSocket(
+          NodeFS.readFileSync(manifestPath, "utf8"),
+        );
+        NodeAssert.equal(spawnCodexCalls, 1);
+        NodeAssert.equal(manifest.controlSocketPath, firstControlSocketPath);
+        NodeAssert.equal(NodeFS.existsSync(secondControlSocketPath), false);
+        yield* Fiber.interrupt(firstFiber);
+      }),
+    ).pipe(
+      Effect.ensuring(
+        Effect.promise(async () => {
+          await closeAppServer(appServer, webSocketServer);
+          NodeFS.rmSync(root, { recursive: true, force: true });
+        }),
+      ),
+      Effect.provide(NodeServices.layer),
+    );
+  });
+
+  it.effect("never signals an adopted app-server when readiness fails", () =>
+    withHost(
+      async (context) => {
+        await context.waitForProviderHostExit();
+
+        NodeAssert.equal(context.spawnCodexCount(), 0);
+        NodeAssert.equal(context.codexTerminationCount(), 0);
+        NodeAssert.equal(NodeFS.existsSync(context.appServerSocketPath), true);
+      },
+      {
+        appServerMode: "attach",
+        waitForAppServerReady: () => Promise.resolve(false),
+      },
     ),
   );
 
@@ -899,6 +1257,29 @@ describe("CodexProviderHostServer", () => {
     }),
   );
 
+  it.effect("reports a typed attach error when resume-only adoption cannot find the thread", () =>
+    withHost(async (context) => {
+      context.failNextRuntimeStart(
+        new CodexSessionRuntimeThreadIdMissingError({
+          threadId: context.threadId,
+        }),
+      );
+      const adopter = await context.connect();
+      adopter.send({
+        ...makeAttach(context, "client-adopt-missing", "attachment-adopt-missing", undefined, {
+          resumeCursor: { threadId: "provider-thread-missing" },
+        }),
+        mode: "adopt",
+      });
+
+      const rejected = await adopter.take((envelope) => envelope.type === "attachError");
+      NodeAssert.equal(rejected.threadId, context.threadId);
+      NodeAssert.equal(rejected.errorCode, "thread-id-missing");
+      await adopter.waitClosed();
+      NodeAssert.equal(context.runtimeCreationCount(), 1);
+    }),
+  );
+
   it.effect("replaces a disconnected host runtime through resume-only adoption", () =>
     withHost(async (context) => {
       const creator = await context.connect();
@@ -964,6 +1345,51 @@ describe("CodexProviderHostServer", () => {
     ),
   );
 
+  it.effect("re-evaluates a valid adoption after a concurrent adoption fails", () =>
+    withHost(
+      async (context) => {
+        const releaseRuntimeCreation = context.blockRuntimeCreation();
+        context.failNextRuntimeStart(
+          new CodexSessionRuntimeThreadIdMissingError({
+            threadId: context.threadId,
+          }),
+        );
+        const missing = await context.connect();
+        missing.send({
+          ...makeAttach(context, "client-missing", "attachment-missing", undefined, {
+            resumeCursor: { threadId: "provider-thread-missing-concurrent" },
+          }),
+          mode: "adopt",
+        });
+        await context.waitForRuntimeCreation();
+
+        const valid = await context.connect();
+        valid.send({
+          ...makeAttach(context, "client-valid", "attachment-valid", undefined, {
+            resumeCursor: { threadId: "provider-thread-valid-concurrent" },
+          }),
+          mode: "adopt",
+        });
+        await nextImmediate();
+        releaseRuntimeCreation();
+
+        const rejected = await missing.take((envelope) => envelope.type === "attachError");
+        NodeAssert.equal(rejected.errorCode, "thread-id-missing");
+        const retryDeadline = Date.now() + 1_000;
+        while (context.runtimeCreationCount() < 2 && Date.now() < retryDeadline) {
+          await nextImmediate();
+        }
+        NodeAssert.equal(context.runtimeCreationCount(), 2);
+        const accepted = await valid.take(isSnapshotFor(context.threadId));
+        NodeAssert.equal(accepted.threadId, context.threadId);
+        NodeAssert.deepStrictEqual(context.runtimes[1]?.options.resumeCursor, {
+          threadId: "provider-thread-valid-concurrent",
+        });
+      },
+      { appServerMode: "attach" },
+    ),
+  );
+
   it.effect("reuses a healthy concurrent creation when it already owns the adopted thread", () =>
     withHost(
       async (context) => {
@@ -992,6 +1418,132 @@ describe("CodexProviderHostServer", () => {
 
         NodeAssert.equal(context.runtimeCreationCount(), 1);
         NodeAssert.equal(context.runtimes[0]?.detachImpl.mock.calls.length, 0);
+      },
+      { appServerMode: "attach" },
+    ),
+  );
+
+  it.effect("preserves an existing thread configuration when adoption leaves it unspecified", () =>
+    withHost(async (context) => {
+      const threadConfig = {
+        mcp_servers: {
+          "t3-code": {
+            url: "http://127.0.0.1:3000/mcp",
+            http_headers: { Authorization: "Bearer existing-token" },
+          },
+        },
+      };
+      const resumeCursor = { threadId: "provider-thread-existing-config" };
+      const creator = await context.connect();
+      creator.send(
+        makeAttach(context, "client-create-config", "attachment-create-config", undefined, {
+          resumeCursor,
+          threadConfig,
+        }),
+      );
+      await creator.take(isSnapshotFor(context.threadId));
+
+      const adopter = await context.connect();
+      adopter.send({
+        ...makeAttach(context, "client-adopt-config", "attachment-adopt-config", undefined, {
+          resumeCursor,
+        }),
+        mode: "adopt",
+      });
+      await adopter.take(isSnapshotFor(context.threadId));
+
+      NodeAssert.equal(context.runtimeCreationCount(), 1);
+      NodeAssert.equal(context.runtimes[0]?.detachImpl.mock.calls.length, 0);
+      NodeAssert.deepStrictEqual(context.runtimes[0]?.options.threadConfig, threadConfig);
+    }),
+  );
+
+  it.effect("revalidates concurrent adoption options after the first runtime starts", () =>
+    withHost(
+      async (context) => {
+        const releaseRuntimeCreation = context.blockRuntimeCreation();
+        const resumeCursor = { threadId: "provider-thread-concurrent-options" };
+        const first = await context.connect();
+        first.send({
+          ...makeAttach(
+            context,
+            "client-adopt-options-first",
+            "attachment-adopt-options-first",
+            undefined,
+            {
+              resumeCursor,
+              model: "gpt-5.6",
+            },
+          ),
+          mode: "adopt",
+        });
+        await context.waitForRuntimeCreation();
+
+        const second = await context.connect();
+        second.send({
+          ...makeAttach(
+            context,
+            "client-adopt-options-second",
+            "attachment-adopt-options-second",
+            undefined,
+            {
+              resumeCursor,
+              model: "gpt-5.6-mini",
+            },
+          ),
+          mode: "adopt",
+        });
+        await nextImmediate();
+
+        releaseRuntimeCreation();
+        await first.take(isSnapshotFor(context.threadId));
+        await second.take(isSnapshotFor(context.threadId));
+
+        NodeAssert.equal(context.runtimeCreationCount(), 2);
+        NodeAssert.equal(context.runtimes[0]?.detachImpl.mock.calls.length, 1);
+        NodeAssert.equal(context.runtimes[1]?.options.model, "gpt-5.6-mini");
+      },
+      { appServerMode: "attach" },
+    ),
+  );
+
+  it.effect("validates each concurrent resume-only adoption against its own cursor", () =>
+    withHost(
+      async (context) => {
+        const releaseRuntimeCreation = context.blockRuntimeCreation();
+        const first = await context.connect();
+        first.send({
+          ...makeAttach(context, "client-adopt-first", "attachment-adopt-first", undefined, {
+            resumeCursor: { threadId: "provider-thread-adopt-first" },
+          }),
+          mode: "adopt",
+        });
+        await context.waitForRuntimeCreation();
+
+        const second = await context.connect();
+        second.send({
+          ...makeAttach(context, "client-adopt-second", "attachment-adopt-second", undefined, {
+            resumeCursor: { threadId: "provider-thread-adopt-second" },
+          }),
+          mode: "adopt",
+        });
+        await nextImmediate();
+
+        releaseRuntimeCreation();
+        const secondSnapshot = await second.take(isSnapshotFor(context.threadId));
+
+        NodeAssert.equal(context.runtimeCreationCount(), 2);
+        NodeAssert.deepStrictEqual(context.runtimes[0]?.options.resumeCursor, {
+          threadId: "provider-thread-adopt-first",
+        });
+        NodeAssert.equal(context.runtimes[0]?.detachImpl.mock.calls.length, 1);
+        NodeAssert.deepStrictEqual(context.runtimes[1]?.options.resumeCursor, {
+          threadId: "provider-thread-adopt-second",
+        });
+        NodeAssert.deepStrictEqual(
+          (secondSnapshot.state as ProviderSession).resumeCursor,
+          context.runtimes[1]?.options.resumeCursor,
+        );
       },
       { appServerMode: "attach" },
     ),
@@ -1144,6 +1696,10 @@ describe("CodexProviderHostServer", () => {
       NodeAssert.equal(original.closeImpl.mock.calls.length, 0);
       const replacement = context.runtimes[1]!;
       NodeAssert.deepStrictEqual(replacement.options.resumeCursor, {
+        threadId: "provider-thread-reconnect",
+      });
+      const refreshed = await first.take(isSnapshotFor(context.threadId));
+      NodeAssert.deepStrictEqual((refreshed.state as ProviderSession).resumeCursor, {
         threadId: "provider-thread-reconnect",
       });
 
@@ -1756,6 +2312,39 @@ describe("CodexProviderHostServer", () => {
         priorityCommandFiberReserve: 1,
       },
     ),
+  );
+
+  it.effect("rejects an already-expired command without evaluating its operation", () =>
+    withHost(async (context) => {
+      const client = await context.connect();
+      client.send(makeAttach(context, "client-expired", "attachment-expired"));
+      await client.take(isSnapshotFor(context.threadId));
+      const runtime = context.runtimes[0]!;
+      let operationEvaluated = false;
+      runtime.readThreadEffect = Effect.sync(() => {
+        operationEvaluated = true;
+        return {
+          threadId: context.threadId,
+          turns: [],
+        };
+      });
+
+      client.send(
+        makeCommand(context, {
+          clientId: "client-expired",
+          attachmentId: "attachment-expired",
+          commandId: "command-expired",
+          operation: CODEX_PROVIDER_HOST_OPERATIONS.readThread,
+          deadlineAtMs: 0,
+        }),
+      );
+      const expired = await client.take(isCommandResult("command-expired"));
+
+      NodeAssert.equal(expired.ok, false);
+      NodeAssert.equal(expired.errorCode, "deadline-exceeded");
+      NodeAssert.equal(operationEvaluated, false);
+      NodeAssert.equal(runtime.readThreadImpl.mock.calls.length, 0);
+    }),
   );
 
   it.effect("times out a hung command and releases the session command lock", () =>

@@ -45,6 +45,7 @@ import type { CodexAdapterShape } from "../Services/CodexAdapter.ts";
 import { ProviderSessionDirectory } from "../Services/ProviderSessionDirectory.ts";
 import {
   type CodexSessionRuntimeError,
+  CodexSessionRuntimeMutationAmbiguousError,
   CodexSessionRuntimeThreadIdMissingError,
   type CodexSessionRuntimeOptions,
   type CodexSessionRuntimeSendTurnInput,
@@ -94,6 +95,7 @@ class FakeCodexRuntime implements CodexSessionRuntimeShape {
         turnId: asTurnId("turn-1"),
       }),
   );
+  public sendTurnError: CodexSessionRuntimeError | undefined;
 
   public readonly interruptTurnImpl = vi.fn(
     (_turnId?: TurnId): Promise<void> => Promise.resolve(undefined),
@@ -158,6 +160,9 @@ class FakeCodexRuntime implements CodexSessionRuntimeShape {
   emittedEventCount = Effect.succeed(0);
 
   sendTurn(input: CodexSessionRuntimeSendTurnInput) {
+    if (this.sendTurnError) {
+      return Effect.fail(this.sendTurnError);
+    }
     return Effect.promise(() => this.sendTurnImpl(input));
   }
 
@@ -505,7 +510,7 @@ sessionErrorLayer("CodexAdapterLive session errors", (it) => {
     const runtimeFactory = makeRuntimeFactory();
     const threadId = asThreadId("sess-detached-mcp");
     const controlSocketPaths: Array<string> = [];
-    const attachExistingModes: Array<boolean | undefined> = [];
+    const sessionModes: Array<"create" | "reuse" | "adopt" | undefined> = [];
     const layer = Layer.effect(
       CodexAdapter,
       Effect.gen(function* () {
@@ -515,9 +520,9 @@ sessionErrorLayer("CodexAdapterLive session errors", (it) => {
             socketPath: "/tmp/t3-codex.sock",
             ensure: Effect.succeed("/tmp/t3-codex.sock"),
           },
-          makeProviderHostRuntime: ({ controlSocketPath, options, attachExisting }) => {
+          makeProviderHostRuntime: ({ controlSocketPath, options, sessionMode }) => {
             controlSocketPaths.push(controlSocketPath);
-            attachExistingModes.push(attachExisting);
+            sessionModes.push(sessionMode);
             return runtimeFactory.factory(options);
           },
         });
@@ -549,7 +554,7 @@ sessionErrorLayer("CodexAdapterLive session errors", (it) => {
       const runtime = runtimeFactory.lastRuntime;
       NodeAssert.ok(runtime);
       NodeAssert.deepStrictEqual(controlSocketPaths, ["/tmp/t3-codex.sock"]);
-      NodeAssert.deepStrictEqual(attachExistingModes, [undefined]);
+      NodeAssert.deepStrictEqual(sessionModes, ["create"]);
       NodeAssert.equal(runtime.options.appServerSocketPath, undefined);
       NodeAssert.equal(runtime.options.environment?.T3_MCP_BEARER_TOKEN, undefined);
       NodeAssert.deepStrictEqual(runtime.options.threadConfig, {
@@ -572,13 +577,55 @@ sessionErrorLayer("CodexAdapterLive session errors", (it) => {
     );
   });
 
+  it.effect("fails visibly when the detached host cannot provide a control endpoint", () => {
+    const processRuntimeFactory = makeRuntimeFactory();
+    const providerHostRuntimeFactory = makeRuntimeFactory();
+    const layer = Layer.effect(
+      CodexAdapter,
+      Effect.gen(function* () {
+        const codexConfig = decodeCodexSettings({});
+        return yield* makeCodexAdapter(codexConfig, {
+          appServerHost: {
+            socketPath: "/tmp/t3-codex-unavailable.sock",
+            ensure: Effect.sync((): string | undefined => undefined),
+          },
+          makeRuntime: processRuntimeFactory.factory,
+          makeProviderHostRuntime: ({ options }) => providerHostRuntimeFactory.factory(options),
+        });
+      }),
+    ).pipe(
+      Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
+      Layer.provideMerge(ServerSettingsService.layerTest()),
+      Layer.provideMerge(providerSessionDirectoryTestLayer),
+      Layer.provideMerge(NodeServices.layer),
+    );
+
+    return Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      const result = yield* adapter
+        .startSession({
+          provider: ProviderDriverKind.make("codex"),
+          threadId: asThreadId("sess-detached-host-unavailable"),
+          runtimeMode: "full-access",
+        })
+        .pipe(Effect.result);
+
+      NodeAssert.equal(result._tag, "Failure");
+      if (result._tag !== "Failure") return;
+      NodeAssert.equal(result.failure._tag, "ProviderAdapterProcessError");
+      NodeAssert.match(result.failure.detail, /did not fall back to a process-bound session/);
+      NodeAssert.equal(processRuntimeFactory.factory.mock.calls.length, 0);
+      NodeAssert.equal(providerHostRuntimeFactory.factory.mock.calls.length, 0);
+    }).pipe(Effect.provide(layer));
+  });
+
   it.effect("reattaches an existing detached runtime without MCP session configuration", () => {
     const runtimeFactory = makeRuntimeFactory();
     const threadId = asThreadId("sess-detached-reattach");
     const providerHostInputs: Array<{
       readonly controlSocketPath: string;
       readonly options: CodexSessionRuntimeOptions;
-      readonly attachExisting?: boolean;
+      readonly sessionMode?: "create" | "reuse" | "adopt";
     }> = [];
     const layer = Layer.effect(
       CodexAdapter,
@@ -624,7 +671,7 @@ sessionErrorLayer("CodexAdapterLive session errors", (it) => {
 
       NodeAssert.equal(session.status, "ready");
       NodeAssert.equal(providerHostInputs.length, 1);
-      NodeAssert.equal(providerHostInputs[0]?.attachExisting, true);
+      NodeAssert.equal(providerHostInputs[0]?.sessionMode, "adopt");
       NodeAssert.equal(providerHostInputs[0]?.options.threadConfig, undefined);
       NodeAssert.deepStrictEqual(providerHostInputs[0]?.options.resumeCursor, {
         threadId: "provider-thread-existing",
@@ -654,8 +701,8 @@ sessionErrorLayer("CodexAdapterLive session errors", (it) => {
             socketPath: "/tmp/t3-codex-reattach-missing.sock",
             ensure: Effect.succeed("/tmp/t3-codex-reattach-missing.sock"),
           },
-          makeProviderHostRuntime: ({ options, attachExisting }) => {
-            NodeAssert.equal(attachExisting, true);
+          makeProviderHostRuntime: ({ options, sessionMode }) => {
+            NodeAssert.equal(sessionMode, "adopt");
             runtime = new FakeCodexRuntime(options);
             runtime.startError = new CodexSessionRuntimeThreadIdMissingError({ threadId });
             return Effect.succeed(runtime);
@@ -705,9 +752,9 @@ sessionErrorLayer("CodexAdapterLive session errors", (it) => {
             ensure: Effect.succeed("/tmp/t3-codex-reattach-transport.sock"),
           },
           makeRuntime: processRuntimeFactory.factory,
-          makeProviderHostRuntime: ({ options, attachExisting }) => {
+          makeProviderHostRuntime: ({ options, sessionMode }) => {
             providerHostRuntimeCalls += 1;
-            NodeAssert.equal(attachExisting, true);
+            NodeAssert.equal(sessionMode, "adopt");
             runtime = new FakeCodexRuntime(options);
             runtime.startError = new CodexErrors.CodexAppServerTransportError({
               operation: "read-input-stream",
@@ -744,6 +791,110 @@ sessionErrorLayer("CodexAdapterLive session errors", (it) => {
       NodeAssert.ok(runtime);
       NodeAssert.equal(runtime.detachImpl.mock.calls.length, 1);
       NodeAssert.equal(runtime.closeImpl.mock.calls.length, 0);
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("detaches instead of stopping when a create attachment fails ambiguously", () => {
+    const threadId = asThreadId("sess-detached-create-transport");
+    let runtime: FakeCodexRuntime | undefined;
+    const layer = Layer.effect(
+      CodexAdapter,
+      Effect.gen(function* () {
+        const codexConfig = decodeCodexSettings({});
+        return yield* makeCodexAdapter(codexConfig, {
+          appServerHost: {
+            socketPath: "/tmp/t3-codex-create-transport.sock",
+            ensure: Effect.succeed("/tmp/t3-codex-create-transport.sock"),
+          },
+          makeProviderHostRuntime: ({ options, sessionMode }) => {
+            NodeAssert.equal(sessionMode, "create");
+            runtime = new FakeCodexRuntime(options);
+            runtime.startError = new CodexErrors.CodexAppServerTransportError({
+              operation: "read-input-stream",
+              cause: new Error("snapshot response was lost"),
+            });
+            return Effect.succeed(runtime);
+          },
+        });
+      }),
+    ).pipe(
+      Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
+      Layer.provideMerge(ServerSettingsService.layerTest()),
+      Layer.provideMerge(providerSessionDirectoryTestLayer),
+      Layer.provideMerge(NodeServices.layer),
+    );
+
+    return Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      const result = yield* adapter
+        .startSession({
+          provider: ProviderDriverKind.make("codex"),
+          threadId,
+          runtimeMode: "full-access",
+        })
+        .pipe(Effect.result);
+
+      NodeAssert.equal(result._tag, "Failure");
+      NodeAssert.ok(runtime);
+      NodeAssert.equal(runtime.detachImpl.mock.calls.length, 1);
+      NodeAssert.equal(runtime.closeImpl.mock.calls.length, 0);
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("reports cross-generation mutations as ambiguous without closing the session", () => {
+    const threadId = asThreadId("sess-detached-ambiguous-mutation");
+    let runtime: FakeCodexRuntime | undefined;
+    const layer = Layer.effect(
+      CodexAdapter,
+      Effect.gen(function* () {
+        const codexConfig = decodeCodexSettings({});
+        return yield* makeCodexAdapter(codexConfig, {
+          appServerHost: {
+            socketPath: "/tmp/t3-codex-ambiguous-mutation.sock",
+            ensure: Effect.succeed("/tmp/t3-codex-ambiguous-mutation.sock"),
+          },
+          makeProviderHostRuntime: ({ options }) => {
+            runtime = new FakeCodexRuntime(options);
+            runtime.sendTurnError = new CodexSessionRuntimeMutationAmbiguousError({
+              threadId,
+              operation: "turn.start",
+              threadReadSucceeded: true,
+            });
+            return Effect.succeed(runtime);
+          },
+        });
+      }),
+    ).pipe(
+      Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
+      Layer.provideMerge(ServerSettingsService.layerTest()),
+      Layer.provideMerge(providerSessionDirectoryTestLayer),
+      Layer.provideMerge(NodeServices.layer),
+    );
+
+    return Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("codex"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+
+      const result = yield* adapter
+        .sendTurn({
+          threadId,
+          input: "Proceed",
+          attachments: [],
+        })
+        .pipe(Effect.result);
+
+      NodeAssert.equal(result._tag, "Failure");
+      if (result._tag !== "Failure") return;
+      NodeAssert.equal(result.failure._tag, "ProviderAdapterRequestError");
+      if (result.failure._tag === "ProviderAdapterRequestError") {
+        NodeAssert.equal(result.failure.reconciled, true);
+      }
+      NodeAssert.equal(yield* adapter.hasSession(threadId), true);
+      NodeAssert.ok(runtime);
     }).pipe(Effect.provide(layer));
   });
 
@@ -856,8 +1007,44 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
       if (firstEvent._tag !== "Some") return;
       NodeAssert.equal(firstEvent.value.type, "session.state.changed");
       if (firstEvent.value.type !== "session.state.changed") return;
-      NodeAssert.equal(firstEvent.value.payload.state, "starting");
+      NodeAssert.equal(firstEvent.value.payload.state, "error");
+      NodeAssert.equal(firstEvent.value.payload.activeTurnId, null);
       NodeAssert.equal(firstEvent.value.payload.reason, "T3 lost its Codex connection.");
+      NodeAssert.deepStrictEqual(firstEvent.value.payload.detail, {
+        source: "provider-host-disconnect",
+      });
+    }),
+  );
+
+  it.effect("marks provider-host reconnect attempts as non-working", () =>
+    Effect.gen(function* () {
+      const { adapter, runtime } = yield* startLifecycleRuntime();
+      const firstEventFiber = yield* Stream.runHead(adapter.streamEvents).pipe(Effect.forkChild);
+
+      yield* runtime.emit({
+        id: asEventId("evt-session-reconnecting"),
+        kind: "session",
+        provider: ProviderDriverKind.make("codex"),
+        threadId: asThreadId("thread-1"),
+        createdAt: "2026-01-01T00:00:00.000Z",
+        method: "session/reconnecting",
+        message: "T3 is reconnecting without interrupting Codex execution.",
+      });
+
+      const firstEvent = yield* Fiber.join(firstEventFiber);
+      NodeAssert.equal(firstEvent._tag, "Some");
+      if (firstEvent._tag !== "Some") return;
+      NodeAssert.equal(firstEvent.value.type, "session.state.changed");
+      if (firstEvent.value.type !== "session.state.changed") return;
+      NodeAssert.equal(firstEvent.value.payload.state, "error");
+      NodeAssert.equal(firstEvent.value.payload.activeTurnId, null);
+      NodeAssert.equal(
+        firstEvent.value.payload.reason,
+        "T3 is reconnecting without interrupting Codex execution.",
+      );
+      NodeAssert.deepStrictEqual(firstEvent.value.payload.detail, {
+        source: "provider-host-reconnect",
+      });
     }),
   );
 
@@ -1577,7 +1764,7 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
 it.effect("reattaches exactly once after transport loss without starting a model turn", () =>
   Effect.gen(function* () {
     const runtimeQueue = yield* Queue.unbounded<FakeCodexRuntime>();
-    const attachExistingModes: Array<boolean | undefined> = [];
+    const sessionModes: Array<"create" | "reuse" | "adopt" | undefined> = [];
     const runtimeFactory = vi.fn((options: CodexSessionRuntimeOptions) => {
       const runtime = new FakeCodexRuntime(options);
       return Queue.offer(runtimeQueue, runtime).pipe(Effect.as(runtime));
@@ -1591,8 +1778,8 @@ it.effect("reattaches exactly once after transport loss without starting a model
             socketPath: "/tmp/t3-codex-auto-reattach.sock",
             ensure: Effect.succeed("/tmp/t3-codex-auto-reattach.sock"),
           },
-          makeProviderHostRuntime: ({ options, attachExisting }) => {
-            attachExistingModes.push(attachExisting);
+          makeProviderHostRuntime: ({ options, sessionMode }) => {
+            sessionModes.push(sessionMode);
             return runtimeFactory(options);
           },
         });
@@ -1610,13 +1797,13 @@ it.effect("reattaches exactly once after transport loss without starting a model
       const started = yield* adapter.startSession({
         provider: ProviderDriverKind.make("codex"),
         threadId,
-        resumeCursor: { threadId: "provider-thread-auto-reattach" },
         runtimeMode: "full-access",
       });
       const original = yield* Queue.take(runtimeQueue);
       original.getSessionImpl.mockResolvedValue({
         ...started,
         status: "error",
+        resumeCursor: { threadId: "provider-thread-auto-reattach" },
         updatedAt: "2026-01-01T00:00:01.000Z",
       });
 
@@ -1634,7 +1821,7 @@ it.effect("reattaches exactly once after transport loss without starting a model
       yield* Effect.promise(() => replacement.started);
 
       NodeAssert.equal(runtimeFactory.mock.calls.length, 2);
-      NodeAssert.deepStrictEqual(attachExistingModes, [undefined, true]);
+      NodeAssert.deepStrictEqual(sessionModes, ["create", "adopt"]);
       NodeAssert.equal(original.detachImpl.mock.calls.length, 1);
       NodeAssert.equal(original.closeImpl.mock.calls.length, 0);
       NodeAssert.equal(original.sendTurnImpl.mock.calls.length, 0);
@@ -1652,7 +1839,7 @@ it.effect("reattaches exactly once after transport loss without starting a model
 it.effect("keeps recovered sessions in attach-existing mode across transport reconnects", () =>
   Effect.gen(function* () {
     const runtimeQueue = yield* Queue.unbounded<FakeCodexRuntime>();
-    const attachExistingModes: Array<boolean | undefined> = [];
+    const sessionModes: Array<"create" | "reuse" | "adopt" | undefined> = [];
     const runtimeFactory = vi.fn((options: CodexSessionRuntimeOptions) => {
       const runtime = new FakeCodexRuntime(options);
       return Queue.offer(runtimeQueue, runtime).pipe(Effect.as(runtime));
@@ -1666,8 +1853,8 @@ it.effect("keeps recovered sessions in attach-existing mode across transport rec
             socketPath: "/tmp/t3-codex-existing-auto-reattach.sock",
             ensure: Effect.succeed("/tmp/t3-codex-existing-auto-reattach.sock"),
           },
-          makeProviderHostRuntime: ({ options, attachExisting }) => {
-            attachExistingModes.push(attachExisting);
+          makeProviderHostRuntime: ({ options, sessionMode }) => {
+            sessionModes.push(sessionMode);
             return runtimeFactory(options);
           },
         });
@@ -1710,7 +1897,7 @@ it.effect("keeps recovered sessions in attach-existing mode across transport rec
       const replacement = yield* Queue.take(runtimeQueue);
       yield* Effect.promise(() => replacement.started);
 
-      NodeAssert.deepStrictEqual(attachExistingModes, [true, true]);
+      NodeAssert.deepStrictEqual(sessionModes, ["adopt", "adopt"]);
       NodeAssert.equal(original.detachImpl.mock.calls.length, 1);
       NodeAssert.equal(original.closeImpl.mock.calls.length, 0);
       NodeAssert.equal(replacement.options.threadConfig, undefined);
@@ -1839,6 +2026,9 @@ it.effect("stops reconnecting when the detached host reports the session missing
     yield* Effect.gen(function* () {
       const adapter = yield* CodexAdapter;
       const threadId = asThreadId("thread-auto-reattach-missing");
+      const eventsFiber = yield* Stream.runCollect(Stream.take(adapter.streamEvents, 2)).pipe(
+        Effect.forkChild,
+      );
       const started = yield* adapter.startSession({
         provider: ProviderDriverKind.make("codex"),
         threadId,
@@ -1871,6 +2061,18 @@ it.effect("stops reconnecting when the detached host reports the session missing
       NodeAssert.equal(original.detachImpl.mock.calls.length, 1);
       NodeAssert.equal(missingReplacement.detachImpl.mock.calls.length, 1);
       NodeAssert.equal(yield* adapter.hasSession(threadId), false);
+      const events = Array.from(yield* Fiber.join(eventsFiber));
+      NodeAssert.equal(events.length, 2);
+      NodeAssert.equal(events[0]?.type, "session.state.changed");
+      if (events[0]?.type === "session.state.changed") {
+        NodeAssert.equal(events[0].payload.state, "error");
+        NodeAssert.equal(events[0].payload.activeTurnId, null);
+      }
+      NodeAssert.equal(events[1]?.type, "session.state.changed");
+      if (events[1]?.type === "session.state.changed") {
+        NodeAssert.equal(events[1].payload.state, "error");
+        NodeAssert.equal(events[1].payload.activeTurnId, null);
+      }
     }).pipe(Effect.provide(layer));
   }),
 );

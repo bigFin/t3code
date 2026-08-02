@@ -87,6 +87,14 @@ export type CodexTurnStartParamsWithCollaborationMode =
   typeof CodexTurnStartParamsWithCollaborationMode.Type;
 
 export type CodexResumeCursor = typeof CodexResumeCursorSchema.Type;
+export type CodexThreadResumePolicy = "fallback-to-start" | "resume-only";
+export type CodexRecoveredTurnStatus = "completed" | "interrupted" | "failed" | "inProgress";
+export type CodexRecoveredThreadStatus =
+  | { readonly type: "notLoaded" | "idle" | "systemError" }
+  | {
+      readonly type: "active";
+      readonly activeFlags: ReadonlyArray<"waitingOnApproval" | "waitingOnUserInput">;
+    };
 type CodexServiceTier = NonNullable<EffectCodexSchema.V2ThreadStartParams["serviceTier"]>;
 type CodexThreadItem =
   | EffectCodexSchema.V2ThreadReadResponse["thread"]["turns"][number]["items"][number]
@@ -104,6 +112,7 @@ export interface CodexSessionRuntimeOptions {
   readonly model?: string;
   readonly serviceTier?: CodexServiceTier | undefined;
   readonly resumeCursor?: CodexResumeCursor;
+  readonly resumePolicy?: CodexThreadResumePolicy;
   readonly threadConfig?: Readonly<Record<string, unknown>>;
   readonly appServerSocketPath?: string;
 }
@@ -123,10 +132,13 @@ export interface CodexSessionRuntimeSendTurnInput {
 export interface CodexThreadTurnSnapshot {
   readonly id: TurnId;
   readonly items: ReadonlyArray<CodexThreadItem>;
+  readonly status?: CodexRecoveredTurnStatus;
+  readonly error?: { readonly message: string } | null;
 }
 
 export interface CodexThreadSnapshot {
   readonly threadId: string;
+  readonly status?: CodexRecoveredThreadStatus;
   readonly turns: ReadonlyArray<CodexThreadTurnSnapshot>;
 }
 
@@ -159,6 +171,7 @@ export interface CodexSessionRuntimeShape {
 
 export type CodexSessionRuntimeError =
   | CodexErrors.CodexAppServerError
+  | CodexSessionRuntimeMutationAmbiguousError
   | CodexSessionRuntimePendingApprovalNotFoundError
   | CodexSessionRuntimePendingUserInputNotFoundError
   | CodexSessionRuntimeInvalidUserInputAnswersError
@@ -192,15 +205,8 @@ export function classifyCodexConnectionClosure(input: {
   };
 }
 
-type CodexRecoveredTurnStatus = "completed" | "interrupted" | "failed" | "inProgress";
-
 export function resolveCodexRecoveredThreadState(input: {
-  readonly status:
-    | { readonly type: "notLoaded" | "idle" | "systemError" }
-    | {
-        readonly type: "active";
-        readonly activeFlags: ReadonlyArray<"waitingOnApproval" | "waitingOnUserInput">;
-      };
+  readonly status: CodexRecoveredThreadStatus;
   readonly turns: ReadonlyArray<{
     readonly id: string;
     readonly status: CodexRecoveredTurnStatus;
@@ -320,6 +326,24 @@ export class CodexSessionRuntimeThreadIdMissingError extends Schema.TaggedErrorC
 ) {
   override get message(): string {
     return `Codex session is missing a provider thread id for ${this.threadId}`;
+  }
+}
+
+export class CodexSessionRuntimeMutationAmbiguousError extends Schema.TaggedErrorClass<CodexSessionRuntimeMutationAmbiguousError>()(
+  "CodexSessionRuntimeMutationAmbiguousError",
+  {
+    threadId: ThreadId,
+    operation: Schema.String,
+    threadReadSucceeded: Schema.Boolean,
+  },
+) {
+  override get message(): string {
+    return (
+      `Codex provider-host generation changed while '${this.operation}' was in flight. ` +
+      (this.threadReadSucceeded
+        ? "T3 re-read the thread, but cannot determine whether the mutation was applied."
+        : "T3 could not re-read the thread and cannot determine whether the mutation was applied.")
+    );
   }
 }
 
@@ -583,8 +607,12 @@ export const openCodexThread = (input: {
   readonly requestedModel: string | undefined;
   readonly serviceTier: CodexServiceTier | undefined;
   readonly resumeThreadId: string | undefined;
+  readonly resumePolicy?: CodexThreadResumePolicy;
   readonly threadConfig?: Readonly<Record<string, unknown>>;
-}): Effect.Effect<CodexThreadOpenResponse, CodexErrors.CodexAppServerError> => {
+}): Effect.Effect<
+  CodexThreadOpenResponse,
+  CodexErrors.CodexAppServerError | CodexSessionRuntimeThreadIdMissingError
+> => {
   const resumeThreadId = input.resumeThreadId;
   const startParams = buildThreadStartParams({
     cwd: input.cwd,
@@ -595,25 +623,43 @@ export const openCodexThread = (input: {
   });
 
   if (resumeThreadId === undefined) {
+    if (input.resumePolicy === "resume-only") {
+      return Effect.fail(
+        new CodexSessionRuntimeThreadIdMissingError({
+          threadId: input.threadId,
+        }),
+      );
+    }
     return input.client.request("thread/start", startParams);
   }
 
-  return input.client
-    .request("thread/resume", {
-      threadId: resumeThreadId,
-      ...startParams,
-    })
-    .pipe(
-      Effect.catchIf(isRecoverableThreadResumeError, (error) =>
-        Effect.logWarning("codex app-server thread resume fell back to fresh start", {
-          threadId: input.threadId,
-          requestedRuntimeMode: input.runtimeMode,
-          resumeThreadId,
-          recoverable: true,
-          cause: error,
-        }).pipe(Effect.andThen(input.client.request("thread/start", startParams))),
+  const resume = input.client.request("thread/resume", {
+    threadId: resumeThreadId,
+    ...startParams,
+  });
+  if (input.resumePolicy === "resume-only") {
+    return resume.pipe(
+      Effect.catchIf(isRecoverableThreadResumeError, () =>
+        Effect.fail(
+          new CodexSessionRuntimeThreadIdMissingError({
+            threadId: input.threadId,
+          }),
+        ),
       ),
     );
+  }
+
+  return resume.pipe(
+    Effect.catchIf(isRecoverableThreadResumeError, (error) =>
+      Effect.logWarning("codex app-server thread resume fell back to fresh start", {
+        threadId: input.threadId,
+        requestedRuntimeMode: input.runtimeMode,
+        resumeThreadId,
+        recoverable: true,
+        cause: error,
+      }).pipe(Effect.andThen(input.client.request("thread/start", startParams))),
+    ),
+  );
 };
 
 function readNotificationThreadId(notification: CodexServerNotification): string | undefined {
@@ -823,9 +869,12 @@ function parseThreadSnapshot(
 ): CodexThreadSnapshot {
   return {
     threadId: response.thread.id,
+    status: response.thread.status,
     turns: response.thread.turns.map((turn) => ({
       id: TurnId.make(turn.id),
       items: turn.items,
+      status: turn.status,
+      ...(turn.error ? { error: turn.error } : {}),
     })),
   };
 }
@@ -1386,6 +1435,7 @@ export const makeCodexSessionRuntime = (
         requestedModel,
         serviceTier: options.serviceTier,
         resumeThreadId: readResumeCursorThreadId(options.resumeCursor),
+        ...(options.resumePolicy ? { resumePolicy: options.resumePolicy } : {}),
         ...(options.threadConfig ? { threadConfig: options.threadConfig } : {}),
       });
 

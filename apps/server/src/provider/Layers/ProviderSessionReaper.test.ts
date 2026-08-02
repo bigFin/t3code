@@ -557,7 +557,7 @@ describe("ProviderSessionReaper", () => {
     });
   });
 
-  it("keeps an active detached Codex turn reconnecting after a transient attach failure", async () => {
+  it("marks an unreachable detached Codex turn non-working while retrying", async () => {
     const threadId = ThreadId.make("thread-reaper-detached-active-turn");
     const turnId = TurnId.make("turn-reaper-detached-active");
     const providerInstanceId = ProviderInstanceId.make("codex");
@@ -612,9 +612,10 @@ describe("ProviderSessionReaper", () => {
       expect.objectContaining({
         type: "thread.session.set",
         threadId,
+        commandId: expect.stringContaining("provider-session-reaper:startup-reattach-retrying"),
         session: expect.objectContaining({
-          status: "starting",
-          activeTurnId: turnId,
+          status: "error",
+          activeTurnId: null,
           retrying: true,
           lastError:
             "T3 could not reattach to the detached provider execution yet. The provider was not interrupted; T3 will keep retrying.",
@@ -624,16 +625,16 @@ describe("ProviderSessionReaper", () => {
     const remaining = Option.getOrThrow(
       await runtime!.runPromise(repository.getByThreadId({ threadId })),
     );
-    expect(remaining.status).toBe("starting");
+    expect(remaining.status).toBe("error");
     expect(remaining.resumeCursor).toEqual({ opaque: "resume-detached-active-turn" });
     expect(remaining.runtimePayload).toMatchObject({
-      activeTurnId: turnId,
+      activeTurnId: null,
       lastRuntimeEvent: "provider.session.detached-reattach-pending",
       sessionPersistence: "detached",
     });
   });
 
-  it("retries an already-pending detached reattachment without churning state or reaping it", async () => {
+  it("repairs a legacy pending detached reattachment once without repeated state churn", async () => {
     const threadId = ThreadId.make("thread-reaper-detached-pending-retry");
     const turnId = TurnId.make("turn-reaper-detached-pending-retry");
     const providerInstanceId = ProviderInstanceId.make("codex");
@@ -684,18 +685,34 @@ describe("ProviderSessionReaper", () => {
     const reaper = await runtime!.runPromise(Effect.service(ProviderSessionReaper));
     scope = await runtime!.runPromise(Scope.make("sequential"));
     await runtime!.runPromise(reaper.start().pipe(Scope.provide(scope)));
+    const corrected = Option.getOrThrow(
+      await runtime!.runPromise(repository.getByThreadId({ threadId })),
+    );
     await waitFor(() => harness.reattachSession.mock.calls.length >= 3);
 
-    expect(harness.dispatchedCommands).toEqual([]);
+    expect(harness.dispatchedCommands).toEqual([
+      expect.objectContaining({
+        type: "thread.session.set",
+        threadId,
+        session: expect.objectContaining({
+          status: "error",
+          activeTurnId: null,
+          retrying: true,
+          lastError:
+            "T3 could not reattach to the detached provider execution yet. The provider was not interrupted; T3 will keep retrying.",
+        }),
+      }),
+    ]);
     expect(harness.stopSession).not.toHaveBeenCalled();
     const remaining = Option.getOrThrow(
       await runtime!.runPromise(repository.getByThreadId({ threadId })),
     );
-    expect(remaining.lastSeenAt).toBe(lastSeenAt);
+    expect(remaining.status).toBe("error");
+    expect(remaining).toEqual(corrected);
     expect(remaining.runtimePayload).toMatchObject({
-      activeTurnId: turnId,
+      activeTurnId: null,
       lastRuntimeEvent: "provider.session.detached-reattach-pending",
-      lastRuntimeEventAt: lastSeenAt,
+      sessionPersistence: "detached",
     });
   });
 

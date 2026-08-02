@@ -77,21 +77,64 @@ when a request opens (approval) or user input is requested, via
 
 ## Detached Codex execution
 
-Codex uses a detached provider host so an agent turn is not owned by the T3 server process. The host
-owns one Codex app-server process and multiplexes lightweight thread attachments over a Unix socket.
-T3 shutdown closes those attachments; it does not stop Codex. An explicit user stop still sends the
-provider-host stop command.
+Codex uses a detached provider host so an agent turn is not owned by the T3 server process. A
+provider host can launch one Codex app-server process and multiplex lightweight thread attachments
+over a Unix socket, but neither T3 nor any provider host owns the app-server lifecycle after launch.
+T3 and provider-host shutdown close their attachments without signaling Codex. An explicit user stop
+still sends the provider-host stop command.
+
+The preferred app-server socket is stable for discovery by environment and provider instance, but a
+new app-server launch uses a generation-unique sibling socket. The provider-host namespace includes
+the protocol and T3 build fingerprint, and every launch also receives generation-unique control and
+config paths. The durable manifest, rather than any preferred runtime path, identifies the active
+control and app-server endpoints.
+
+The detached provider host itself acquires a cross-process startup lease stored beside the durable
+manifest, so launchers with different runtime directories still serialize one environment identity.
+While holding it, the host compares the manifest generation it was launched against with the current
+manifest, revalidates the app-server socket and process provenance, starts or adopts Codex only if
+that ownership remains unambiguous, publishes its new generation, and opens its control socket
+before releasing the lease. The startup claim therefore survives the launching T3 process exiting,
+and competing launchers cannot both spawn or publish. T3 waits for either host readiness or launcher
+exit, cancels the losing readiness probe, then rediscovers whichever manifest generation won.
+
+After a rolling update, the new T3 build can start a compatible host alongside the old host without
+signaling either the old host or its Codex child. Generation-unique control endpoints also prevent a
+retiring same-build host from unlinking its successor's socket. If an app-server socket remains
+occupied but cannot be proven stale, recovery preserves it and starts on a unique sibling endpoint
+instead of unlinking a process that may still become responsive. If the durable manifest and process
+identity verify the surviving app-server, the replacement host attaches to it and adopts missing
+sessions with `thread/resume`. Adoption is resume-only: it never falls back to `thread/start` and
+cannot silently create a replacement conversation.
+
+Provider hosts retire after their last T3 attachment remains absent for the idle lease. Retirement
+closes only the host's app-server readers and control socket; the detached app-server and its turns
+continue independently. This bounds the cost of rolling upgrades instead of accumulating one live
+gateway per build.
+
+This lifecycle independence applies to app-servers launched by this model. A legacy v1 host still has
+lifecycle authority over the Codex process it launched. When its manifest, hello generation, provider
+identity, and process identity agree, current T3 clients negotiate protocol v1 and attach to that
+host's existing sessions using the legacy envelopes. They do not adopt or restart its Codex
+app-server, and they omit v2-only attach modes and command deadlines. If the legacy control endpoint
+cannot be verified, T3 preserves both processes and reports the detached host as unavailable instead
+of falling back to a process-bound Codex runtime. Once the legacy host is confirmed gone, v2 may
+adopt a separately surviving app-server without signaling it.
 
 Attachments request bounded event replay and then receive a fresh snapshot, so missed transcript
 events land before the authoritative state is projected as `session.state.changed`, including an
 explicit active turn id (or `null`). Startup events emitted while the first attachment creates its
-runtime are synchronized into that replay before the snapshot. If the requested cursor predates the
-retained window, the host reports truncation and T3 projects a runtime warning instead of silently
-claiming complete replay.
+runtime are synchronized into that replay before the snapshot. When a runtime is replaced in place,
+existing attachments receive a new authoritative snapshot after replacement startup output so every
+reader adopts the same resume cursor and state. If the requested cursor predates the retained window,
+the host reports truncation and T3 projects a runtime warning instead of silently claiming complete
+replay.
 
 Provider event command ids are stable across replay, so reconnecting T3 does not duplicate already
 persisted orchestration changes. Transport commands reuse their id while retrying against the same
-provider host. This lets orchestration replace stale projected state without inventing a new
+provider-host generation. If the generation changes before a mutating command returns, T3 does not
+repeat the mutation. It attempts a read-only thread check and reports the mutation result as
+ambiguous instead. This lets orchestration replace stale projected state without inventing a new
 `turn.started` event or prompting the model.
 
 On server startup, [`ProviderSessionReaper`][reaper] reattaches bindings marked with detached session

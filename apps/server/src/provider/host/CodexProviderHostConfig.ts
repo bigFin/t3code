@@ -4,16 +4,30 @@ import * as FileSystem from "effect/FileSystem";
 import * as Schema from "effect/Schema";
 
 import { writeFileStringAtomically } from "../../atomicWrite.ts";
-import { ProviderHostGenerationFingerprint } from "./ProviderHostProtocol.ts";
+import {
+  ProviderHostAppServerMode,
+  ProviderHostBuildFingerprint,
+  ProviderHostConfigurationFingerprint,
+  ProviderHostGenerationFingerprint,
+} from "./ProviderHostProtocol.ts";
+import { ProviderHostAppServerProvenance } from "./ProviderHostManifest.ts";
 
-export const CODEX_PROVIDER_HOST_CONFIG_VERSION = 1 as const;
+export const CODEX_PROVIDER_HOST_CONFIG_VERSION = 3 as const;
+
+export const CodexProviderHostAppServerMode = ProviderHostAppServerMode;
+export type CodexProviderHostAppServerMode = ProviderHostAppServerMode;
 
 export const CodexProviderHostConfig = Schema.Struct({
   version: Schema.Literal(CODEX_PROVIDER_HOST_CONFIG_VERSION),
   providerInstanceId: ProviderInstanceId,
-  generationFingerprint: ProviderHostGenerationFingerprint,
+  buildFingerprint: ProviderHostBuildFingerprint,
+  configurationFingerprint: ProviderHostConfigurationFingerprint,
   controlSocketPath: TrimmedNonEmptyString,
   appServerSocketPath: TrimmedNonEmptyString,
+  startupLockPath: TrimmedNonEmptyString,
+  expectedManifestGenerationFingerprint: Schema.optionalKey(ProviderHostGenerationFingerprint),
+  appServerMode: CodexProviderHostAppServerMode,
+  adoptedAppServer: Schema.optionalKey(ProviderHostAppServerProvenance),
   manifestPath: TrimmedNonEmptyString,
   codex: Schema.Struct({
     binaryPath: TrimmedNonEmptyString,

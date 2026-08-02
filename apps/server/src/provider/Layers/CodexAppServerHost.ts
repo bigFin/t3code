@@ -22,7 +22,6 @@ import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 
 import { expandHomePath } from "../../pathExpansion.ts";
-import { acquireSqliteTransactionLock } from "../../sqliteTransactionLock.ts";
 import { probeCodexAppServerWebSocket } from "./CodexAppServerWebSocket.ts";
 import {
   CODEX_PROVIDER_HOST_CONFIG_VERSION,
@@ -30,10 +29,13 @@ import {
   persistCodexProviderHostConfig,
 } from "../host/CodexProviderHostConfig.ts";
 import {
+  PROVIDER_HOST_LEGACY_PROTOCOL_VERSION,
   PROVIDER_HOST_PROTOCOL_VERSION,
   ProviderHostBuildFingerprint,
+  ProviderHostCompatibleHelloEnvelope,
   ProviderHostConfigurationFingerprint,
-  ProviderHostHelloEnvelope,
+  type ProviderHostCompatibleHelloEnvelope as ProviderHostCompatibleHelloEnvelopeType,
+  type ProviderHostGenerationFingerprint,
 } from "../host/ProviderHostProtocol.ts";
 import {
   readProviderHostManifest,
@@ -43,12 +45,13 @@ import {
 
 const HOST_START_TIMEOUT_MS = 15_000;
 const HOST_START_POLL_MS = 50;
-const HOST_TERMINATE_TIMEOUT_MS = 2_000;
-const HOST_LOCK_TIMEOUT_MS = 30_000;
+const HOST_TERMINATE_TIMEOUT_MS = 5_000;
 const APP_SERVER_STALE_PROBE_ATTEMPTS = 3;
 const APP_SERVER_STALE_PROBE_RETRY_MS = 100;
 const MAX_PORTABLE_UNIX_SOCKET_PATH_BYTES = 96;
 const PROCESS_START_TIME_TOLERANCE_MS = 2_000;
+const DEVELOPMENT_SOURCE_ENTRY_EXTENSIONS = new Set([".cts", ".mts", ".ts", ".tsx"]);
+const DEVELOPMENT_PROCESS_FINGERPRINT = NodeCrypto.randomBytes(16).toString("hex");
 
 export interface CodexAppServerHostShape {
   readonly socketPath: string;
@@ -74,15 +77,26 @@ interface HostCommand {
   readonly env: NodeJS.ProcessEnv;
 }
 
-interface ProviderHostExpectedIdentity {
+interface ProviderHostV2ExpectedIdentity {
+  readonly version: typeof PROVIDER_HOST_PROTOCOL_VERSION;
   readonly providerInstanceId: ProviderInstanceId;
   readonly buildFingerprint: ProviderHostBuildFingerprint;
 }
+
+interface ProviderHostV1ExpectedIdentity {
+  readonly version: typeof PROVIDER_HOST_LEGACY_PROTOCOL_VERSION;
+  readonly providerInstanceId: ProviderInstanceId;
+  readonly generationFingerprint: ProviderHostGenerationFingerprint;
+  readonly hostProcess: ResourceTelemetryProcessIdentity;
+}
+
+type ProviderHostExpectedIdentity = ProviderHostV2ExpectedIdentity | ProviderHostV1ExpectedIdentity;
 
 export type ProcessIdentityStatus = "current" | "stale" | "unknown";
 
 export interface CodexAppServerDetachedProcess {
   readonly pid: number;
+  readonly exited: Promise<void>;
   readonly terminate: () => Promise<void>;
 }
 
@@ -106,6 +120,7 @@ export interface CodexAppServerHostOperations {
   readonly waitForHost: (
     socketPath: string,
     expectedIdentity: ProviderHostExpectedIdentity,
+    signal?: AbortSignal,
   ) => Promise<boolean>;
 }
 
@@ -118,7 +133,9 @@ export interface CodexAppServerHostPaths {
   readonly manifestPath: string;
 }
 
-const decodeHello = Schema.decodeUnknownSync(Schema.fromJsonString(ProviderHostHelloEnvelope));
+const decodeHello = Schema.decodeUnknownSync(
+  Schema.fromJsonString(ProviderHostCompatibleHelloEnvelope),
+);
 const buildFingerprintByEntryPath = new Map<string, Promise<ProviderHostBuildFingerprint>>();
 
 function mergeEnvironment(
@@ -193,6 +210,24 @@ function replacementAppServerSocketPath(preferredSocketPath: string): string {
   return candidate;
 }
 
+function replacementControlSocketPath(preferredSocketPath: string): string {
+  let candidate: string;
+  do {
+    candidate = NodePath.join(
+      NodePath.dirname(preferredSocketPath),
+      `h${PROVIDER_HOST_PROTOCOL_VERSION}-${NodeCrypto.randomBytes(10).toString("hex")}.sock`,
+    );
+  } while (candidate === preferredSocketPath);
+  return candidate;
+}
+
+function replacementConfigPath(preferredConfigPath: string): string {
+  return NodePath.join(
+    NodePath.dirname(preferredConfigPath),
+    `config-v${CODEX_PROVIDER_HOST_CONFIG_VERSION}-${NodeCrypto.randomBytes(10).toString("hex")}.json`,
+  );
+}
+
 export function codexAppServerHostPaths(
   options: CodexAppServerHostOptions,
   buildFingerprint: ProviderHostBuildFingerprint = ProviderHostBuildFingerprint.make("development"),
@@ -232,7 +267,7 @@ export function codexAppServerHostPaths(
       options.providerLogsDir,
       `codex-provider-host-${options.providerInstanceId}-${buildSuffix}-${suffix}.log`,
     ),
-    lockPath: NodePath.join(appServerRuntimeDir, `h-${suffix}.startup.sqlite`),
+    lockPath: NodePath.join(durableDir, "startup.sqlite"),
     configPath: NodePath.join(
       durableDir,
       `config-v${PROVIDER_HOST_PROTOCOL_VERSION}-${buildSuffix}.json`,
@@ -259,21 +294,31 @@ export function codexProviderHostConfigurationFingerprint(
 
 export function providerHostBuildFingerprint(
   entryPath: string,
+  developmentProcessFingerprint = DEVELOPMENT_PROCESS_FINGERPRINT,
 ): Promise<ProviderHostBuildFingerprint> {
   const resolvedEntryPath = NodePath.resolve(entryPath);
-  const existing = buildFingerprintByEntryPath.get(resolvedEntryPath);
+  const isDevelopmentSourceEntry = DEVELOPMENT_SOURCE_ENTRY_EXTENSIONS.has(
+    NodePath.extname(resolvedEntryPath),
+  );
+  const cacheKey = isDevelopmentSourceEntry
+    ? `${resolvedEntryPath}\0${developmentProcessFingerprint}`
+    : resolvedEntryPath;
+  const existing = buildFingerprintByEntryPath.get(cacheKey);
   if (existing) return existing;
   const pending = NodeFSP.readFile(resolvedEntryPath)
     .then((contents) =>
       ProviderHostBuildFingerprint.make(
-        NodeCrypto.createHash("sha256").update(contents).digest("hex"),
+        NodeCrypto.createHash("sha256")
+          .update(contents)
+          .update(isDevelopmentSourceEntry ? `\0${developmentProcessFingerprint}` : "")
+          .digest("hex"),
       ),
     )
     .catch((cause) => {
-      buildFingerprintByEntryPath.delete(resolvedEntryPath);
+      buildFingerprintByEntryPath.delete(cacheKey);
       throw cause;
     });
-  buildFingerprintByEntryPath.set(resolvedEntryPath, pending);
+  buildFingerprintByEntryPath.set(cacheKey, pending);
   return pending;
 }
 
@@ -324,12 +369,26 @@ async function inspectProcessIdentity(
 }
 
 function matchesProviderHostIdentity(
-  hello: ProviderHostHelloEnvelope,
+  hello: ProviderHostCompatibleHelloEnvelopeType,
   expectedIdentity: ProviderHostExpectedIdentity,
 ): boolean {
+  if (
+    hello.version !== expectedIdentity.version ||
+    hello.providerInstanceId !== expectedIdentity.providerInstanceId
+  ) {
+    return false;
+  }
+  if (hello.version === PROVIDER_HOST_PROTOCOL_VERSION) {
+    return (
+      hello.buildFingerprint ===
+      (expectedIdentity as ProviderHostV2ExpectedIdentity).buildFingerprint
+    );
+  }
+  const legacyIdentity = expectedIdentity as ProviderHostV1ExpectedIdentity;
   return (
-    hello.providerInstanceId === expectedIdentity.providerInstanceId &&
-    hello.buildFingerprint === expectedIdentity.buildFingerprint
+    hello.generationFingerprint === legacyIdentity.generationFingerprint &&
+    hello.hostProcess.pid === legacyIdentity.hostProcess.pid &&
+    hello.hostProcess.startTimeMs === legacyIdentity.hostProcess.startTimeMs
   );
 }
 
@@ -448,9 +507,17 @@ function spawnDetached(
         reject(new Error("Detached provider host did not report a process id."));
         return;
       }
+      const exited = new Promise<void>((exitResolve) => {
+        if (child.exitCode !== null || child.signalCode !== null) {
+          exitResolve();
+          return;
+        }
+        child.once("exit", () => exitResolve());
+      });
       child.unref();
       resolve({
         pid,
+        exited,
         terminate: () => terminateDetachedProcess(child),
       });
     });
@@ -460,11 +527,24 @@ function spawnDetached(
 async function waitForHost(
   socketPath: string,
   expectedIdentity: ProviderHostExpectedIdentity,
+  signal?: AbortSignal,
 ): Promise<boolean> {
   const deadline = Date.now() + HOST_START_TIMEOUT_MS;
   while (Date.now() < deadline) {
+    if (signal?.aborted) return false;
     if (await probeHost(socketPath, expectedIdentity)) return true;
-    await new Promise((resolve) => setTimeout(resolve, HOST_START_POLL_MS));
+    await new Promise<void>((resolve) => {
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        signal?.removeEventListener("abort", finish);
+        resolve();
+      };
+      const timer = setTimeout(finish, HOST_START_POLL_MS);
+      signal?.addEventListener("abort", finish, { once: true });
+    });
   }
   return false;
 }
@@ -551,16 +631,28 @@ export const makeCodexAppServerHost = Effect.fn("makeCodexAppServerHost")(functi
   }
   const paths = codexAppServerHostPaths(options, buildFingerprint);
   const expectedHostIdentity = {
+    version: PROVIDER_HOST_PROTOCOL_VERSION,
     providerInstanceId: options.providerInstanceId,
     buildFingerprint,
   } satisfies ProviderHostExpectedIdentity;
+  const expectedLegacyHostIdentity = (
+    manifest: Extract<DecodedProviderHostManifest, { readonly schemaVersion: 1 }>,
+  ) =>
+    ({
+      version: PROVIDER_HOST_LEGACY_PROTOCOL_VERSION,
+      providerInstanceId: options.providerInstanceId,
+      generationFingerprint: manifest.generationFingerprint,
+      hostProcess: manifest.hostProcess,
+    }) satisfies ProviderHostExpectedIdentity;
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const mutex = yield* Semaphore.make(1);
   const environment = mergeEnvironment(options.environment, options.homePath);
   const makeConfig = (
+    controlSocketPath: string,
     appServerMode: CodexProviderHostConfig["appServerMode"],
     appServerSocketPath: string,
+    expectedManifestGenerationFingerprint: ProviderHostGenerationFingerprint | undefined,
     adoptedAppServer?: ProviderHostAppServerProvenance,
   ) =>
     CodexProviderHostConfig.make({
@@ -568,8 +660,10 @@ export const makeCodexAppServerHost = Effect.fn("makeCodexAppServerHost")(functi
       providerInstanceId: options.providerInstanceId,
       buildFingerprint,
       configurationFingerprint: codexProviderHostConfigurationFingerprint(options),
-      controlSocketPath: paths.socketPath,
+      controlSocketPath,
       appServerSocketPath,
+      startupLockPath: paths.lockPath,
+      ...(expectedManifestGenerationFingerprint ? { expectedManifestGenerationFingerprint } : {}),
       appServerMode,
       ...(adoptedAppServer ? { adoptedAppServer } : {}),
       manifestPath: paths.manifestPath,
@@ -581,15 +675,39 @@ export const makeCodexAppServerHost = Effect.fn("makeCodexAppServerHost")(functi
       },
     });
 
+  let knownControlSocketPath: string | undefined;
+  const discoverCurrentHost = Effect.fn("CodexAppServerHost.discoverCurrentHost")(function* () {
+    const manifest = yield* readProviderHostManifest(paths.manifestPath);
+    const manifestValue = Option.getOrUndefined(manifest);
+    const legacyManifest =
+      manifestValue?.schemaVersion === 1 &&
+      manifestValue.protocolVersion === PROVIDER_HOST_LEGACY_PROTOCOL_VERSION
+        ? manifestValue
+        : undefined;
+    const controlSocketPath = legacyManifest
+      ? legacyManifest.socketPath
+      : manifestValue?.schemaVersion === 2 && manifestValue.buildFingerprint === buildFingerprint
+        ? manifestValue.controlSocketPath
+        : (knownControlSocketPath ?? paths.socketPath);
+    const expectedIdentity = legacyManifest
+      ? expectedLegacyHostIdentity(legacyManifest)
+      : expectedHostIdentity;
+    const available = yield* fromPromise(() =>
+      operations.probeHost(controlSocketPath, expectedIdentity),
+    ).pipe(Effect.orElseSucceed(() => false));
+    return {
+      manifestValue,
+      socketPath: available ? controlSocketPath : undefined,
+    };
+  });
+
   const ensure = mutex
     .withPermit(
       Effect.gen(function* () {
-        if (
-          yield* fromPromise(() =>
-            operations.probeHost(paths.socketPath, expectedHostIdentity),
-          ).pipe(Effect.orElseSucceed(() => false))
-        ) {
-          return paths.socketPath;
+        const discovered = yield* discoverCurrentHost();
+        if (discovered.socketPath) {
+          knownControlSocketPath = discovered.socketPath;
+          return discovered.socketPath;
         }
 
         yield* fromPromise(() =>
@@ -599,28 +717,42 @@ export const makeCodexAppServerHost = Effect.fn("makeCodexAppServerHost")(functi
           }),
         );
         yield* fromPromise(() => NodeFSP.chmod(NodePath.dirname(paths.socketPath), 0o700));
-        const startupLock = yield* fromPromise(() =>
-          acquireSqliteTransactionLock(paths.lockPath, {
-            timeoutMs: HOST_LOCK_TIMEOUT_MS,
-          }),
-        );
-
         return yield* Effect.gen(function* () {
-          if (
-            yield* fromPromise(() => operations.probeHost(paths.socketPath, expectedHostIdentity))
-          ) {
-            return paths.socketPath;
+          const discovered = yield* discoverCurrentHost();
+          if (discovered.socketPath) {
+            knownControlSocketPath = discovered.socketPath;
+            return discovered.socketPath;
           }
-          const manifest = yield* readProviderHostManifest(paths.manifestPath);
-          const manifestValue = Option.getOrUndefined(manifest);
+          const manifestValue = discovered.manifestValue;
           const manifestHostProcessStatus = manifestValue
             ? yield* fromPromise(() => operations.inspectProcessIdentity(manifestValue.hostProcess))
             : "stale";
+          const controlSocketPath = replacementControlSocketPath(paths.socketPath);
           if (manifestValue && manifestHostProcessStatus !== "stale") {
             const manifestControlSocketPath = readManifestControlSocketPath(manifestValue);
             if (manifestValue.schemaVersion === 1) {
+              const ready =
+                manifestValue.protocolVersion === PROVIDER_HOST_LEGACY_PROTOCOL_VERSION
+                  ? yield* fromPromise(() =>
+                      operations.waitForHost(
+                        manifestControlSocketPath,
+                        expectedLegacyHostIdentity(manifestValue),
+                      ),
+                    )
+                  : false;
+              if (ready) {
+                yield* Effect.logInfo(
+                  "Reusing a verified legacy Codex provider host without changing its app-server lifecycle.",
+                  {
+                    socketPath: manifestControlSocketPath,
+                    hostProcess: manifestValue.hostProcess,
+                    generationFingerprint: manifestValue.generationFingerprint,
+                  },
+                );
+                return manifestControlSocketPath;
+              }
               yield* Effect.logWarning(
-                "A legacy Codex provider host may still own its app-server; preserving the legacy generation until it exits.",
+                "A legacy Codex provider host may still terminate its app-server but could not be verified through its control protocol; preserving that generation without adopting it.",
                 {
                   previousSocketPath: manifestControlSocketPath,
                   appServerSocketPath: paths.appServerSocketPath,
@@ -629,35 +761,38 @@ export const makeCodexAppServerHost = Effect.fn("makeCodexAppServerHost")(functi
                 },
               );
               return undefined;
-            }
-            const manifestBelongsToCurrentBuild =
-              manifestValue.buildFingerprint === buildFingerprint;
-            if (manifestBelongsToCurrentBuild && manifestControlSocketPath === paths.socketPath) {
-              const ready = yield* fromPromise(() =>
-                operations.waitForHost(paths.socketPath, expectedHostIdentity),
-              );
-              if (ready) {
-                return paths.socketPath;
-              }
-              yield* Effect.logWarning(
-                "Codex provider host process may still be live but remained unavailable after the startup lease; replacing only its control-socket endpoint while preserving Codex execution.",
-                {
-                  socketPath: paths.socketPath,
-                  appServerSocketPath: paths.appServerSocketPath,
-                  hostProcess: manifestValue.hostProcess,
-                  manifestHostProcessStatus,
-                },
-              );
             } else {
-              yield* Effect.logInfo(
-                "Codex provider host belongs to another T3 build; starting the current build alongside it.",
-                {
-                  previousSocketPath: manifestControlSocketPath,
-                  socketPath: paths.socketPath,
-                  appServerSocketPath: paths.appServerSocketPath,
-                  hostProcess: manifestValue.hostProcess,
-                },
-              );
+              const manifestBelongsToCurrentBuild =
+                manifestValue.buildFingerprint === buildFingerprint;
+              if (manifestBelongsToCurrentBuild) {
+                const ready = yield* fromPromise(() =>
+                  operations.waitForHost(manifestControlSocketPath, expectedHostIdentity),
+                );
+                if (ready) {
+                  knownControlSocketPath = manifestControlSocketPath;
+                  return manifestControlSocketPath;
+                }
+                yield* Effect.logWarning(
+                  "Codex provider host remained unavailable after the startup lease; starting a replacement on a generation-unique control endpoint while preserving Codex execution.",
+                  {
+                    previousSocketPath: manifestControlSocketPath,
+                    socketPath: controlSocketPath,
+                    appServerSocketPath: paths.appServerSocketPath,
+                    hostProcess: manifestValue.hostProcess,
+                    manifestHostProcessStatus,
+                  },
+                );
+              } else {
+                yield* Effect.logInfo(
+                  "Codex provider host belongs to another T3 build; starting the current build alongside it.",
+                  {
+                    previousSocketPath: manifestControlSocketPath,
+                    socketPath: paths.socketPath,
+                    appServerSocketPath: paths.appServerSocketPath,
+                    hostProcess: manifestValue.hostProcess,
+                  },
+                );
+              }
             }
           }
 
@@ -736,9 +871,9 @@ export const makeCodexAppServerHost = Effect.fn("makeCodexAppServerHost")(functi
           const preferredAppServerSocketOccupied =
             !appServerAvailable &&
             (yield* fromPromise(() => operations.socketPathExists(paths.appServerSocketPath)));
-          const spawnedAppServerSocketPath = preferredAppServerSocketOccupied
-            ? replacementAppServerSocketPath(paths.appServerSocketPath)
-            : paths.appServerSocketPath;
+          const spawnedAppServerSocketPath = replacementAppServerSocketPath(
+            paths.appServerSocketPath,
+          );
           if (preferredAppServerSocketOccupied) {
             yield* Effect.logWarning(
               "Preserving an unresponsive Codex app-server socket and starting recovery on a distinct endpoint.",
@@ -749,12 +884,15 @@ export const makeCodexAppServerHost = Effect.fn("makeCodexAppServerHost")(functi
               },
             );
           }
-          yield* fromPromise(() => operations.removeSocket(paths.socketPath));
+          const launchConfigPath = replacementConfigPath(paths.configPath);
+          yield* fromPromise(() => operations.removeSocket(controlSocketPath));
           yield* persistCodexProviderHostConfig({
-            path: paths.configPath,
+            path: launchConfigPath,
             config: makeConfig(
+              controlSocketPath,
               appServerMode,
               appServerMode === "attach" ? appServerSocketPath : spawnedAppServerSocketPath,
+              manifestValue?.generationFingerprint,
               appServerAvailable ? appServerProvenance : undefined,
             ),
           });
@@ -762,30 +900,56 @@ export const makeCodexAppServerHost = Effect.fn("makeCodexAppServerHost")(functi
             operations.spawnDetached(
               {
                 command: executablePath,
-                args: [entryPath, "__provider-host", "--config", paths.configPath],
+                args: [entryPath, "__provider-host", "--config", launchConfigPath],
                 cwd: options.cwd,
                 env: environment,
               },
               paths.logPath,
             ),
+          ).pipe(
+            Effect.tapError(() =>
+              fromPromise(() => NodeFSP.rm(launchConfigPath, { force: true })).pipe(Effect.ignore),
+            ),
           );
-          const ready = yield* fromPromise(() =>
-            operations.waitForHost(paths.socketPath, expectedHostIdentity),
+          const startupAbort = new AbortController();
+          const startup = yield* fromPromise(() =>
+            Promise.race([
+              operations
+                .waitForHost(controlSocketPath, expectedHostIdentity, startupAbort.signal)
+                .then((ready) => ({ _tag: "ready" as const, ready })),
+              detached.exited.then(() => ({ _tag: "exited" as const })),
+            ]).finally(() => startupAbort.abort()),
           );
+          const ready = startup._tag === "ready" && startup.ready;
           if (!ready) {
+            const recovered = yield* discoverCurrentHost();
+            if (recovered.socketPath) {
+              if (recovered.socketPath !== controlSocketPath) {
+                yield* fromPromise(detached.terminate);
+                yield* fromPromise(() => operations.removeSocket(controlSocketPath));
+                yield* fromPromise(() => NodeFSP.rm(launchConfigPath, { force: true })).pipe(
+                  Effect.ignore,
+                );
+              }
+              knownControlSocketPath = recovered.socketPath;
+              return recovered.socketPath;
+            }
             yield* fromPromise(detached.terminate);
-            yield* fromPromise(() => operations.removeSocket(paths.socketPath));
+            yield* fromPromise(() => operations.removeSocket(controlSocketPath));
+            yield* fromPromise(() => NodeFSP.rm(launchConfigPath, { force: true })).pipe(
+              Effect.ignore,
+            );
             yield* Effect.logWarning("Codex provider host did not become ready.", {
-              socketPath: paths.socketPath,
+              socketPath: controlSocketPath,
               appServerMode,
               logPath: paths.logPath,
               pid: detached.pid,
             });
             return undefined;
           }
-          return paths.socketPath;
+          knownControlSocketPath = controlSocketPath;
+          return controlSocketPath;
         }).pipe(
-          Effect.ensuring(fromPromise(startupLock.release).pipe(Effect.ignore)),
           Effect.catch((cause) =>
             Effect.logWarning("Failed to prepare independent Codex provider host.", {
               socketPath: paths.socketPath,
