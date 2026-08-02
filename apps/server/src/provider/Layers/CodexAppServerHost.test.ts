@@ -23,10 +23,11 @@ import { describe } from "vite-plus/test";
 import {
   __testing,
   codexAppServerHostPaths,
-  codexProviderHostGenerationFingerprint,
+  codexProviderHostConfigurationFingerprint,
   makeCodexAppServerHost,
   type CodexAppServerHostOperations,
   type CodexAppServerHostOptions,
+  type ProcessIdentityStatus,
 } from "./CodexAppServerHost.ts";
 import {
   CODEX_PROVIDER_HOST_CONFIG_VERSION,
@@ -36,7 +37,13 @@ import {
   PROVIDER_HOST_MANIFEST_SCHEMA_VERSION,
   persistProviderHostManifest,
 } from "../host/ProviderHostManifest.ts";
-import { PROVIDER_HOST_PROTOCOL_VERSION } from "../host/ProviderHostProtocol.ts";
+import {
+  PROVIDER_HOST_PROTOCOL_VERSION,
+  ProviderHostBuildFingerprint,
+  ProviderHostGenerationFingerprint,
+  ProviderHostHelloEnvelope,
+  ProviderHostReplayCursor,
+} from "../host/ProviderHostProtocol.ts";
 
 const TEST_EXECUTABLE_PATH = "/opt/t3/bin/node";
 const TEST_ENTRY_PATH = "/opt/t3/dist/bin.mjs";
@@ -82,18 +89,42 @@ function makeOptions(root: string, homePath = NodePath.join(root, "codex-home"))
 }
 
 function makeOperations(input?: {
+  readonly appServerProbeResults?: ReadonlyArray<boolean>;
   readonly probeResults?: ReadonlyArray<boolean>;
   readonly processIdentityMatches?: boolean;
+  readonly processIdentityResults?: ReadonlyArray<boolean>;
+  readonly processIdentityStatuses?: ReadonlyArray<"current" | "stale" | "unknown">;
+  readonly socketPathExists?: boolean;
   readonly waitResult?: boolean;
 }) {
+  const appServerProbeResults = [...(input?.appServerProbeResults ?? [false])];
   const probeResults = [...(input?.probeResults ?? [false])];
+  const processIdentityResults = [...(input?.processIdentityResults ?? [])];
+  const processIdentityStatuses = [...(input?.processIdentityStatuses ?? [])];
   const terminatedPids: Array<number> = [];
   const terminate = vi.fn(() => Promise.resolve());
   const operations = {
-    isProcessIdentityCurrent: vi.fn(() => Promise.resolve(input?.processIdentityMatches ?? true)),
-    probeAppServer: vi.fn((_socketPath: string) => Promise.resolve(false)),
+    inspectProcessIdentity: vi.fn((): Promise<ProcessIdentityStatus> => {
+      const status = processIdentityStatuses.shift();
+      if (status) return Promise.resolve(status);
+      return Promise.resolve(
+        (processIdentityResults.shift() ?? input?.processIdentityMatches ?? true)
+          ? "current"
+          : "stale",
+      );
+    }),
+    probeAppServer: vi.fn((_socketPath: string) =>
+      Promise.resolve(appServerProbeResults.shift() ?? false),
+    ),
     probeHost: vi.fn((_socketPath: string) => Promise.resolve(probeResults.shift() ?? false)),
+    readBuildFingerprint: vi.fn(() =>
+      Promise.resolve(ProviderHostBuildFingerprint.make("development")),
+    ),
     removeSocket: vi.fn((_socketPath: string) => Promise.resolve()),
+    sleep: vi.fn((_durationMs: number) => Promise.resolve()),
+    socketPathExists: vi.fn((_socketPath: string) =>
+      Promise.resolve(input?.socketPathExists ?? false),
+    ),
     spawnDetached: vi.fn(
       (_command: Parameters<CodexAppServerHostOperations["spawnDetached"]>[0], _logPath: string) =>
         Promise.resolve({
@@ -107,6 +138,39 @@ function makeOperations(input?: {
     waitForHost: vi.fn((_socketPath: string) => Promise.resolve(input?.waitResult ?? true)),
   } satisfies CodexAppServerHostOperations;
   return { operations, terminate, terminatedPids };
+}
+
+function writeLegacyManifest(input: {
+  readonly path: string;
+  readonly socketPath: string;
+  readonly appServerSocketPath: string;
+  readonly options: CodexAppServerHostOptions;
+  readonly hostProcess: { readonly pid: number; readonly startTimeMs: number };
+  readonly childProcess: { readonly pid: number; readonly startTimeMs: number };
+}) {
+  NodeFS.mkdirSync(NodePath.dirname(input.path), { recursive: true });
+  NodeFS.writeFileSync(
+    input.path,
+    `${JSON.stringify({
+      schemaVersion: 1,
+      protocolVersion: 1,
+      generationFingerprint: "legacy-generation",
+      hostProcess: input.hostProcess,
+      socketPath: input.socketPath,
+      codex: {
+        childProcess: input.childProcess,
+        resolvedBinary: input.options.binaryPath,
+        version: "codex-cli legacy",
+        launchConfig: {
+          arguments: ["app-server", "--listen", `unix://${input.appServerSocketPath}`],
+          workingDirectory: input.options.cwd,
+          environmentKeys: [],
+        },
+      },
+      startedAt: "2026-08-01T00:00:00.000Z",
+    })}\n`,
+    { mode: 0o600 },
+  );
 }
 
 const makeHost = (
@@ -140,6 +204,10 @@ describe("codexAppServerHostPaths", () => {
         binaryPath: "/opt/codex-new/bin/codex",
         launchArgs: "--strict-config --enable new-feature",
       });
+      const changedBuild = codexAppServerHostPaths(
+        options,
+        ProviderHostBuildFingerprint.make("different-build"),
+      );
       const otherHome = codexAppServerHostPaths(
         makeOptions(root, NodePath.join(root, "other-codex-home")),
       );
@@ -150,6 +218,8 @@ describe("codexAppServerHostPaths", () => {
 
       NodeAssert.deepStrictEqual(first, same);
       NodeAssert.equal(first.socketPath, changedGeneration.socketPath);
+      NodeAssert.notEqual(first.socketPath, changedBuild.socketPath);
+      NodeAssert.equal(first.appServerSocketPath, changedBuild.appServerSocketPath);
       NodeAssert.notEqual(first.socketPath, otherHome.socketPath);
       NodeAssert.notEqual(first.socketPath, otherState.socketPath);
       NodeAssert.notEqual(first.socketPath, first.appServerSocketPath);
@@ -172,6 +242,18 @@ describe("codexAppServerHostPaths", () => {
     NodeAssert.ok(Buffer.byteLength(paths.socketPath) <= 96);
     NodeAssert.ok(Buffer.byteLength(paths.appServerSocketPath) <= 96);
   });
+
+  it("keeps the app-server socket and startup lock stable when only the control socket is too long", () => {
+    const root = NodePath.join("/tmp", "x".repeat(41));
+    const options = makeOptions(root);
+    const paths = codexAppServerHostPaths(options);
+    const preferredRuntimeDir = NodePath.join(options.environment.XDG_RUNTIME_DIR!, "t3-code");
+
+    NodeAssert.ok(paths.socketPath.startsWith("/tmp/t3-code-"));
+    NodeAssert.ok(paths.appServerSocketPath.startsWith(preferredRuntimeDir));
+    NodeAssert.equal(NodePath.dirname(paths.lockPath), preferredRuntimeDir);
+    NodeAssert.ok(Buffer.byteLength(paths.appServerSocketPath) <= 96);
+  });
 });
 
 describe("makeCodexAppServerHost", () => {
@@ -185,11 +267,48 @@ describe("makeCodexAppServerHost", () => {
       startTimeMs: Math.max(0, Math.floor(NodePerfHooks.performance.timeOrigin)),
     };
 
-    NodeAssert.equal(await __testing.isProcessIdentityCurrent(currentIdentity), true);
+    NodeAssert.equal(await __testing.inspectProcessIdentity(currentIdentity), "current");
     NodeAssert.equal(
-      await __testing.isProcessIdentityCurrent({
+      await __testing.inspectProcessIdentity({
         ...currentIdentity,
         startTimeMs: 1_000,
+      }),
+      "stale",
+    );
+  });
+
+  it("matches the complete provider-host build and provider identity", () => {
+    const hello = ProviderHostHelloEnvelope.make({
+      version: PROVIDER_HOST_PROTOCOL_VERSION,
+      type: "hello",
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      buildFingerprint: ProviderHostBuildFingerprint.make("build-a"),
+      generationFingerprint: ProviderHostGenerationFingerprint.make("generation-a"),
+      appServerMode: "spawn",
+      canAdoptSessions: false,
+      hostProcess: { pid: 123, startTimeMs: 1_000 },
+      startedAt: DateTime.makeUnsafe("2026-08-01T00:00:00.000Z"),
+      latestCursor: ProviderHostReplayCursor.make(0),
+    });
+
+    NodeAssert.equal(
+      __testing.matchesProviderHostIdentity(hello, {
+        providerInstanceId: ProviderInstanceId.make("codex"),
+        buildFingerprint: ProviderHostBuildFingerprint.make("build-a"),
+      }),
+      true,
+    );
+    NodeAssert.equal(
+      __testing.matchesProviderHostIdentity(hello, {
+        providerInstanceId: ProviderInstanceId.make("codex-work"),
+        buildFingerprint: ProviderHostBuildFingerprint.make("build-a"),
+      }),
+      false,
+    );
+    NodeAssert.equal(
+      __testing.matchesProviderHostIdentity(hello, {
+        providerInstanceId: ProviderInstanceId.make("codex"),
+        buildFingerprint: ProviderHostBuildFingerprint.make("build-b"),
       }),
       false,
     );
@@ -282,9 +401,11 @@ describe("makeCodexAppServerHost", () => {
         NodeAssert.deepStrictEqual(config, {
           version: CODEX_PROVIDER_HOST_CONFIG_VERSION,
           providerInstanceId: options.providerInstanceId,
-          generationFingerprint: codexProviderHostGenerationFingerprint(options),
+          buildFingerprint: ProviderHostBuildFingerprint.make("development"),
+          configurationFingerprint: codexProviderHostConfigurationFingerprint(options),
           controlSocketPath: paths.socketPath,
           appServerSocketPath: paths.appServerSocketPath,
+          appServerMode: "spawn",
           manifestPath: paths.manifestPath,
           codex: {
             binaryPath: options.binaryPath,
@@ -319,15 +440,16 @@ describe("makeCodexAppServerHost", () => {
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 
-  it.effect("preserves a surviving Codex app-server when its provider host is unavailable", () =>
+  it.effect("preserves an unprovenanced app-server after bounded transient probe failures", () =>
     Effect.gen(function* () {
       const root = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-codex-host-"));
       const options = makeOptions(root);
       const paths = codexAppServerHostPaths(options);
       const { operations } = makeOperations({
+        appServerProbeResults: [false, false, true],
         probeResults: [false, false],
+        socketPathExists: true,
       });
-      operations.probeAppServer.mockResolvedValue(true);
       try {
         const host = yield* makeHost(root, operations, { options });
         NodeAssert.ok(host);
@@ -335,9 +457,343 @@ describe("makeCodexAppServerHost", () => {
         NodeAssert.equal(yield* host.ensure, undefined);
         NodeAssert.deepStrictEqual(operations.probeAppServer.mock.calls, [
           [paths.appServerSocketPath],
+          [paths.appServerSocketPath],
+          [paths.appServerSocketPath],
         ]);
+        NodeAssert.deepStrictEqual(operations.sleep.mock.calls, [
+          [__testing.appServerStaleProbeRetryMs],
+          [__testing.appServerStaleProbeRetryMs],
+        ]);
+        NodeAssert.equal(
+          operations.probeAppServer.mock.calls.length,
+          __testing.appServerStaleProbeAttempts,
+        );
         NodeAssert.equal(operations.removeSocket.mock.calls.length, 0);
         NodeAssert.equal(operations.spawnDetached.mock.calls.length, 0);
+      } finally {
+        NodeFS.rmSync(root, { recursive: true, force: true });
+      }
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("starts recovery beside an unprovenanced socket after every bounded probe fails", () =>
+    Effect.gen(function* () {
+      const root = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-codex-host-"));
+      const options = makeOptions(root);
+      const paths = codexAppServerHostPaths(options);
+      const { operations } = makeOperations({
+        appServerProbeResults: [false, false, false],
+        probeResults: [false, false],
+        socketPathExists: true,
+      });
+      try {
+        const host = yield* makeHost(root, operations, { options });
+        NodeAssert.ok(host);
+
+        NodeAssert.equal(yield* host.ensure, paths.socketPath);
+        NodeAssert.equal(
+          operations.probeAppServer.mock.calls.length,
+          __testing.appServerStaleProbeAttempts + 1,
+        );
+        NodeAssert.deepStrictEqual(operations.removeSocket.mock.calls, [[paths.socketPath]]);
+        NodeAssert.equal(operations.spawnDetached.mock.calls.length, 1);
+        const config = yield* readCodexProviderHostConfig(paths.configPath);
+        NodeAssert.equal(config.appServerMode, "spawn");
+        NodeAssert.notEqual(config.appServerSocketPath, paths.appServerSocketPath);
+        NodeAssert.equal(
+          NodePath.dirname(config.appServerSocketPath),
+          NodePath.dirname(paths.appServerSocketPath),
+        );
+        NodeAssert.equal(
+          Buffer.byteLength(config.appServerSocketPath),
+          Buffer.byteLength(paths.appServerSocketPath),
+        );
+      } finally {
+        NodeFS.rmSync(root, { recursive: true, force: true });
+      }
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("preserves an app-server that becomes ready at the final takeover check", () =>
+    Effect.gen(function* () {
+      const root = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-codex-host-"));
+      const options = makeOptions(root);
+      const { operations } = makeOperations({
+        appServerProbeResults: [false, false, false, true],
+        probeResults: [false, false],
+        socketPathExists: true,
+      });
+      try {
+        const host = yield* makeHost(root, operations, { options });
+        NodeAssert.ok(host);
+
+        NodeAssert.equal(yield* host.ensure, undefined);
+        NodeAssert.equal(
+          operations.probeAppServer.mock.calls.length,
+          __testing.appServerStaleProbeAttempts + 1,
+        );
+        NodeAssert.equal(operations.removeSocket.mock.calls.length, 0);
+        NodeAssert.equal(operations.spawnDetached.mock.calls.length, 0);
+      } finally {
+        NodeFS.rmSync(root, { recursive: true, force: true });
+      }
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("does not unlink a preferred app-server that becomes live after the final probe", () =>
+    Effect.gen(function* () {
+      const root = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-codex-host-"));
+      const options = makeOptions(root);
+      const paths = codexAppServerHostPaths(options);
+      const { operations } = makeOperations({
+        appServerProbeResults: [false, false, false, false],
+        probeResults: [false, false],
+        socketPathExists: true,
+      });
+      let preferredAppServerBecameLive = false;
+      operations.removeSocket.mockImplementation((socketPath) => {
+        if (socketPath === paths.appServerSocketPath) {
+          return Promise.reject(new Error("healthy app-server socket was unlinked"));
+        }
+        preferredAppServerBecameLive = true;
+        return Promise.resolve();
+      });
+      try {
+        const host = yield* makeHost(root, operations, { options });
+        NodeAssert.ok(host);
+
+        NodeAssert.equal(yield* host.ensure, paths.socketPath);
+        NodeAssert.equal(preferredAppServerBecameLive, true);
+        NodeAssert.deepStrictEqual(operations.removeSocket.mock.calls, [[paths.socketPath]]);
+        const config = yield* readCodexProviderHostConfig(paths.configPath);
+        NodeAssert.notEqual(config.appServerSocketPath, paths.appServerSocketPath);
+        NodeAssert.equal(operations.spawnDetached.mock.calls.length, 1);
+      } finally {
+        NodeFS.rmSync(root, { recursive: true, force: true });
+      }
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("starts a replacement host around a surviving Codex app-server", () =>
+    Effect.gen(function* () {
+      const root = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-codex-host-"));
+      const options = makeOptions(root);
+      const paths = codexAppServerHostPaths(options);
+      const legacyAppServerSocketPath = NodePath.join(root, "legacy-runtime", "codex.sock");
+      const { operations } = makeOperations({
+        probeResults: [false, false],
+        processIdentityResults: [false, true],
+      });
+      operations.probeAppServer.mockResolvedValue(true);
+      try {
+        writeLegacyManifest({
+          path: paths.manifestPath,
+          socketPath: paths.socketPath,
+          appServerSocketPath: legacyAppServerSocketPath,
+          options,
+          hostProcess: { pid: 4_241, startTimeMs: 1_000 },
+          childProcess: { pid: 4_242, startTimeMs: 2_000 },
+        });
+        const host = yield* makeHost(root, operations, { options });
+        NodeAssert.ok(host);
+
+        NodeAssert.equal(yield* host.ensure, paths.socketPath);
+        NodeAssert.deepStrictEqual(operations.probeAppServer.mock.calls, [
+          [legacyAppServerSocketPath],
+        ]);
+        NodeAssert.deepStrictEqual(operations.removeSocket.mock.calls, [[paths.socketPath]]);
+        NodeAssert.equal(operations.spawnDetached.mock.calls.length, 1);
+        const config = yield* readCodexProviderHostConfig(paths.configPath);
+        NodeAssert.equal(config.appServerMode, "attach");
+        NodeAssert.equal(config.appServerSocketPath, legacyAppServerSocketPath);
+        NodeAssert.deepStrictEqual(config.adoptedAppServer?.appServer.process, {
+          pid: 4_242,
+          startTimeMs: 2_000,
+        });
+      } finally {
+        NodeFS.rmSync(root, { recursive: true, force: true });
+      }
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("does not adopt from a live legacy host that may still own its app-server", () =>
+    Effect.gen(function* () {
+      const root = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-codex-host-"));
+      const options = makeOptions(root);
+      const paths = codexAppServerHostPaths(options);
+      const { operations } = makeOperations({
+        probeResults: [false, false],
+        processIdentityStatuses: ["current"],
+      });
+      try {
+        writeLegacyManifest({
+          path: paths.manifestPath,
+          socketPath: paths.socketPath,
+          appServerSocketPath: paths.appServerSocketPath,
+          options,
+          hostProcess: { pid: 4_241, startTimeMs: 1_000 },
+          childProcess: { pid: 4_242, startTimeMs: 2_000 },
+        });
+        const host = yield* makeHost(root, operations, { options });
+        NodeAssert.ok(host);
+
+        NodeAssert.equal(yield* host.ensure, undefined);
+        NodeAssert.equal(operations.probeAppServer.mock.calls.length, 0);
+        NodeAssert.equal(operations.removeSocket.mock.calls.length, 0);
+        NodeAssert.equal(operations.spawnDetached.mock.calls.length, 0);
+      } finally {
+        NodeFS.rmSync(root, { recursive: true, force: true });
+      }
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect(
+    "takes over an unavailable same-build control socket without replacing its app-server",
+    () =>
+      Effect.gen(function* () {
+        const root = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-codex-host-"));
+        const options = makeOptions(root);
+        const paths = codexAppServerHostPaths(options);
+        const { operations } = makeOperations({
+          probeResults: [false, false],
+          processIdentityStatuses: ["current"],
+          waitResult: false,
+        });
+        operations.probeAppServer.mockResolvedValue(true);
+        operations.waitForHost.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+        try {
+          yield* persistProviderHostManifest({
+            path: paths.manifestPath,
+            manifest: {
+              schemaVersion: PROVIDER_HOST_MANIFEST_SCHEMA_VERSION,
+              protocolVersion: PROVIDER_HOST_PROTOCOL_VERSION,
+              buildFingerprint: ProviderHostBuildFingerprint.make("development"),
+              generationFingerprint: ProviderHostGenerationFingerprint.make("generation-current"),
+              hostProcess: {
+                pid: 4_241,
+                startTimeMs: 1_000,
+              },
+              controlSocketPath: paths.socketPath,
+              codex: {
+                appServerMode: "spawn",
+                owner: {
+                  generationFingerprint:
+                    ProviderHostGenerationFingerprint.make("generation-current"),
+                  process: {
+                    pid: 4_241,
+                    startTimeMs: 1_000,
+                  },
+                },
+                appServer: {
+                  process: {
+                    pid: 4_242,
+                    startTimeMs: 2_000,
+                  },
+                  socketPath: paths.appServerSocketPath,
+                  resolvedBinary: options.binaryPath,
+                  version: "codex-cli test",
+                  launchConfig: {
+                    arguments: [],
+                    workingDirectory: options.cwd,
+                    environmentKeys: [],
+                  },
+                },
+              },
+              startedAt: DateTime.makeUnsafe("2026-08-01T00:00:00.000Z"),
+            },
+          });
+          const host = yield* makeHost(root, operations, { options });
+          NodeAssert.ok(host);
+
+          NodeAssert.equal(yield* host.ensure, paths.socketPath);
+          NodeAssert.equal(operations.waitForHost.mock.calls.length, 2);
+          NodeAssert.deepStrictEqual(operations.probeAppServer.mock.calls, [
+            [paths.appServerSocketPath],
+          ]);
+          NodeAssert.deepStrictEqual(operations.removeSocket.mock.calls, [[paths.socketPath]]);
+          NodeAssert.equal(operations.spawnDetached.mock.calls.length, 1);
+          const config = yield* readCodexProviderHostConfig(paths.configPath);
+          NodeAssert.equal(config.appServerMode, "attach");
+          NodeAssert.equal(config.appServerSocketPath, paths.appServerSocketPath);
+        } finally {
+          NodeFS.rmSync(root, { recursive: true, force: true });
+        }
+      }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("does not wait on the control socket from a previous T3 build", () =>
+    Effect.gen(function* () {
+      const root = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-codex-host-"));
+      const options = makeOptions(root);
+      const paths = codexAppServerHostPaths(options);
+      const previousPaths = codexAppServerHostPaths(
+        options,
+        ProviderHostBuildFingerprint.make("previous-build"),
+      );
+      const previousAppServerSocketPath = NodePath.join(root, "previous-runtime", "codex.sock");
+      const { operations } = makeOperations({
+        probeResults: [false, false],
+        processIdentityResults: [true, true],
+      });
+      operations.probeAppServer.mockResolvedValue(true);
+      try {
+        yield* persistProviderHostManifest({
+          path: paths.manifestPath,
+          manifest: {
+            schemaVersion: PROVIDER_HOST_MANIFEST_SCHEMA_VERSION,
+            protocolVersion: PROVIDER_HOST_PROTOCOL_VERSION,
+            buildFingerprint: ProviderHostBuildFingerprint.make("previous-build"),
+            generationFingerprint: ProviderHostGenerationFingerprint.make("previous-generation"),
+            hostProcess: {
+              pid: 4_241,
+              startTimeMs: 1_000,
+            },
+            controlSocketPath: previousPaths.socketPath,
+            codex: {
+              appServerMode: "spawn",
+              owner: {
+                generationFingerprint:
+                  ProviderHostGenerationFingerprint.make("previous-generation"),
+                process: {
+                  pid: 4_241,
+                  startTimeMs: 1_000,
+                },
+              },
+              appServer: {
+                process: {
+                  pid: 4_242,
+                  startTimeMs: 2_000,
+                },
+                socketPath: previousAppServerSocketPath,
+                resolvedBinary: options.binaryPath,
+                version: "codex-cli test",
+                launchConfig: {
+                  arguments: [],
+                  workingDirectory: options.cwd,
+                  environmentKeys: [],
+                },
+              },
+            },
+            startedAt: DateTime.makeUnsafe("2026-08-01T00:00:00.000Z"),
+          },
+        });
+
+        const host = yield* makeHost(root, operations, { options });
+        NodeAssert.ok(host);
+
+        NodeAssert.equal(yield* host.ensure, paths.socketPath);
+        NodeAssert.notEqual(previousPaths.socketPath, paths.socketPath);
+        NodeAssert.deepStrictEqual(
+          operations.waitForHost.mock.calls.map(([socketPath]) => socketPath),
+          [paths.socketPath],
+        );
+        NodeAssert.deepStrictEqual(operations.probeAppServer.mock.calls, [
+          [previousAppServerSocketPath],
+        ]);
+        NodeAssert.equal(operations.spawnDetached.mock.calls.length, 1);
+        NodeAssert.deepStrictEqual(operations.removeSocket.mock.calls, [[paths.socketPath]]);
+        const config = yield* readCodexProviderHostConfig(paths.configPath);
+        NodeAssert.equal(config.appServerSocketPath, previousAppServerSocketPath);
       } finally {
         NodeFS.rmSync(root, { recursive: true, force: true });
       }
@@ -369,6 +825,112 @@ describe("makeCodexAppServerHost", () => {
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 
+  it.effect("preserves a live app-server process while its socket is unavailable", () =>
+    Effect.gen(function* () {
+      const root = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-codex-host-"));
+      const options = makeOptions(root);
+      const paths = codexAppServerHostPaths(options);
+      const { operations } = makeOperations({
+        probeResults: [false, false],
+        processIdentityResults: [false, true],
+      });
+      operations.probeAppServer.mockResolvedValue(false);
+      try {
+        writeLegacyManifest({
+          path: paths.manifestPath,
+          socketPath: paths.socketPath,
+          appServerSocketPath: paths.appServerSocketPath,
+          options,
+          hostProcess: { pid: 4_241, startTimeMs: 1_000 },
+          childProcess: { pid: 4_242, startTimeMs: 2_000 },
+        });
+        const host = yield* makeHost(root, operations, { options });
+        NodeAssert.ok(host);
+
+        NodeAssert.equal(yield* host.ensure, undefined);
+        NodeAssert.deepStrictEqual(operations.inspectProcessIdentity.mock.calls, [
+          [{ pid: 4_241, startTimeMs: 1_000 }],
+          [{ pid: 4_242, startTimeMs: 2_000 }],
+        ]);
+        NodeAssert.equal(operations.removeSocket.mock.calls.length, 0);
+        NodeAssert.equal(operations.spawnDetached.mock.calls.length, 0);
+      } finally {
+        NodeFS.rmSync(root, { recursive: true, force: true });
+      }
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("preserves an app-server when process liveness cannot be determined", () =>
+    Effect.gen(function* () {
+      const root = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-codex-host-"));
+      const options = makeOptions(root);
+      const paths = codexAppServerHostPaths(options);
+      const { operations } = makeOperations({
+        probeResults: [false, false],
+        processIdentityStatuses: ["stale", "unknown"],
+      });
+      operations.probeAppServer.mockResolvedValue(false);
+      try {
+        writeLegacyManifest({
+          path: paths.manifestPath,
+          socketPath: paths.socketPath,
+          appServerSocketPath: paths.appServerSocketPath,
+          options,
+          hostProcess: { pid: 4_241, startTimeMs: 1_000 },
+          childProcess: { pid: 4_242, startTimeMs: 2_000 },
+        });
+        const host = yield* makeHost(root, operations, { options });
+        NodeAssert.ok(host);
+
+        NodeAssert.equal(yield* host.ensure, undefined);
+        NodeAssert.equal(operations.removeSocket.mock.calls.length, 0);
+        NodeAssert.equal(operations.spawnDetached.mock.calls.length, 0);
+      } finally {
+        NodeFS.rmSync(root, { recursive: true, force: true });
+      }
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect(
+    "preserves a live preferred app-server when a stale manifest names another socket",
+    () =>
+      Effect.gen(function* () {
+        const root = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-codex-host-"));
+        const options = makeOptions(root);
+        const paths = codexAppServerHostPaths(options);
+        const staleAppServerSocketPath = NodePath.join(root, "stale-runtime", "codex.sock");
+        const { operations } = makeOperations({
+          probeResults: [false, false],
+          processIdentityResults: [false, false],
+        });
+        operations.probeAppServer.mockImplementation((socketPath) =>
+          Promise.resolve(socketPath === paths.appServerSocketPath),
+        );
+        try {
+          writeLegacyManifest({
+            path: paths.manifestPath,
+            socketPath: paths.socketPath,
+            appServerSocketPath: staleAppServerSocketPath,
+            options,
+            hostProcess: { pid: 4_241, startTimeMs: 1_000 },
+            childProcess: { pid: 4_242, startTimeMs: 2_000 },
+          });
+          const host = yield* makeHost(root, operations, { options });
+          NodeAssert.ok(host);
+
+          NodeAssert.equal(yield* host.ensure, undefined);
+          NodeAssert.deepStrictEqual(operations.probeAppServer.mock.calls, [
+            [staleAppServerSocketPath],
+            [paths.appServerSocketPath],
+          ]);
+          NodeAssert.equal(operations.removeSocket.mock.calls.length, 0);
+          NodeAssert.equal(operations.spawnDetached.mock.calls.length, 0);
+        } finally {
+          NodeFS.rmSync(root, { recursive: true, force: true });
+        }
+      }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
   it.effect(
     "replaces a stale manifest when its pid belongs to a different process generation",
     () =>
@@ -378,7 +940,7 @@ describe("makeCodexAppServerHost", () => {
         const paths = codexAppServerHostPaths(options);
         const { operations } = makeOperations({
           probeResults: [false, false],
-          processIdentityMatches: false,
+          processIdentityResults: [false, false],
         });
         try {
           yield* persistProviderHostManifest({
@@ -386,18 +948,34 @@ describe("makeCodexAppServerHost", () => {
             manifest: {
               schemaVersion: PROVIDER_HOST_MANIFEST_SCHEMA_VERSION,
               protocolVersion: PROVIDER_HOST_PROTOCOL_VERSION,
-              generationFingerprint: codexProviderHostGenerationFingerprint(options),
+              buildFingerprint: ProviderHostBuildFingerprint.make("development"),
+              generationFingerprint: ProviderHostGenerationFingerprint.make("generation-stale"),
               hostProcess: {
                 pid: process.pid,
                 startTimeMs: 1_000,
               },
-              socketPath: paths.socketPath,
+              controlSocketPath: paths.socketPath,
               codex: {
-                resolvedBinary: options.binaryPath,
-                version: "codex-cli test",
-                launchConfig: {
-                  arguments: [],
-                  environmentKeys: [],
+                appServerMode: "spawn",
+                owner: {
+                  generationFingerprint: ProviderHostGenerationFingerprint.make("generation-stale"),
+                  process: {
+                    pid: process.pid,
+                    startTimeMs: 1_000,
+                  },
+                },
+                appServer: {
+                  process: {
+                    pid: process.pid + 1,
+                    startTimeMs: 1_001,
+                  },
+                  socketPath: paths.appServerSocketPath,
+                  resolvedBinary: options.binaryPath,
+                  version: "codex-cli test",
+                  launchConfig: {
+                    arguments: [],
+                    environmentKeys: [],
+                  },
                 },
               },
               startedAt: DateTime.makeUnsafe("2026-08-01T00:00:00.000Z"),
@@ -408,19 +986,22 @@ describe("makeCodexAppServerHost", () => {
           NodeAssert.ok(host);
 
           NodeAssert.equal(yield* host.ensure, paths.socketPath);
-          NodeAssert.deepStrictEqual(operations.isProcessIdentityCurrent.mock.calls, [
+          NodeAssert.deepStrictEqual(operations.inspectProcessIdentity.mock.calls, [
             [
               {
                 pid: process.pid,
                 startTimeMs: 1_000,
               },
             ],
+            [
+              {
+                pid: process.pid + 1,
+                startTimeMs: 1_001,
+              },
+            ],
           ]);
           NodeAssert.equal(operations.spawnDetached.mock.calls.length, 1);
-          NodeAssert.deepStrictEqual(
-            operations.removeSocket.mock.calls.map(([socketPath]) => socketPath),
-            [paths.socketPath, paths.appServerSocketPath],
-          );
+          NodeAssert.deepStrictEqual(operations.removeSocket.mock.calls, [[paths.socketPath]]);
         } finally {
           NodeFS.rmSync(root, { recursive: true, force: true });
         }
@@ -461,7 +1042,7 @@ describe("makeCodexAppServerHost", () => {
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 
-  it.effect("terminates only the captured child when provider-host startup times out", () =>
+  it.effect("terminates only the captured provider host when startup times out", () =>
     Effect.gen(function* () {
       const root = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-codex-host-"));
       const paths = codexAppServerHostPaths(makeOptions(root));
@@ -479,12 +1060,7 @@ describe("makeCodexAppServerHost", () => {
         NodeAssert.deepStrictEqual(terminatedPids, [4242]);
         NodeAssert.deepStrictEqual(
           operations.removeSocket.mock.calls.map(([socketPath]) => socketPath),
-          [
-            paths.socketPath,
-            paths.appServerSocketPath,
-            paths.socketPath,
-            paths.appServerSocketPath,
-          ],
+          [paths.socketPath, paths.socketPath],
         );
         NodeAssert.equal(NodeFS.statSync(paths.lockPath).mode & 0o777, 0o600);
       } finally {
@@ -514,11 +1090,11 @@ describe("makeCodexAppServerHost", () => {
         NodeAssert.equal(yield* nextHost.ensure, nextHost.socketPath);
         NodeAssert.equal(firstHost.socketPath, nextHost.socketPath);
         NodeAssert.notEqual(
-          codexProviderHostGenerationFingerprint(firstOptions),
-          codexProviderHostGenerationFingerprint(nextOptions),
+          codexProviderHostConfigurationFingerprint(firstOptions),
+          codexProviderHostConfigurationFingerprint(nextOptions),
         );
         NodeAssert.equal(operations.spawnDetached.mock.calls.length, 1);
-        NodeAssert.equal(operations.removeSocket.mock.calls.length, 2);
+        NodeAssert.equal(operations.removeSocket.mock.calls.length, 1);
         NodeAssert.equal(terminate.mock.calls.length, 0);
 
         const config = yield* readCodexProviderHostConfig(
@@ -548,10 +1124,15 @@ describe("makeCodexAppServerHost", () => {
         markReady = resolve;
       });
       const operations = {
-        isProcessIdentityCurrent: vi.fn(() => Promise.resolve(true)),
+        inspectProcessIdentity: vi.fn(() => Promise.resolve("current" as const)),
         probeAppServer: vi.fn(() => Promise.resolve(false)),
         probeHost: vi.fn(() => Promise.resolve(ready)),
+        readBuildFingerprint: vi.fn(() =>
+          Promise.resolve(ProviderHostBuildFingerprint.make("development")),
+        ),
         removeSocket: vi.fn(() => Promise.resolve()),
+        sleep: vi.fn(() => Promise.resolve()),
+        socketPathExists: vi.fn(() => Promise.resolve(false)),
         spawnDetached: vi.fn(async () => {
           markSpawnStarted();
           await spawnReleased;
@@ -578,7 +1159,7 @@ describe("makeCodexAppServerHost", () => {
         NodeAssert.equal(yield* Fiber.join(first), firstHost.socketPath);
         NodeAssert.equal(yield* Fiber.join(second), secondHost.socketPath);
         NodeAssert.equal(operations.spawnDetached.mock.calls.length, 1);
-        NodeAssert.equal(operations.removeSocket.mock.calls.length, 2);
+        NodeAssert.equal(operations.removeSocket.mock.calls.length, 1);
       } finally {
         NodeFS.rmSync(root, { recursive: true, force: true });
       }
