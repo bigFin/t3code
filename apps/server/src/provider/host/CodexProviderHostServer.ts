@@ -126,6 +126,12 @@ const isCodexResumeCursor = Schema.is(CodexResumeCursorSchema);
 const isCodexSessionRuntimeThreadIdMissingError = Schema.is(
   CodexSessionRuntimeThreadIdMissingError,
 );
+const encodeUnknownJsonString = Schema.encodeUnknownSync(Schema.UnknownFromJsonString);
+const decodeJsonString = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Json));
+
+function providerSessionSnapshotState(snapshot: ProviderSession): Schema.Json {
+  return decodeJsonString(encodeUnknownJsonString(snapshot));
+}
 
 interface ReplayEntry {
   readonly envelope: ProviderHostEventEnvelope;
@@ -1161,7 +1167,7 @@ export const runCodexProviderHost = Effect.fn("runCodexProviderHost")(function* 
                   type: "snapshot",
                   threadId: sessionOptions.threadId,
                   cursor: latestCursor,
-                  state: snapshot,
+                  state: providerSessionSnapshotState(snapshot),
                 }),
               );
             }
@@ -1608,7 +1614,7 @@ export const runCodexProviderHost = Effect.fn("runCodexProviderHost")(function* 
                   threadId: envelope.threadId,
                   cursor: latestCursor,
                   ...(replayTruncated ? { replayTruncated: true } : {}),
-                  state: snapshot,
+                  state: providerSessionSnapshotState(snapshot),
                 }),
               );
             }),

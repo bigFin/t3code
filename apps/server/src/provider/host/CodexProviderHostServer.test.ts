@@ -250,6 +250,7 @@ class FakeCodexRuntime implements CodexSessionRuntimeShape {
     eventQueue: Queue.Queue<ProviderEvent, Cause.Done<void>>,
     eventOnStart: ProviderEvent | undefined,
     startError: Error | undefined,
+    sessionOverrides: Partial<ProviderSession> | undefined,
   ) {
     this.options = options;
     this.eventQueue = eventQueue;
@@ -265,6 +266,7 @@ class FakeCodexRuntime implements CodexSessionRuntimeShape {
       ...(options.resumeCursor ? { resumeCursor: options.resumeCursor } : {}),
       createdAt: this.now,
       updatedAt: this.now,
+      ...sessionOverrides,
     };
   }
 
@@ -342,6 +344,7 @@ interface HostTestContext {
   readonly blockRuntimeCreation: () => () => void;
   readonly emitOnRuntimeStart: (event: ProviderEvent) => void;
   readonly failNextRuntimeStart: (cause: Error) => void;
+  readonly setNextRuntimeSessionOverrides: (overrides: Partial<ProviderSession>) => void;
   readonly connect: () => Promise<TestClient>;
   readonly exitCodex: (code: number | null, signal?: NodeJS.Signals | null) => void;
 }
@@ -564,6 +567,7 @@ function withHostEffect<R>(
   const runtimes: Array<FakeCodexRuntime> = [];
   let eventOnRuntimeStart: ProviderEvent | undefined;
   let nextRuntimeStartError: Error | undefined;
+  let nextRuntimeSessionOverrides: Partial<ProviderSession> | undefined;
   let runtimeCreationGate: Promise<void> | undefined;
   let resolveRuntimeCreationStarted: () => void = () => undefined;
   const runtimeCreationStarted = new Promise<void>((resolve) => {
@@ -574,13 +578,21 @@ function withHostEffect<R>(
     resolveRuntimeCreationStarted();
     const startError = nextRuntimeStartError;
     nextRuntimeStartError = undefined;
+    const sessionOverrides = nextRuntimeSessionOverrides;
+    nextRuntimeSessionOverrides = undefined;
     return Effect.gen(function* () {
       const gate = runtimeCreationGate;
       if (gate) {
         yield* Effect.promise(() => gate);
       }
       const eventQueue = yield* Queue.unbounded<ProviderEvent, Cause.Done<void>>();
-      const runtime = new FakeCodexRuntime(options, eventQueue, eventOnRuntimeStart, startError);
+      const runtime = new FakeCodexRuntime(
+        options,
+        eventQueue,
+        eventOnRuntimeStart,
+        startError,
+        sessionOverrides,
+      );
       runtimes.push(runtime);
       return runtime;
     });
@@ -720,6 +732,9 @@ function withHostEffect<R>(
         },
         failNextRuntimeStart: (cause) => {
           nextRuntimeStartError = cause;
+        },
+        setNextRuntimeSessionOverrides: (overrides) => {
+          nextRuntimeSessionOverrides = overrides;
         },
         connect: async () => {
           const client = await TestClient.connect(controlSocketPath);
@@ -1232,6 +1247,47 @@ describe("CodexProviderHostServer", () => {
           threadId: "provider-thread-rehydrate",
         });
         NodeAssert.equal(context.runtimes[0]?.options.resumePolicy, "resume-only");
+      },
+      { appServerMode: "attach" },
+    ),
+  );
+
+  it.effect("serializes recovered session snapshots with explicit undefined fields", () =>
+    withHost(
+      async (context) => {
+        const providerThreadId = "provider-thread-json-safe";
+        context.setNextRuntimeSessionOverrides({
+          model: undefined,
+          activeTurnId: undefined,
+          lastError: undefined,
+          retrying: undefined,
+          resumeCursor: {
+            threadId: providerThreadId,
+            legacyMetadata: undefined,
+          },
+        });
+        const reader = await context.connect();
+        reader.send({
+          ...makeAttach(context, "client-json-safe", "attachment-json-safe", undefined, {
+            resumeCursor: { threadId: providerThreadId },
+          }),
+          mode: "adopt",
+        });
+
+        const snapshot = await reader.take(isSnapshotFor(context.threadId));
+        NodeAssert.ok(
+          typeof snapshot.state === "object" &&
+            snapshot.state !== null &&
+            !Array.isArray(snapshot.state),
+        );
+        const state = snapshot.state as Record<string, unknown>;
+        NodeAssert.equal("model" in state, false);
+        NodeAssert.equal("activeTurnId" in state, false);
+        NodeAssert.equal("lastError" in state, false);
+        NodeAssert.equal("retrying" in state, false);
+        NodeAssert.deepStrictEqual(state.resumeCursor, {
+          threadId: providerThreadId,
+        });
       },
       { appServerMode: "attach" },
     ),
