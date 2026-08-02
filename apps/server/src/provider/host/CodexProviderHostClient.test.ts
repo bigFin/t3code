@@ -1239,7 +1239,7 @@ it.effect("drains provider events that arrive at the detach boundary", () => {
   );
 });
 
-it.effect("keeps the attach timeout active until the initial snapshot arrives", () => {
+it.effect("uses a longer attach timeout after the provider-host handshake", () => {
   const root = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-provider-host-timeout-"));
   const socketPath = NodePath.join(root, "control.sock");
   const sockets = new Set<NodeNet.Socket>();
@@ -1253,23 +1253,36 @@ it.effect("keeps the attach timeout active until the initial snapshot arrives", 
 
   const nativeSetTimeout = globalThis.setTimeout;
   const nativeClearTimeout = globalThis.clearTimeout;
-  let connectTimeoutHandle: ReturnType<typeof setTimeout> | undefined;
-  let connectTimeoutCleared = false;
-  let fireConnectTimeout: (() => void) | undefined;
+  let handshakeTimeoutHandle: ReturnType<typeof setTimeout> | undefined;
+  let handshakeTimeoutCleared = false;
+  let fireHandshakeTimeout: (() => void) | undefined;
+  let attachTimeoutHandle: ReturnType<typeof setTimeout> | undefined;
+  let attachTimeoutCleared = false;
+  let fireAttachTimeout: (() => void) | undefined;
   const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
   setTimeoutSpy.mockImplementation(((
     ...args: Parameters<typeof setTimeout>
   ): ReturnType<typeof setTimeout> => {
     const [callback, delay, ...callbackArgs] = args;
-    if (delay === 5_000 && connectTimeoutHandle === undefined) {
-      connectTimeoutHandle = nativeSetTimeout(() => undefined, 60_000);
-      connectTimeoutHandle.unref?.();
-      fireConnectTimeout = () => {
-        if (!connectTimeoutCleared) {
+    if (delay === 5_000 && handshakeTimeoutHandle === undefined) {
+      handshakeTimeoutHandle = nativeSetTimeout(() => undefined, 180_000);
+      handshakeTimeoutHandle.unref?.();
+      fireHandshakeTimeout = () => {
+        if (!handshakeTimeoutCleared) {
           callback(...callbackArgs);
         }
       };
-      return connectTimeoutHandle;
+      return handshakeTimeoutHandle;
+    }
+    if (delay === 120_000 && attachTimeoutHandle === undefined) {
+      attachTimeoutHandle = nativeSetTimeout(() => undefined, 180_000);
+      attachTimeoutHandle.unref?.();
+      fireAttachTimeout = () => {
+        if (!attachTimeoutCleared) {
+          callback(...callbackArgs);
+        }
+      };
+      return attachTimeoutHandle;
     }
     return nativeSetTimeout(callback, delay, ...callbackArgs);
   }) as typeof setTimeout);
@@ -1277,8 +1290,11 @@ it.effect("keeps the attach timeout active until the initial snapshot arrives", 
   clearTimeoutSpy.mockImplementation(((
     ...args: Parameters<typeof clearTimeout>
   ): ReturnType<typeof clearTimeout> => {
-    if (args[0] === connectTimeoutHandle) {
-      connectTimeoutCleared = true;
+    if (args[0] === handshakeTimeoutHandle) {
+      handshakeTimeoutCleared = true;
+    }
+    if (args[0] === attachTimeoutHandle) {
+      attachTimeoutCleared = true;
     }
     return nativeClearTimeout(...args);
   }) as typeof clearTimeout);
@@ -1341,8 +1357,12 @@ it.effect("keeps the attach timeout active until the initial snapshot arrives", 
           .start()
           .pipe(Effect.timeout("250 millis"), Effect.forkChild);
         yield* Effect.promise(() => attached);
-        NodeAssert.ok(fireConnectTimeout);
-        fireConnectTimeout();
+        NodeAssert.equal(handshakeTimeoutCleared, true);
+        NodeAssert.ok(fireHandshakeTimeout);
+        fireHandshakeTimeout();
+        yield* Effect.promise(() => new Promise<void>((resolve) => setImmediate(resolve)));
+        NodeAssert.ok(fireAttachTimeout);
+        fireAttachTimeout();
 
         const startExit = yield* Fiber.await(startFiber);
         NodeAssert.equal(Exit.isFailure(startExit), true);
@@ -1357,8 +1377,11 @@ it.effect("keeps the attach timeout active until the initial snapshot arrives", 
       Effect.promise(async () => {
         setTimeoutSpy.mockRestore();
         clearTimeoutSpy.mockRestore();
-        if (connectTimeoutHandle) {
-          nativeClearTimeout(connectTimeoutHandle);
+        if (handshakeTimeoutHandle) {
+          nativeClearTimeout(handshakeTimeoutHandle);
+        }
+        if (attachTimeoutHandle) {
+          nativeClearTimeout(attachTimeoutHandle);
         }
         for (const socket of sockets) {
           socket.destroy();

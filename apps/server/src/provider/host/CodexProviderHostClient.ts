@@ -73,7 +73,8 @@ import {
   type ProviderHostLineFramer,
 } from "./ProviderHostLineFramer.ts";
 
-const CONNECT_TIMEOUT_MS = 5_000;
+const HANDSHAKE_TIMEOUT_MS = 5_000;
+const ATTACH_TIMEOUT_MS = 120_000;
 const RECONNECT_WINDOW_MS = 10_000;
 const COMMAND_TIMEOUT_MS = 120_000;
 const COMMAND_CLIENT_GRACE_MS = 5_000;
@@ -591,9 +592,18 @@ export const makeCodexProviderHostRuntime = Effect.fn("makeCodexProviderHostRunt
         let helloReceived = false;
         let inventoryReceived = false;
         let generationChanged = false;
-        const timeout = setTimeout(() => {
-          socket.destroy(new Error("Timed out connecting to the Codex provider host."));
-        }, CONNECT_TIMEOUT_MS);
+        let timeout = setTimeout(() => {
+          socket.destroy(new Error("Timed out negotiating with the Codex provider host."));
+        }, HANDSHAKE_TIMEOUT_MS);
+
+        const startAttachTimeout = () => {
+          clearTimeout(timeout);
+          timeout = setTimeout(() => {
+            socket.destroy(
+              new Error("Timed out waiting for the Codex provider-host attachment snapshot."),
+            );
+          }, ATTACH_TIMEOUT_MS);
+        };
 
         const fail = (cause: Error) => {
           clearTimeout(timeout);
@@ -771,6 +781,7 @@ export const makeCodexProviderHostRuntime = Effect.fn("makeCodexProviderHostRunt
                     ? envelope.canAdoptSessions
                     : false;
                 helloReceived = true;
+                startAttachTimeout();
                 attach();
                 break;
               }

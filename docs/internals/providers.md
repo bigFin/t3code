@@ -135,7 +135,8 @@ runtime are synchronized into that replay before the snapshot. When a runtime is
 existing attachments receive a new authoritative snapshot after replacement startup output so every
 reader adopts the same resume cursor and state. If the requested cursor predates the retained window,
 the host reports truncation and T3 projects a runtime warning instead of silently claiming complete
-replay.
+replay. The control-protocol handshake has a short deadline, while the first snapshot has a separate,
+longer bounded deadline so resuming a large Codex thread is not mistaken for an unreachable host.
 
 Provider event command ids are stable across replay, so reconnecting T3 does not duplicate already
 persisted orchestration changes. Transport commands reuse their id while retrying against the same
