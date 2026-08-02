@@ -810,6 +810,268 @@ describe("makeCodexAppServerHost", () => {
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 
+  it.effect("promotes a failed legacy attachment without changing legacy process ownership", () =>
+    Effect.gen(function* () {
+      const root = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-codex-host-"));
+      const options = makeOptions(root);
+      const paths = codexAppServerHostPaths(options);
+      const legacyControlSocketPath = NodePath.join(root, "legacy-runtime", "host.sock");
+      const legacyAppServerSocketPath = NodePath.join(root, "legacy-runtime", "codex.sock");
+      const { operations, terminate } = makeOperations({
+        probeResults: [true, true],
+        processIdentityStatuses: ["current"],
+      });
+      operations.probeAppServer.mockResolvedValue(true);
+      try {
+        writeLegacyManifest({
+          path: paths.manifestPath,
+          socketPath: legacyControlSocketPath,
+          appServerSocketPath: legacyAppServerSocketPath,
+          options,
+          hostProcess: { pid: 4_241, startTimeMs: 1_000 },
+          childProcess: { pid: 4_242, startTimeMs: 2_000 },
+        });
+        const host = yield* makeHost(root, operations, { options });
+        NodeAssert.ok(host);
+        NodeAssert.equal(yield* host.ensure, legacyControlSocketPath);
+        NodeAssert.ok(host.promoteLegacyHost);
+
+        const promotedControlSocketPath = yield* host.promoteLegacyHost({
+          controlSocketPath: legacyControlSocketPath,
+          generationFingerprint: "legacy-generation",
+        });
+
+        NodeAssert.equal(typeof promotedControlSocketPath, "string");
+        NodeAssert.notEqual(promotedControlSocketPath, legacyControlSocketPath);
+        NodeAssert.deepStrictEqual(operations.probeHost.mock.calls.slice(0, 2), [
+          [
+            legacyControlSocketPath,
+            {
+              version: PROVIDER_HOST_LEGACY_PROTOCOL_VERSION,
+              providerInstanceId: options.providerInstanceId,
+              generationFingerprint: ProviderHostGenerationFingerprint.make("legacy-generation"),
+              hostProcess: { pid: 4_241, startTimeMs: 1_000 },
+            },
+          ],
+          [
+            legacyControlSocketPath,
+            {
+              version: PROVIDER_HOST_LEGACY_PROTOCOL_VERSION,
+              providerInstanceId: options.providerInstanceId,
+              generationFingerprint: ProviderHostGenerationFingerprint.make("legacy-generation"),
+              hostProcess: { pid: 4_241, startTimeMs: 1_000 },
+            },
+          ],
+        ]);
+        NodeAssert.deepStrictEqual(operations.removeSocket.mock.calls, [
+          [promotedControlSocketPath],
+        ]);
+        NodeAssert.equal(operations.spawnDetached.mock.calls.length, 1);
+        NodeAssert.equal(terminate.mock.calls.length, 0);
+        const config = yield* readCodexProviderHostConfig(spawnedConfigPath(operations));
+        NodeAssert.equal(config.controlSocketPath, promotedControlSocketPath);
+        NodeAssert.equal(config.appServerMode, "attach");
+        NodeAssert.equal(config.appServerSocketPath, legacyAppServerSocketPath);
+        NodeAssert.equal(
+          config.expectedManifestGenerationFingerprint,
+          ProviderHostGenerationFingerprint.make("legacy-generation"),
+        );
+        NodeAssert.deepStrictEqual(config.adoptedAppServer, {
+          owner: {
+            generationFingerprint: ProviderHostGenerationFingerprint.make("legacy-generation"),
+            process: { pid: 4_241, startTimeMs: 1_000 },
+          },
+          appServer: {
+            process: { pid: 4_242, startTimeMs: 2_000 },
+            socketPath: legacyAppServerSocketPath,
+            resolvedBinary: options.binaryPath,
+            version: "codex-cli legacy",
+            launchConfig: {
+              arguments: ["app-server", "--listen", `unix://${legacyAppServerSocketPath}`],
+              workingDirectory: root,
+              environmentKeys: [],
+            },
+          },
+        });
+      } finally {
+        NodeFS.rmSync(root, { recursive: true, force: true });
+      }
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("waits for a concurrently promoted same-build host to become ready", () =>
+    Effect.gen(function* () {
+      const root = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-codex-host-"));
+      const options = makeOptions(root);
+      const paths = codexAppServerHostPaths(options);
+      const promotedControlSocketPath = NodePath.join(root, "runtime", "promoted.sock");
+      const { operations } = makeOperations({
+        waitResult: true,
+      });
+      try {
+        yield* persistProviderHostManifest({
+          path: paths.manifestPath,
+          manifest: {
+            schemaVersion: PROVIDER_HOST_MANIFEST_SCHEMA_VERSION,
+            protocolVersion: PROVIDER_HOST_PROTOCOL_VERSION,
+            buildFingerprint: ProviderHostBuildFingerprint.make("development"),
+            generationFingerprint: ProviderHostGenerationFingerprint.make(
+              "generation-concurrent-promotion",
+            ),
+            hostProcess: {
+              pid: 4_241,
+              startTimeMs: 1_000,
+            },
+            controlSocketPath: promotedControlSocketPath,
+            codex: {
+              appServerMode: "attach",
+              owner: {
+                generationFingerprint: ProviderHostGenerationFingerprint.make("generation-legacy"),
+                process: {
+                  pid: 4_240,
+                  startTimeMs: 500,
+                },
+              },
+              appServer: {
+                process: {
+                  pid: 4_242,
+                  startTimeMs: 2_000,
+                },
+                socketPath: paths.appServerSocketPath,
+                resolvedBinary: options.binaryPath,
+                version: "codex-cli test",
+                launchConfig: {
+                  arguments: [],
+                  workingDirectory: options.cwd,
+                  environmentKeys: [],
+                },
+              },
+            },
+            startedAt: DateTime.makeUnsafe("2026-08-02T00:00:00.000Z"),
+          },
+        });
+        const host = yield* makeHost(root, operations, { options });
+        NodeAssert.ok(host?.promoteLegacyHost);
+
+        NodeAssert.equal(
+          yield* host.promoteLegacyHost({
+            controlSocketPath: NodePath.join(root, "legacy-runtime", "host.sock"),
+            generationFingerprint: "legacy-generation",
+          }),
+          promotedControlSocketPath,
+        );
+        NodeAssert.deepStrictEqual(operations.waitForHost.mock.calls, [
+          [
+            promotedControlSocketPath,
+            {
+              version: PROVIDER_HOST_PROTOCOL_VERSION,
+              providerInstanceId: options.providerInstanceId,
+              buildFingerprint: ProviderHostBuildFingerprint.make("development"),
+            },
+          ],
+        ]);
+        NodeAssert.equal(operations.spawnDetached.mock.calls.length, 0);
+      } finally {
+        NodeFS.rmSync(root, { recursive: true, force: true });
+      }
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("adopts the winning concurrent promotion after its socket becomes ready", () =>
+    Effect.gen(function* () {
+      const root = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-codex-host-"));
+      const options = makeOptions(root);
+      const paths = codexAppServerHostPaths(options);
+      const legacyControlSocketPath = NodePath.join(root, "legacy-runtime", "host.sock");
+      const legacyAppServerSocketPath = NodePath.join(root, "legacy-runtime", "codex.sock");
+      const winningControlSocketPath = NodePath.join(root, "runtime", "winner.sock");
+      const { operations, terminate } = makeOperations({
+        probeResults: [true, true, false],
+        processIdentityStatuses: ["current"],
+      });
+      operations.probeAppServer.mockResolvedValue(true);
+      let waitCount = 0;
+      operations.waitForHost.mockImplementation(async () => {
+        waitCount += 1;
+        if (waitCount === 1) {
+          NodeFS.writeFileSync(
+            paths.manifestPath,
+            `${JSON.stringify({
+              schemaVersion: PROVIDER_HOST_MANIFEST_SCHEMA_VERSION,
+              protocolVersion: PROVIDER_HOST_PROTOCOL_VERSION,
+              buildFingerprint: "development",
+              generationFingerprint: "generation-concurrent-winner",
+              hostProcess: {
+                pid: 5_241,
+                startTimeMs: 3_000,
+              },
+              controlSocketPath: winningControlSocketPath,
+              codex: {
+                appServerMode: "attach",
+                owner: {
+                  generationFingerprint: "legacy-generation",
+                  process: {
+                    pid: 4_241,
+                    startTimeMs: 1_000,
+                  },
+                },
+                appServer: {
+                  process: {
+                    pid: 4_242,
+                    startTimeMs: 2_000,
+                  },
+                  socketPath: legacyAppServerSocketPath,
+                  resolvedBinary: options.binaryPath,
+                  version: "codex-cli legacy",
+                  launchConfig: {
+                    arguments: ["app-server", "--listen", `unix://${legacyAppServerSocketPath}`],
+                    workingDirectory: options.cwd,
+                    environmentKeys: [],
+                  },
+                },
+              },
+              startedAt: "2026-08-02T00:00:00.000Z",
+            })}\n`,
+            { mode: 0o600 },
+          );
+          return false;
+        }
+        return true;
+      });
+      try {
+        writeLegacyManifest({
+          path: paths.manifestPath,
+          socketPath: legacyControlSocketPath,
+          appServerSocketPath: legacyAppServerSocketPath,
+          options,
+          hostProcess: { pid: 4_241, startTimeMs: 1_000 },
+          childProcess: { pid: 4_242, startTimeMs: 2_000 },
+        });
+        const host = yield* makeHost(root, operations, { options });
+        NodeAssert.ok(host);
+        NodeAssert.equal(yield* host.ensure, legacyControlSocketPath);
+        NodeAssert.ok(host.promoteLegacyHost);
+
+        NodeAssert.equal(
+          yield* host.promoteLegacyHost({
+            controlSocketPath: legacyControlSocketPath,
+            generationFingerprint: "legacy-generation",
+          }),
+          winningControlSocketPath,
+        );
+        NodeAssert.equal(operations.spawnDetached.mock.calls.length, 1);
+        NodeAssert.equal(terminate.mock.calls.length, 1);
+        NodeAssert.equal(waitCount, 2);
+        NodeAssert.equal(
+          (operations.waitForHost.mock.calls[1] as [string] | undefined)?.[0],
+          winningControlSocketPath,
+        );
+      } finally {
+        NodeFS.rmSync(root, { recursive: true, force: true });
+      }
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
   it.effect("preserves a legacy host whose process identity cannot be verified", () =>
     Effect.gen(function* () {
       const root = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-codex-host-"));

@@ -171,6 +171,7 @@ export interface CodexSessionRuntimeShape {
 
 export type CodexSessionRuntimeError =
   | CodexErrors.CodexAppServerError
+  | CodexSessionRuntimeLegacyHostAttachmentError
   | CodexSessionRuntimeMutationAmbiguousError
   | CodexSessionRuntimePendingApprovalNotFoundError
   | CodexSessionRuntimePendingUserInputNotFoundError
@@ -326,6 +327,19 @@ export class CodexSessionRuntimeThreadIdMissingError extends Schema.TaggedErrorC
 ) {
   override get message(): string {
     return `Codex session is missing a provider thread id for ${this.threadId}`;
+  }
+}
+
+export class CodexSessionRuntimeLegacyHostAttachmentError extends Schema.TaggedErrorClass<CodexSessionRuntimeLegacyHostAttachmentError>()(
+  "CodexSessionRuntimeLegacyHostAttachmentError",
+  {
+    threadId: ThreadId,
+    controlSocketPath: Schema.String,
+    generationFingerprint: Schema.String,
+  },
+) {
+  override get message(): string {
+    return `Legacy Codex provider host closed while attaching thread ${this.threadId}.`;
   }
 }
 
@@ -1458,20 +1472,48 @@ export const makeCodexSessionRuntime = (
         yield* emitSessionEvent("session/ready", "Codex App Server session ready.");
       }
       if (options.resumeCursor !== undefined && recoveredState.lifecycle) {
+        const recoveredLifecycle = recoveredState.lifecycle;
         const recoveredTurn = opened.thread.turns.find(
-          (turn) => turn.id === recoveredState.lifecycle?.turnId,
+          (turn) => turn.id === recoveredLifecycle.turnId,
         );
         if (recoveredTurn) {
-          yield* emitEvent({
+          const emitRecoveredTurnLifecycle = emitEvent({
             kind: "notification",
             threadId: options.threadId,
-            method: recoveredState.lifecycle.type === "started" ? "turn/started" : "turn/completed",
-            turnId: recoveredState.lifecycle.turnId,
+            method: recoveredLifecycle.type === "started" ? "turn/started" : "turn/completed",
+            turnId: recoveredLifecycle.turnId,
             payload: {
               threadId: providerThreadId,
               turn: recoveredTurn,
             },
           });
+          if (recoveredLifecycle.type === "started") {
+            yield* emitRecoveredTurnLifecycle;
+          }
+          if (options.resumePolicy === "resume-only") {
+            yield* Effect.forEach(
+              recoveredTurn.items,
+              (item) =>
+                item.type === "agentMessage"
+                  ? emitEvent({
+                      kind: "notification",
+                      threadId: options.threadId,
+                      method: "item/completed",
+                      turnId: recoveredLifecycle.turnId,
+                      itemId: ProviderItemId.make(item.id),
+                      payload: {
+                        threadId: providerThreadId,
+                        turnId: recoveredLifecycle.turnId,
+                        item,
+                      },
+                    })
+                  : Effect.void,
+              { concurrency: 1, discard: true },
+            );
+          }
+          if (recoveredLifecycle.type === "completed") {
+            yield* emitRecoveredTurnLifecycle;
+          }
         }
       }
       if (recoveredState.waitingReason) {

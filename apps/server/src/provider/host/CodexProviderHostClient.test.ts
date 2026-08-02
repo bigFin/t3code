@@ -230,6 +230,317 @@ it.effect("negotiates protocol v1 and reuses a legacy session with v1 envelopes"
   );
 });
 
+it.effect("reuses an inventoried v1 session when create starts with a resume cursor", () => {
+  const root = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-provider-host-v1-resume-"));
+  const socketPath = NodePath.join(root, "control.sock");
+  const sockets = new Set<NodeNet.Socket>();
+  const threadId = ThreadId.make("thread-provider-host-v1-resume");
+  const providerInstanceId = ProviderInstanceId.make("codex");
+  const now = "2026-01-01T00:00:00.000Z";
+  let attachEnvelope: ClientEnvelope | undefined;
+
+  const server = NodeNet.createServer((socket) => {
+    sockets.add(socket);
+    socket.setEncoding("utf8");
+    socket.on("close", () => sockets.delete(socket));
+    socket.write(
+      [
+        JSON.stringify({
+          version: PROVIDER_HOST_LEGACY_PROTOCOL_VERSION,
+          type: "hello",
+          providerInstanceId,
+          generationFingerprint: "generation-provider-host-v1-resume",
+          hostProcess: {
+            pid: 1,
+            startTimeMs: 0,
+          },
+          startedAt: now,
+          latestCursor: 0,
+        }),
+        JSON.stringify({
+          version: PROVIDER_HOST_LEGACY_PROTOCOL_VERSION,
+          type: "inventory",
+          threads: [
+            {
+              threadId,
+              status: "active",
+              attachmentCount: 0,
+              cursor: 0,
+            },
+          ],
+        }),
+      ].join("\n") + "\n",
+    );
+
+    let inbound = "";
+    socket.on("data", (chunk: string) => {
+      inbound += chunk;
+      while (true) {
+        const newline = inbound.indexOf("\n");
+        if (newline < 0) break;
+        const line = inbound.slice(0, newline).trim();
+        inbound = inbound.slice(newline + 1);
+        if (!line) continue;
+        const envelope = JSON.parse(line) as ClientEnvelope;
+        if (envelope.type !== "attach") continue;
+        attachEnvelope = envelope;
+        const state: ProviderSession = {
+          provider: ProviderDriverKind.make("codex"),
+          providerInstanceId,
+          status: "running",
+          runtimeMode: "full-access",
+          cwd: root,
+          threadId,
+          resumeCursor: { threadId: "provider-thread-v1-resume" },
+          createdAt: now,
+          updatedAt: now,
+        };
+        socket.write(
+          `${JSON.stringify({
+            version: PROVIDER_HOST_LEGACY_PROTOCOL_VERSION,
+            type: "snapshot",
+            threadId,
+            cursor: 0,
+            state,
+          })}\n`,
+        );
+      }
+    });
+  });
+
+  return Effect.gen(function* () {
+    yield* Effect.promise(() => listen(server, socketPath));
+    yield* Effect.scoped(
+      Effect.gen(function* () {
+        const runtime = yield* makeCodexProviderHostRuntime({
+          controlSocketPath: socketPath,
+          sessionMode: "create",
+          options: {
+            threadId,
+            providerInstanceId,
+            cwd: root,
+            binaryPath: "codex",
+            launchArgs: "",
+            runtimeMode: "full-access",
+            resumeCursor: { threadId: "provider-thread-v1-resume" },
+          },
+        });
+
+        NodeAssert.equal((yield* runtime.start()).status, "running");
+        NodeAssert.ok(attachEnvelope);
+        NodeAssert.equal(attachEnvelope.version, PROVIDER_HOST_LEGACY_PROTOCOL_VERSION);
+        NodeAssert.equal(attachEnvelope.mode, undefined);
+        NodeAssert.equal(attachEnvelope.session, undefined);
+      }),
+    );
+  }).pipe(
+    Effect.ensuring(
+      Effect.promise(async () => {
+        for (const socket of sockets) {
+          socket.destroy();
+        }
+        await closeServer(server);
+        NodeFS.rmSync(root, { recursive: true, force: true });
+      }),
+    ),
+  );
+});
+
+it.effect("promotes a closing v1 attachment and adopts it through v2", () => {
+  const root = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-provider-host-v1-promote-"));
+  const legacySocketPath = NodePath.join(root, "legacy-control.sock");
+  const promotedSocketPath = NodePath.join(root, "promoted-control.sock");
+  const sockets = new Set<NodeNet.Socket>();
+  const threadId = ThreadId.make("thread-provider-host-v1-promote");
+  const providerInstanceId = ProviderInstanceId.make("codex");
+  const now = "2026-01-01T00:00:00.000Z";
+  let legacyAttachEnvelope: ClientEnvelope | undefined;
+  let promotedAttachEnvelope: ClientEnvelope | undefined;
+
+  const legacyServer = NodeNet.createServer((socket) => {
+    sockets.add(socket);
+    socket.setEncoding("utf8");
+    socket.on("close", () => sockets.delete(socket));
+    socket.write(
+      [
+        JSON.stringify({
+          version: PROVIDER_HOST_LEGACY_PROTOCOL_VERSION,
+          type: "hello",
+          providerInstanceId,
+          generationFingerprint: "generation-provider-host-v1-promote",
+          hostProcess: {
+            pid: 1,
+            startTimeMs: 0,
+          },
+          startedAt: now,
+          latestCursor: 0,
+        }),
+        JSON.stringify({
+          version: PROVIDER_HOST_LEGACY_PROTOCOL_VERSION,
+          type: "inventory",
+          threads: [
+            {
+              threadId,
+              status: "active",
+              attachmentCount: 0,
+              cursor: 0,
+            },
+          ],
+        }),
+      ].join("\n") + "\n",
+    );
+
+    let inbound = "";
+    socket.on("data", (chunk: string) => {
+      inbound += chunk;
+      while (true) {
+        const newline = inbound.indexOf("\n");
+        if (newline < 0) break;
+        const line = inbound.slice(0, newline).trim();
+        inbound = inbound.slice(newline + 1);
+        if (!line) continue;
+        const envelope = JSON.parse(line) as ClientEnvelope;
+        if (envelope.type !== "attach") continue;
+        legacyAttachEnvelope = envelope;
+        socket.destroy();
+      }
+    });
+  });
+
+  const promotedServer = NodeNet.createServer((socket) => {
+    sockets.add(socket);
+    socket.setEncoding("utf8");
+    socket.on("close", () => sockets.delete(socket));
+    socket.write(
+      [
+        JSON.stringify({
+          version: PROVIDER_HOST_PROTOCOL_VERSION,
+          type: "hello",
+          providerInstanceId,
+          buildFingerprint: "build-provider-host-v2-promoted",
+          generationFingerprint: "generation-provider-host-v2-promoted",
+          appServerMode: "attach",
+          canAdoptSessions: true,
+          hostProcess: {
+            pid: 2,
+            startTimeMs: 0,
+          },
+          startedAt: now,
+          latestCursor: 0,
+        }),
+        JSON.stringify({
+          version: PROVIDER_HOST_PROTOCOL_VERSION,
+          type: "inventory",
+          threads: [],
+        }),
+      ].join("\n") + "\n",
+    );
+
+    let inbound = "";
+    socket.on("data", (chunk: string) => {
+      inbound += chunk;
+      while (true) {
+        const newline = inbound.indexOf("\n");
+        if (newline < 0) break;
+        const line = inbound.slice(0, newline).trim();
+        inbound = inbound.slice(newline + 1);
+        if (!line) continue;
+        const envelope = JSON.parse(line) as ClientEnvelope;
+        if (envelope.type !== "attach") continue;
+        promotedAttachEnvelope = envelope;
+        const state: ProviderSession = {
+          provider: ProviderDriverKind.make("codex"),
+          providerInstanceId,
+          status: "running",
+          runtimeMode: "full-access",
+          cwd: root,
+          threadId,
+          resumeCursor: { threadId: "provider-thread-v1-promote" },
+          createdAt: now,
+          updatedAt: now,
+        };
+        socket.write(
+          `${JSON.stringify({
+            version: PROVIDER_HOST_PROTOCOL_VERSION,
+            type: "snapshot",
+            threadId,
+            cursor: 0,
+            state,
+          })}\n`,
+        );
+      }
+    });
+  });
+
+  return Effect.gen(function* () {
+    yield* Effect.promise(() => listen(legacyServer, legacySocketPath));
+    yield* Effect.promise(() => listen(promotedServer, promotedSocketPath));
+    yield* Effect.scoped(
+      Effect.gen(function* () {
+        const recoverLegacyHost = vi.fn(
+          (input: {
+            readonly threadId: ThreadId;
+            readonly controlSocketPath: string;
+            readonly generationFingerprint: string;
+          }) => {
+            NodeAssert.deepStrictEqual(input, {
+              threadId,
+              controlSocketPath: legacySocketPath,
+              generationFingerprint: "generation-provider-host-v1-promote",
+            });
+            return Effect.succeed(promotedSocketPath);
+          },
+        );
+        const runtime = yield* makeCodexProviderHostRuntime({
+          controlSocketPath: legacySocketPath,
+          sessionMode: "create",
+          recoverLegacyHost,
+          options: {
+            threadId,
+            providerInstanceId,
+            cwd: root,
+            binaryPath: "codex",
+            launchArgs: "",
+            runtimeMode: "full-access",
+            resumeCursor: { threadId: "provider-thread-v1-promote" },
+          },
+        });
+
+        const sessions = yield* Effect.all([runtime.start(), runtime.start()], {
+          concurrency: 2,
+        });
+        NodeAssert.deepStrictEqual(
+          sessions.map((session) => session.status),
+          ["running", "running"],
+        );
+        NodeAssert.equal(recoverLegacyHost.mock.calls.length, 1);
+        NodeAssert.ok(legacyAttachEnvelope);
+        NodeAssert.equal(legacyAttachEnvelope.session, undefined);
+        NodeAssert.ok(promotedAttachEnvelope);
+        NodeAssert.equal(promotedAttachEnvelope.mode, "adopt");
+        NodeAssert.deepStrictEqual(promotedAttachEnvelope.session, {
+          threadId,
+          providerInstanceId,
+          cwd: root,
+          runtimeMode: "full-access",
+          resumeCursor: { threadId: "provider-thread-v1-promote" },
+        });
+      }),
+    );
+  }).pipe(
+    Effect.ensuring(
+      Effect.promise(async () => {
+        for (const socket of sockets) {
+          socket.destroy();
+        }
+        await closeServer(legacyServer);
+        await closeServer(promotedServer);
+        NodeFS.rmSync(root, { recursive: true, force: true });
+      }),
+    ),
+  );
+});
+
 it.effect("emits the authoritative host snapshot after reconnecting", () => {
   const root = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-provider-host-client-"));
   const socketPath = NodePath.join(root, "control.sock");

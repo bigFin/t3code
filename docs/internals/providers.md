@@ -116,10 +116,17 @@ This lifecycle independence applies to app-servers launched by this model. A leg
 lifecycle authority over the Codex process it launched. When its manifest, hello generation, provider
 identity, and process identity agree, current T3 clients negotiate protocol v1 and attach to that
 host's existing sessions using the legacy envelopes. They do not adopt or restart its Codex
-app-server, and they omit v2-only attach modes and command deadlines. If the legacy control endpoint
-cannot be verified, T3 preserves both processes and reports the detached host as unavailable instead
-of falling back to a process-bound Codex runtime. Once the legacy host is confirmed gone, v2 may
-adopt a separately surviving app-server without signaling it.
+app-server, and they omit v2-only attach modes and command deadlines.
+
+There is one compatibility repair for a verified legacy session that remains inventoried but closes
+every attachment before returning its snapshot. T3 may start a v2 gateway around the same verified
+app-server and adopt that Codex thread with resume-only semantics. The repair does not signal,
+terminate, unlink, or replace the legacy host or its child, and the legacy host remains the process
+lifecycle owner. The v2 gateway replays recovered assistant output from the adopted turn so the new
+attachment does not hide a response produced during the handoff. If the legacy thread is not
+inventoried, its control endpoint cannot be verified, or its app-server provenance is ambiguous, T3
+preserves the processes and reports the detached host as unavailable instead of guessing or creating
+a replacement conversation.
 
 Attachments request bounded event replay and then receive a fresh snapshot, so missed transcript
 events land before the authoritative state is projected as `session.state.changed`, including an

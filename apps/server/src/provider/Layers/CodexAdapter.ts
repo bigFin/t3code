@@ -106,6 +106,7 @@ export interface CodexAdapterLiveOptions {
     readonly controlSocketPath: string;
     readonly options: CodexSessionRuntimeOptions;
     readonly sessionMode?: "create" | "reuse" | "adopt";
+    readonly recoverLegacyHost?: NonNullable<CodexAppServerHostShape["promoteLegacyHost"]>;
   }) => Effect.Effect<
     CodexSessionRuntimeShape,
     CodexSessionRuntimeError,
@@ -1706,6 +1707,9 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
                 controlSocketPath: providerHostSocketPath,
                 options: runtimeOptions,
                 sessionMode,
+                ...(appServerHost?.promoteLegacyHost
+                  ? { recoverLegacyHost: appServerHost.promoteLegacyHost }
+                  : {}),
               })
           : (options?.makeRuntime ?? makeCodexSessionRuntime);
         const runtime = yield* createRuntime(runtimeInput).pipe(

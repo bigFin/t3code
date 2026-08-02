@@ -57,6 +57,14 @@ export interface CodexAppServerHostShape {
   readonly socketPath: string;
   readonly appServerSocketPath?: string;
   readonly ensure: Effect.Effect<string | undefined>;
+  readonly promoteLegacyHost?: (
+    input: CodexLegacyHostPromotionInput,
+  ) => Effect.Effect<string | undefined>;
+}
+
+export interface CodexLegacyHostPromotionInput {
+  readonly controlSocketPath: string;
+  readonly generationFingerprint: string;
 }
 
 export interface CodexAppServerHostOptions {
@@ -701,6 +709,99 @@ export const makeCodexAppServerHost = Effect.fn("makeCodexAppServerHost")(functi
     };
   });
 
+  const launchHost = Effect.fn("CodexAppServerHost.launchHost")(function* (input: {
+    readonly manifestValue: DecodedProviderHostManifest | undefined;
+    readonly controlSocketPath: string;
+    readonly appServerMode: CodexProviderHostConfig["appServerMode"];
+    readonly appServerSocketPath: string;
+    readonly adoptedAppServer: ProviderHostAppServerProvenance | undefined;
+    readonly acceptLegacyRecovery: boolean;
+  }) {
+    const launchConfigPath = replacementConfigPath(paths.configPath);
+    yield* fromPromise(() => operations.removeSocket(input.controlSocketPath));
+    yield* persistCodexProviderHostConfig({
+      path: launchConfigPath,
+      config: makeConfig(
+        input.controlSocketPath,
+        input.appServerMode,
+        input.appServerSocketPath,
+        input.manifestValue?.generationFingerprint,
+        input.adoptedAppServer,
+      ),
+    });
+    const detached = yield* fromPromise(() =>
+      operations.spawnDetached(
+        {
+          command: executablePath,
+          args: [entryPath, "__provider-host", "--config", launchConfigPath],
+          cwd: options.cwd,
+          env: environment,
+        },
+        paths.logPath,
+      ),
+    ).pipe(
+      Effect.tapError(() =>
+        fromPromise(() => NodeFSP.rm(launchConfigPath, { force: true })).pipe(Effect.ignore),
+      ),
+    );
+    const startupAbort = new AbortController();
+    const startup = yield* fromPromise(() =>
+      Promise.race([
+        operations
+          .waitForHost(input.controlSocketPath, expectedHostIdentity, startupAbort.signal)
+          .then((ready) => ({ _tag: "ready" as const, ready })),
+        detached.exited.then(() => ({ _tag: "exited" as const })),
+      ]).finally(() => startupAbort.abort()),
+    );
+    const ready = startup._tag === "ready" && startup.ready;
+    if (!ready) {
+      const recovered = yield* discoverCurrentHost();
+      const recoveredManifest = recovered.manifestValue;
+      let recoveredSocketPath =
+        recovered.socketPath &&
+        (input.acceptLegacyRecovery ||
+          (recoveredManifest?.schemaVersion === 2 &&
+            recoveredManifest.buildFingerprint === buildFingerprint))
+          ? recovered.socketPath
+          : undefined;
+      if (
+        recoveredSocketPath === undefined &&
+        recoveredManifest?.schemaVersion === 2 &&
+        recoveredManifest.buildFingerprint === buildFingerprint
+      ) {
+        const recoveredReady = yield* fromPromise(() =>
+          operations.waitForHost(recoveredManifest.controlSocketPath, expectedHostIdentity),
+        );
+        if (recoveredReady) {
+          recoveredSocketPath = recoveredManifest.controlSocketPath;
+        }
+      }
+      if (recoveredSocketPath) {
+        if (recoveredSocketPath !== input.controlSocketPath) {
+          yield* fromPromise(detached.terminate);
+          yield* fromPromise(() => operations.removeSocket(input.controlSocketPath));
+          yield* fromPromise(() => NodeFSP.rm(launchConfigPath, { force: true })).pipe(
+            Effect.ignore,
+          );
+        }
+        knownControlSocketPath = recoveredSocketPath;
+        return recoveredSocketPath;
+      }
+      yield* fromPromise(detached.terminate);
+      yield* fromPromise(() => operations.removeSocket(input.controlSocketPath));
+      yield* fromPromise(() => NodeFSP.rm(launchConfigPath, { force: true })).pipe(Effect.ignore);
+      yield* Effect.logWarning("Codex provider host did not become ready.", {
+        socketPath: input.controlSocketPath,
+        appServerMode: input.appServerMode,
+        logPath: paths.logPath,
+        pid: detached.pid,
+      });
+      return undefined;
+    }
+    knownControlSocketPath = input.controlSocketPath;
+    return input.controlSocketPath;
+  });
+
   const ensure = mutex
     .withPermit(
       Effect.gen(function* () {
@@ -884,71 +985,15 @@ export const makeCodexAppServerHost = Effect.fn("makeCodexAppServerHost")(functi
               },
             );
           }
-          const launchConfigPath = replacementConfigPath(paths.configPath);
-          yield* fromPromise(() => operations.removeSocket(controlSocketPath));
-          yield* persistCodexProviderHostConfig({
-            path: launchConfigPath,
-            config: makeConfig(
-              controlSocketPath,
-              appServerMode,
+          return yield* launchHost({
+            manifestValue,
+            controlSocketPath,
+            appServerMode,
+            appServerSocketPath:
               appServerMode === "attach" ? appServerSocketPath : spawnedAppServerSocketPath,
-              manifestValue?.generationFingerprint,
-              appServerAvailable ? appServerProvenance : undefined,
-            ),
+            adoptedAppServer: appServerAvailable ? appServerProvenance : undefined,
+            acceptLegacyRecovery: true,
           });
-          const detached = yield* fromPromise(() =>
-            operations.spawnDetached(
-              {
-                command: executablePath,
-                args: [entryPath, "__provider-host", "--config", launchConfigPath],
-                cwd: options.cwd,
-                env: environment,
-              },
-              paths.logPath,
-            ),
-          ).pipe(
-            Effect.tapError(() =>
-              fromPromise(() => NodeFSP.rm(launchConfigPath, { force: true })).pipe(Effect.ignore),
-            ),
-          );
-          const startupAbort = new AbortController();
-          const startup = yield* fromPromise(() =>
-            Promise.race([
-              operations
-                .waitForHost(controlSocketPath, expectedHostIdentity, startupAbort.signal)
-                .then((ready) => ({ _tag: "ready" as const, ready })),
-              detached.exited.then(() => ({ _tag: "exited" as const })),
-            ]).finally(() => startupAbort.abort()),
-          );
-          const ready = startup._tag === "ready" && startup.ready;
-          if (!ready) {
-            const recovered = yield* discoverCurrentHost();
-            if (recovered.socketPath) {
-              if (recovered.socketPath !== controlSocketPath) {
-                yield* fromPromise(detached.terminate);
-                yield* fromPromise(() => operations.removeSocket(controlSocketPath));
-                yield* fromPromise(() => NodeFSP.rm(launchConfigPath, { force: true })).pipe(
-                  Effect.ignore,
-                );
-              }
-              knownControlSocketPath = recovered.socketPath;
-              return recovered.socketPath;
-            }
-            yield* fromPromise(detached.terminate);
-            yield* fromPromise(() => operations.removeSocket(controlSocketPath));
-            yield* fromPromise(() => NodeFSP.rm(launchConfigPath, { force: true })).pipe(
-              Effect.ignore,
-            );
-            yield* Effect.logWarning("Codex provider host did not become ready.", {
-              socketPath: controlSocketPath,
-              appServerMode,
-              logPath: paths.logPath,
-              pid: detached.pid,
-            });
-            return undefined;
-          }
-          knownControlSocketPath = controlSocketPath;
-          return controlSocketPath;
         }).pipe(
           Effect.catch((cause) =>
             Effect.logWarning("Failed to prepare independent Codex provider host.", {
@@ -972,10 +1017,110 @@ export const makeCodexAppServerHost = Effect.fn("makeCodexAppServerHost")(functi
       ),
     );
 
+  const promoteLegacyHost = (input: CodexLegacyHostPromotionInput) =>
+    mutex
+      .withPermit(
+        Effect.gen(function* () {
+          yield* fromPromise(() =>
+            NodeFSP.mkdir(NodePath.dirname(paths.socketPath), {
+              recursive: true,
+              mode: 0o700,
+            }),
+          );
+          yield* fromPromise(() => NodeFSP.chmod(NodePath.dirname(paths.socketPath), 0o700));
+          const manifest = yield* readProviderHostManifest(paths.manifestPath);
+          const manifestValue = Option.getOrUndefined(manifest);
+          if (
+            manifestValue?.schemaVersion === 2 &&
+            manifestValue.buildFingerprint === buildFingerprint
+          ) {
+            const available = yield* fromPromise(() =>
+              operations.waitForHost(manifestValue.controlSocketPath, expectedHostIdentity),
+            ).pipe(Effect.orElseSucceed(() => false));
+            if (available) {
+              knownControlSocketPath = manifestValue.controlSocketPath;
+              return manifestValue.controlSocketPath;
+            }
+            return undefined;
+          }
+          if (
+            manifestValue?.schemaVersion !== 1 ||
+            manifestValue.protocolVersion !== PROVIDER_HOST_LEGACY_PROTOCOL_VERSION ||
+            manifestValue.socketPath !== input.controlSocketPath ||
+            manifestValue.generationFingerprint !== input.generationFingerprint
+          ) {
+            return undefined;
+          }
+          const legacyAvailable = yield* fromPromise(() =>
+            operations.probeHost(
+              manifestValue.socketPath,
+              expectedLegacyHostIdentity(manifestValue),
+            ),
+          ).pipe(Effect.orElseSucceed(() => false));
+          if (!legacyAvailable) {
+            return undefined;
+          }
+          const appServerProvenance = readAdoptableAppServerProvenance(
+            manifestValue,
+            paths.appServerSocketPath,
+          );
+          if (!appServerProvenance) {
+            return undefined;
+          }
+          const appServerAvailable = yield* fromPromise(() =>
+            probeAppServerForStartup(appServerProvenance.appServer.socketPath, operations),
+          );
+          const appServerProcessStatus = yield* fromPromise(() =>
+            operations.inspectProcessIdentity(appServerProvenance.appServer.process),
+          );
+          if (!appServerAvailable || appServerProcessStatus !== "current") {
+            yield* Effect.logWarning(
+              "Cannot promote a legacy Codex provider host without a live, verified app-server.",
+              {
+                legacyControlSocketPath: manifestValue.socketPath,
+                appServerSocketPath: appServerProvenance.appServer.socketPath,
+                appServerProcessStatus,
+              },
+            );
+            return undefined;
+          }
+          const controlSocketPath = replacementControlSocketPath(paths.socketPath);
+          yield* Effect.logWarning(
+            "Promoting a failed legacy provider-host attachment through a v2 gateway without changing Codex execution.",
+            {
+              legacyControlSocketPath: manifestValue.socketPath,
+              controlSocketPath,
+              appServerSocketPath: appServerProvenance.appServer.socketPath,
+              generationFingerprint: manifestValue.generationFingerprint,
+            },
+          );
+          return yield* launchHost({
+            manifestValue,
+            controlSocketPath,
+            appServerMode: "attach",
+            appServerSocketPath: appServerProvenance.appServer.socketPath,
+            adoptedAppServer: appServerProvenance,
+            acceptLegacyRecovery: false,
+          });
+        }),
+      )
+      .pipe(
+        Effect.provideService(FileSystem.FileSystem, fileSystem),
+        Effect.provideService(Path.Path, path),
+        Effect.catch((cause) =>
+          Effect.logWarning("Failed to promote legacy Codex provider host.", {
+            legacyControlSocketPath: input.controlSocketPath,
+            generationFingerprint: input.generationFingerprint,
+            cause,
+          }).pipe(Effect.as(undefined)),
+        ),
+      );
+
   return {
     socketPath: paths.socketPath,
     appServerSocketPath: paths.appServerSocketPath,
     ensure,
+    promoteLegacyHost,
   } satisfies CodexAppServerHostShape;
 });
 

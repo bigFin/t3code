@@ -10,6 +10,7 @@ import {
   ProviderInstanceId,
   ProviderSession,
   ProviderTurnStartResult,
+  ThreadId,
   TurnId,
 } from "@t3tools/contracts";
 import * as NodeCrypto from "node:crypto";
@@ -30,6 +31,7 @@ import * as Stream from "effect/Stream";
 import * as CodexErrors from "effect-codex-app-server/errors";
 
 import {
+  CodexSessionRuntimeLegacyHostAttachmentError,
   CodexSessionRuntimeMutationAmbiguousError,
   CodexSessionRuntimeThreadIdMissingError,
   resolveCodexRecoveredThreadState,
@@ -112,6 +114,9 @@ const isProviderEvent = Schema.is(ProviderEvent);
 const isProviderTurnStartResult = Schema.is(ProviderTurnStartResult);
 const isCodexSessionRuntimeThreadIdMissingError = Schema.is(
   CodexSessionRuntimeThreadIdMissingError,
+);
+const isCodexSessionRuntimeLegacyHostAttachmentError = Schema.is(
+  CodexSessionRuntimeLegacyHostAttachmentError,
 );
 const CodexThreadSnapshotSchema = Schema.Struct({
   threadId: Schema.String,
@@ -212,6 +217,11 @@ export const makeCodexProviderHostRuntime = Effect.fn("makeCodexProviderHostRunt
     readonly detachCloseTimeoutMs?: number;
     readonly reconnectWindowMs?: number;
     readonly createConnection?: (path: string) => NodeNet.Socket;
+    readonly recoverLegacyHost?: (input: {
+      readonly threadId: ThreadId;
+      readonly controlSocketPath: string;
+      readonly generationFingerprint: string;
+    }) => Effect.Effect<string | undefined>;
     readonly maxPendingProviderEvents?: number;
     readonly maxPendingProviderEventBytes?: number;
   }): Effect.fn.Return<CodexSessionRuntimeShape, never, Scope.Scope> {
@@ -241,9 +251,11 @@ export const makeCodexProviderHostRuntime = Effect.fn("makeCodexProviderHostRunt
     const sockets = new Set<NodeNet.Socket>();
     let connection: HostConnection | undefined;
     let connecting: Promise<HostConnection> | undefined;
+    let controlSocketPath = input.controlSocketPath;
     let closing = false;
     let started = false;
     let attachmentAttempted = false;
+    let legacyRecoveryAttempted = false;
     let reconnecting = false;
     let replayCursor = ProviderHostReplayCursor.make(0);
     let generationFingerprint: ProviderHostGenerationFingerprint | undefined;
@@ -417,6 +429,37 @@ export const makeCodexProviderHostRuntime = Effect.fn("makeCodexProviderHostRunt
       current.pending.clear();
     };
 
+    const openConnectionWithLegacyRecovery = async (): Promise<HostConnection> => {
+      try {
+        return await openConnection();
+      } catch (cause) {
+        if (
+          !isCodexSessionRuntimeLegacyHostAttachmentError(cause) ||
+          legacyRecoveryAttempted ||
+          input.recoverLegacyHost === undefined ||
+          latestResumeCursor === undefined
+        ) {
+          throw cause;
+        }
+        legacyRecoveryAttempted = true;
+        const recoveredControlSocketPath = await runPromise(
+          input.recoverLegacyHost({
+            threadId: cause.threadId,
+            controlSocketPath: cause.controlSocketPath,
+            generationFingerprint: cause.generationFingerprint,
+          }),
+        );
+        if (
+          recoveredControlSocketPath === undefined ||
+          recoveredControlSocketPath === controlSocketPath
+        ) {
+          throw cause;
+        }
+        controlSocketPath = recoveredControlSocketPath;
+        return openConnection();
+      }
+    };
+
     function ensureConnection(): Effect.Effect<HostConnection, CodexSessionRuntimeError> {
       if (closing) {
         return Effect.fail(
@@ -427,14 +470,15 @@ export const makeCodexProviderHostRuntime = Effect.fn("makeCodexProviderHostRunt
         return Effect.succeed(connection);
       }
       if (!connecting) {
-        connecting = openConnection().finally(() => {
+        connecting = openConnectionWithLegacyRecovery().finally(() => {
           connecting = undefined;
         });
       }
       return Effect.tryPromise({
         try: () => connecting!,
         catch: (cause) =>
-          isCodexSessionRuntimeThreadIdMissingError(cause)
+          isCodexSessionRuntimeThreadIdMissingError(cause) ||
+          isCodexSessionRuntimeLegacyHostAttachmentError(cause)
             ? cause
             : transportError("connect-provider-host", cause),
       }).pipe(
@@ -516,8 +560,8 @@ export const makeCodexProviderHostRuntime = Effect.fn("makeCodexProviderHostRunt
     const openConnection = (): Promise<HostConnection> =>
       new Promise((resolve, reject) => {
         const socket =
-          input.createConnection?.(input.controlSocketPath) ??
-          NodeNet.createConnection(input.controlSocketPath);
+          input.createConnection?.(controlSocketPath) ??
+          NodeNet.createConnection(controlSocketPath);
         sockets.add(socket);
         socket.setNoDelay(true);
         let settleSnapshot: (session: ProviderSession) => void = () => undefined;
@@ -560,8 +604,23 @@ export const makeCodexProviderHostRuntime = Effect.fn("makeCodexProviderHostRunt
           rejectPending(current, cause);
         };
 
+        const connectionClosureError = (fallback: Error) =>
+          current.protocolVersion === PROVIDER_HOST_LEGACY_PROTOCOL_VERSION &&
+          attached &&
+          !current.snapshotReceived &&
+          current.generationFingerprint !== undefined
+            ? new CodexSessionRuntimeLegacyHostAttachmentError({
+                threadId: input.options.threadId,
+                controlSocketPath,
+                generationFingerprint: current.generationFingerprint,
+              })
+            : fallback;
+
         const needsExistingSession = () =>
-          requestedSessionMode !== "create" || started || attachmentAttempted;
+          requestedSessionMode !== "create" ||
+          latestResumeCursor !== undefined ||
+          started ||
+          attachmentAttempted;
 
         const attach = () => {
           const reuseExistingSession = needsExistingSession();
@@ -617,7 +676,7 @@ export const makeCodexProviderHostRuntime = Effect.fn("makeCodexProviderHostRunt
                 });
           socket.write(`${JSON.stringify(envelope)}\n`, (cause) => {
             if (cause) {
-              fail(cause);
+              fail(connectionClosureError(cause));
             }
           });
         };
@@ -863,7 +922,7 @@ export const makeCodexProviderHostRuntime = Effect.fn("makeCodexProviderHostRunt
             }
           }
         });
-        socket.once("error", fail);
+        socket.once("error", (cause) => fail(connectionClosureError(cause)));
         socket.once("close", () => {
           sockets.delete(socket);
           current.closed = true;
@@ -872,7 +931,7 @@ export const makeCodexProviderHostRuntime = Effect.fn("makeCodexProviderHostRunt
             releaseProviderEvent(replayEvent.retainedBytes);
           }
           resolveTransportClosed();
-          fail(new Error("Codex provider-host connection closed."));
+          fail(connectionClosureError(new Error("Codex provider-host connection closed.")));
           if (connection === current) connection = undefined;
           if (connection === undefined && current.automaticReconnect) scheduleReconnect();
         });

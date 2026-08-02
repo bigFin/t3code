@@ -38,6 +38,7 @@ const isCodexAppServerSpawnError = Schema.is(CodexErrors.CodexAppServerSpawnErro
 
 function withDetachedCodexThread(input: {
   readonly thread: Readonly<Record<string, unknown>>;
+  readonly resumePolicy?: "resume-only";
   readonly beforeOpenResponse?: (socket: NodeSocket.NodeWS.WebSocket) => void;
   readonly run: (
     runtime: CodexSessionRuntimeShape,
@@ -107,6 +108,7 @@ function withDetachedCodexThread(input: {
         runtimeMode: "full-access",
         resumeCursor: { threadId: String(input.thread.id) },
         appServerSocketPath: socketPath,
+        ...(input.resumePolicy ? { resumePolicy: input.resumePolicy } : {}),
       });
       yield* input.run(runtime);
     }),
@@ -465,6 +467,59 @@ describe("makeCodexSessionRuntime detached connection", () => {
             events.map((event) => event.method),
             ["session/connecting", "turn/started"],
           );
+          yield* runtime.detach;
+        }),
+    }),
+  );
+
+  it.effect("replays recovered assistant output during resume-only adoption", () =>
+    withDetachedCodexThread({
+      resumePolicy: "resume-only",
+      thread: {
+        cliVersion: "0.0.0-test",
+        createdAt: 0,
+        cwd: "/tmp/project",
+        ephemeral: false,
+        id: "provider-thread-recovered-output",
+        modelProvider: "openai",
+        preview: "",
+        sessionId: "provider-session-recovered-output",
+        source: "cli",
+        status: { type: "idle" },
+        turns: [
+          {
+            id: "turn-recovered-output",
+            items: [
+              {
+                id: "item-recovered-output",
+                type: "agentMessage",
+                text: "Recovered final response.",
+              },
+            ],
+            status: "completed",
+          },
+        ],
+        updatedAt: 0,
+      },
+      run: (runtime) =>
+        Effect.gen(function* () {
+          const session = yield* runtime.start();
+          NodeAssert.equal(session.status, "ready");
+          NodeAssert.equal(yield* runtime.emittedEventCount, 4);
+          const events = Array.from(yield* Stream.runCollect(Stream.take(runtime.events, 4)));
+          NodeAssert.deepStrictEqual(
+            events.map((event) => event.method),
+            ["session/connecting", "session/ready", "item/completed", "turn/completed"],
+          );
+          NodeAssert.deepStrictEqual(events[2]?.payload, {
+            threadId: "provider-thread-recovered-output",
+            turnId: "turn-recovered-output",
+            item: {
+              id: "item-recovered-output",
+              type: "agentMessage",
+              text: "Recovered final response.",
+            },
+          });
           yield* runtime.detach;
         }),
     }),
