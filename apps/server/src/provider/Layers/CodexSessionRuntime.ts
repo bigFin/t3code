@@ -1071,22 +1071,12 @@ export const makeCodexSessionRuntime = (
         const payload = notification.params;
         const route = readRouteFields(notification);
         const collabReceiverTurns = yield* Ref.get(collabReceiverTurnsRef);
-        const providerConversationId = readNotificationThreadId(notification);
-        const sessionProviderThreadId = currentProviderThreadId(yield* Ref.get(sessionRef));
         const childParentTurnId = (() => {
+          const providerConversationId = readNotificationThreadId(notification);
           return providerConversationId
             ? collabReceiverTurns.get(providerConversationId)
             : undefined;
         })();
-
-        if (
-          providerConversationId &&
-          sessionProviderThreadId &&
-          providerConversationId !== sessionProviderThreadId &&
-          !childParentTurnId
-        ) {
-          return;
-        }
 
         rememberCollabReceiverTurns(collabReceiverTurns, notification, route.turnId);
         if (childParentTurnId && shouldSuppressChildConversationNotification(notification.method)) {
