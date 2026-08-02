@@ -27,10 +27,12 @@ import * as NodeNet from "node:net";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as Cause from "effect/Cause";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 import { describe } from "vite-plus/test";
 
 import {
@@ -53,6 +55,7 @@ import {
   ProviderHostClientId,
   ProviderHostGenerationFingerprint,
   ProviderHostReplayCursor,
+  type ProviderHostAttachEnvelope,
   type ProviderHostClientEnvelope,
 } from "./ProviderHostProtocol.ts";
 import {
@@ -213,6 +216,7 @@ class FakeCodexRuntime implements CodexSessionRuntimeShape {
       }),
   );
   readonly interruptTurnImpl = vi.fn((_turnId?: TurnId) => Promise.resolve());
+  interruptTurnEffect: Effect.Effect<void, never> | undefined;
   readonly readThreadImpl = vi.fn(
     (): Promise<CodexThreadSnapshot> =>
       Promise.resolve({
@@ -220,6 +224,7 @@ class FakeCodexRuntime implements CodexSessionRuntimeShape {
         turns: [],
       }),
   );
+  readThreadEffect: Effect.Effect<CodexThreadSnapshot, never> | undefined;
   readonly rollbackThreadImpl = vi.fn(
     (_numTurns: number): Promise<CodexThreadSnapshot> =>
       Promise.resolve({
@@ -253,6 +258,7 @@ class FakeCodexRuntime implements CodexSessionRuntimeShape {
       runtimeMode: options.runtimeMode,
       threadId: options.threadId,
       cwd: options.cwd,
+      ...(options.resumeCursor ? { resumeCursor: options.resumeCursor } : {}),
       createdAt: this.now,
       updatedAt: this.now,
     };
@@ -272,10 +278,12 @@ class FakeCodexRuntime implements CodexSessionRuntimeShape {
   }
 
   interruptTurn(turnId?: TurnId) {
-    return Effect.promise(() => this.interruptTurnImpl(turnId));
+    return this.interruptTurnEffect ?? Effect.promise(() => this.interruptTurnImpl(turnId));
   }
 
-  readThread = Effect.promise(() => this.readThreadImpl());
+  get readThread() {
+    return this.readThreadEffect ?? Effect.promise(() => this.readThreadImpl());
+  }
 
   rollbackThread(numTurns: number) {
     return Effect.promise(() => this.rollbackThreadImpl(numTurns));
@@ -317,10 +325,13 @@ class FakeCodexRuntime implements CodexSessionRuntimeShape {
 interface HostTestContext {
   readonly root: string;
   readonly controlSocketPath: string;
+  readonly appServerSocketPath: string;
+  readonly manifestPath: string;
   readonly threadId: ThreadId;
   readonly providerInstanceId: ProviderInstanceId;
   readonly runtimes: ReadonlyArray<FakeCodexRuntime>;
   readonly runtimeCreationCount: () => number;
+  readonly spawnCodexCount: () => number;
   readonly waitForRuntimeCreation: () => Promise<void>;
   readonly blockRuntimeCreation: () => () => void;
   readonly emitOnRuntimeStart: (event: ProviderEvent) => void;
@@ -338,7 +349,7 @@ function makeAttach(
   attachmentId: string,
   replayFrom?: number,
   sessionOverrides?: Partial<CodexProviderHostSessionOptions>,
-): ProviderHostClientEnvelope {
+): ProviderHostAttachEnvelope {
   const session = {
     threadId: context.threadId,
     providerInstanceId: context.providerInstanceId,
@@ -352,6 +363,7 @@ function makeAttach(
     clientId: ProviderHostClientId.make(clientId),
     attachmentId: ProviderHostAttachmentId.make(attachmentId),
     threadId: context.threadId,
+    mode: "create",
     ...(replayFrom !== undefined ? { replayFrom: ProviderHostReplayCursor.make(replayFrom) } : {}),
     session: decodeJson(session),
   };
@@ -383,6 +395,7 @@ function makeReaderAttach(
     clientId: ProviderHostClientId.make(clientId),
     attachmentId: ProviderHostAttachmentId.make(attachmentId),
     threadId: context.threadId,
+    mode: "reuse",
     ...(replayFrom !== undefined ? { replayFrom: ProviderHostReplayCursor.make(replayFrom) } : {}),
   };
 }
@@ -446,22 +459,30 @@ const closeAppServer = (
     });
   });
 
-function withHost(
-  run: (context: HostTestContext) => Promise<void>,
-  hostOptions?: Pick<
-    CodexProviderHostServerOptions,
-    | "idleTimeoutMs"
-    | "maxCommandFibers"
-    | "maxPendingEnvelopeBytesPerConnection"
-    | "maxPendingEnvelopesPerConnection"
-    | "maxReplayBytes"
-    | "maxReplayEvents"
-    | "priorityCommandFiberReserve"
-  >,
-): Effect.Effect<void> {
+type HostTestOptions = Pick<
+  CodexProviderHostServerOptions,
+  | "idleTimeoutMs"
+  | "commandTimeoutMs"
+  | "maxCommandFibers"
+  | "maxPendingEnvelopeBytesPerConnection"
+  | "maxPendingEnvelopesPerConnection"
+  | "maxReplayBytes"
+  | "maxReplayEvents"
+  | "priorityCommandFiberReserve"
+  | "inspectAppServerProcess"
+  | "probeAppServer"
+> & {
+  readonly appServerMode?: CodexProviderHostConfig["appServerMode"];
+};
+
+function withHostEffect<R>(
+  run: (context: HostTestContext) => Effect.Effect<void, never, R>,
+  hostOptions?: HostTestOptions,
+): Effect.Effect<void, never, R> {
   const root = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-provider-host-server-"));
   const controlSocketPath = NodePath.join(root, "control.sock");
   const appServerSocketPath = NodePath.join(root, "app-server.sock");
+  const manifestPath = NodePath.join(root, "manifest.json");
   const appServer = NodeHttp.createServer();
   const webSocketServer = new NodeSocket.NodeWS.WebSocketServer({
     perMessageDeflate: false,
@@ -505,16 +526,43 @@ function withHost(
       return true;
     },
   }) as NodeChildProcess.ChildProcess;
-  const spawnCodex: NonNullable<CodexProviderHostServerOptions["spawnCodex"]> = vi.fn(() =>
-    Promise.resolve(codexChild),
-  );
+  let spawnCodexCalls = 0;
+  const spawnCodex: NonNullable<CodexProviderHostServerOptions["spawnCodex"]> = () => {
+    spawnCodexCalls += 1;
+    return Promise.resolve(codexChild);
+  };
+  const { appServerMode = "spawn", ...providerHostOptions } = hostOptions ?? {};
   const config = decodeConfig({
     version: CODEX_PROVIDER_HOST_CONFIG_VERSION,
     providerInstanceId,
-    generationFingerprint: ProviderHostGenerationFingerprint.make("generation-test"),
+    buildFingerprint: "build-test",
+    configurationFingerprint: "configuration-test",
     controlSocketPath,
     appServerSocketPath,
-    manifestPath: NodePath.join(root, "manifest.json"),
+    appServerMode,
+    ...(appServerMode === "attach"
+      ? {
+          adoptedAppServer: {
+            owner: {
+              generationFingerprint:
+                ProviderHostGenerationFingerprint.make("generation-owner-test"),
+              process: { pid: process.pid, startTimeMs: 0 },
+            },
+            appServer: {
+              process: { pid: process.pid, startTimeMs: 0 },
+              socketPath: appServerSocketPath,
+              resolvedBinary: process.execPath,
+              version: "codex-test",
+              launchConfig: {
+                arguments: [],
+                workingDirectory: root,
+                environmentKeys: [],
+              },
+            },
+          },
+        }
+      : {}),
+    manifestPath,
     codex: {
       binaryPath: process.execPath,
       cwd: root,
@@ -527,15 +575,19 @@ function withHost(
       yield* runCodexProviderHost(config, {
         makeRuntime,
         spawnCodex,
-        ...hostOptions,
+        inspectAppServerProcess: () => Promise.resolve("current"),
+        ...providerHostOptions,
       }).pipe(Effect.forkScoped);
       const context: HostTestContext = {
         root,
         controlSocketPath,
+        appServerSocketPath,
+        manifestPath,
         threadId,
         providerInstanceId,
         runtimes,
         runtimeCreationCount: () => makeRuntime.mock.calls.length,
+        spawnCodexCount: () => spawnCodexCalls,
         waitForRuntimeCreation: () => runtimeCreationStarted,
         blockRuntimeCreation: () => {
           let releaseGate: () => void = () => undefined;
@@ -567,7 +619,7 @@ function withHost(
           codexChild.emit("exit", code, signal);
         },
       };
-      yield* Effect.promise(() => run(context));
+      yield* run(context);
     }),
   ).pipe(
     Effect.ensuring(
@@ -581,31 +633,67 @@ function withHost(
   );
 }
 
+function withHost(
+  run: (context: HostTestContext) => Promise<void>,
+  hostOptions?: HostTestOptions,
+): Effect.Effect<void> {
+  return withHostEffect((context) => Effect.promise(() => run(context)), hostOptions);
+}
+
 describe("CodexProviderHostServer", () => {
-  it("terminates a captured Codex child whose SIGTERM exit is synchronous", async () => {
-    vi.useFakeTimers();
+  it("backs off successful app-server probes and requires consecutive failures", () => {
+    let state = {
+      delayMs: __testing.appServerMonitorInitialDelayMs,
+      consecutiveFailures: 0,
+    };
+
+    state = __testing.nextAppServerMonitorState(state, true);
+    NodeAssert.deepStrictEqual(state, {
+      delayMs: __testing.appServerMonitorInitialDelayMs * 2,
+      consecutiveFailures: 0,
+    });
+    while (state.delayMs < __testing.appServerMonitorMaxDelayMs) {
+      state = __testing.nextAppServerMonitorState(state, true);
+    }
+    NodeAssert.equal(state.delayMs, __testing.appServerMonitorMaxDelayMs);
+
+    for (let failure = 1; failure < __testing.appServerMonitorFailureThreshold; failure += 1) {
+      state = __testing.nextAppServerMonitorState(state, false);
+      NodeAssert.equal(state.consecutiveFailures, failure);
+    }
+    state = __testing.nextAppServerMonitorState(state, true);
+    NodeAssert.equal(state.consecutiveFailures, 0);
+
+    for (let failure = 1; failure <= __testing.appServerMonitorFailureThreshold; failure += 1) {
+      state = __testing.nextAppServerMonitorState(state, false);
+      NodeAssert.equal(state.consecutiveFailures, failure);
+    }
+  });
+
+  it("does not unlink a replacement path owned by another provider-host generation", async () => {
+    const root = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-provider-host-owner-"));
+    const socketPath = NodePath.join(root, "control.sock");
+    const previousSocketPath = NodePath.join(root, "control.previous.sock");
     try {
-      const emitter = new NodeEvents.EventEmitter();
-      const child = Object.assign(emitter, {
-        pid: 42_424,
-        exitCode: null as number | null,
-        signalCode: null as NodeJS.Signals | null,
-      }) as NodeChildProcess.ChildProcess;
-      const kill = vi.fn((signal?: NodeJS.Signals | number) => {
-        if (signal === "SIGTERM") {
-          Object.assign(child, { signalCode: "SIGTERM" });
-          emitter.emit("exit", null, "SIGTERM");
-        }
-        return true;
-      });
-      child.kill = kill;
+      NodeFS.writeFileSync(socketPath, "first");
+      const firstIdentity = await __testing.readSocketPathIdentity(socketPath);
+      NodeAssert.ok(firstIdentity);
 
-      await __testing.terminateChild(child);
+      NodeFS.renameSync(socketPath, previousSocketPath);
+      NodeFS.writeFileSync(socketPath, "replacement");
 
-      NodeAssert.deepStrictEqual(kill.mock.calls, [["SIGTERM"]]);
-      NodeAssert.equal(vi.getTimerCount(), 0);
+      NodeAssert.equal(await __testing.removeSocketPathIfOwned(socketPath, firstIdentity), false);
+      NodeAssert.equal(NodeFS.readFileSync(socketPath, "utf8"), "replacement");
+
+      const replacementIdentity = await __testing.readSocketPathIdentity(socketPath);
+      NodeAssert.ok(replacementIdentity);
+      NodeAssert.equal(
+        await __testing.removeSocketPathIfOwned(socketPath, replacementIdentity),
+        true,
+      );
+      NodeAssert.equal(NodeFS.existsSync(socketPath), false);
     } finally {
-      vi.useRealTimers();
+      NodeFS.rmSync(root, { recursive: true, force: true });
     }
   });
 
@@ -621,25 +709,86 @@ describe("CodexProviderHostServer", () => {
           await nextImmediate();
         }
         NodeAssert.equal(NodeFS.existsSync(context.controlSocketPath), false);
+        NodeAssert.equal(NodeFS.existsSync(context.appServerSocketPath), true);
         NodeAssert.equal(context.runtimeCreationCount(), 0);
       },
-      { idleTimeoutMs: 10 },
+      { idleTimeoutMs: 100 },
     ),
   );
 
-  it.effect("closes the provider host when its Codex child exits", () =>
+  it.effect("retires an unattached provider host without stopping its app-server", () =>
+    withHost(
+      async (context) => {
+        const client = await context.connect();
+        client.send(makeAttach(context, "client-idle", "attachment-idle"));
+        await client.take(isSnapshotFor(context.threadId));
+        await client.close();
+
+        const deadline = Date.now() + 1_000;
+        while (NodeFS.existsSync(context.controlSocketPath) && Date.now() < deadline) {
+          await nextImmediate();
+        }
+        while (
+          (context.runtimes[0]?.detachImpl.mock.calls.length ?? 0) === 0 &&
+          Date.now() < deadline
+        ) {
+          await nextImmediate();
+        }
+        NodeAssert.equal(NodeFS.existsSync(context.controlSocketPath), false);
+        NodeAssert.equal(NodeFS.existsSync(context.appServerSocketPath), true);
+        NodeAssert.equal(context.runtimes[0]?.detachImpl.mock.calls.length, 1);
+        NodeAssert.equal(context.runtimes[0]?.closeImpl.mock.calls.length, 0);
+      },
+      { idleTimeoutMs: 100 },
+    ),
+  );
+
+  it.effect("reports the same app-server process identity persisted in the manifest", () =>
     withHost(async (context) => {
       const client = await context.connect();
-      await client.take((envelope) => envelope.type === "hello");
+      const health = await client.take((envelope) => envelope.type === "health");
+      const manifest = JSON.parse(NodeFS.readFileSync(context.manifestPath, "utf8")) as {
+        readonly codex: {
+          readonly appServer: {
+            readonly process: unknown;
+          };
+        };
+      };
+
+      NodeAssert.deepStrictEqual(health.codexChildProcess, manifest.codex.appServer.process);
+    }),
+  );
+
+  it.effect("does not spawn or unlink an adopted Codex app-server", () =>
+    withHost(
+      async (context) => {
+        const client = await context.connect();
+        await client.take((envelope) => envelope.type === "hello");
+        await client.waitClosed();
+
+        const deadline = Date.now() + 1_000;
+        while (NodeFS.existsSync(context.controlSocketPath) && Date.now() < deadline) {
+          await nextImmediate();
+        }
+        NodeAssert.equal(NodeFS.existsSync(context.controlSocketPath), false);
+        NodeAssert.equal(NodeFS.existsSync(context.appServerSocketPath), true);
+        NodeAssert.equal(context.spawnCodexCount(), 0);
+      },
+      { appServerMode: "attach", idleTimeoutMs: 100 },
+    ),
+  );
+
+  it.effect("keeps the provider host alive when its detached app-server launch handle exits", () =>
+    withHost(async (context) => {
+      const first = await context.connect();
+      await first.take((envelope) => envelope.type === "hello");
 
       context.exitCodex(17);
-      await client.waitClosed();
+      const second = await context.connect();
+      await second.take((envelope) => envelope.type === "hello");
 
-      const deadline = Date.now() + 1_000;
-      while (NodeFS.existsSync(context.controlSocketPath) && Date.now() < deadline) {
-        await nextImmediate();
-      }
-      NodeAssert.equal(NodeFS.existsSync(context.controlSocketPath), false);
+      NodeAssert.equal(NodeFS.existsSync(context.controlSocketPath), true);
+      NodeAssert.equal(NodeFS.existsSync(context.appServerSocketPath), true);
     }),
   );
 
@@ -708,6 +857,146 @@ describe("CodexProviderHostServer", () => {
     }),
   );
 
+  it.effect("rehydrates a missing host session from a durable Codex resume cursor", () =>
+    withHost(
+      async (context) => {
+        const reader = await context.connect();
+        reader.send({
+          ...makeAttach(context, "client-rehydrate", "attachment-rehydrate", undefined, {
+            resumeCursor: { threadId: "provider-thread-rehydrate" },
+          }),
+          mode: "adopt",
+        });
+        await reader.take(isSnapshotFor(context.threadId));
+
+        NodeAssert.equal(context.runtimeCreationCount(), 1);
+        NodeAssert.deepStrictEqual(context.runtimes[0]?.options.resumeCursor, {
+          threadId: "provider-thread-rehydrate",
+        });
+        NodeAssert.equal(context.runtimes[0]?.options.resumePolicy, "resume-only");
+      },
+      { appServerMode: "attach" },
+    ),
+  );
+
+  it.effect("adopts missing sessions even when this host launched the app-server", () =>
+    withHost(async (context) => {
+      const reader = await context.connect();
+      const hello = await reader.take((envelope) => envelope.type === "hello");
+      NodeAssert.equal(hello.appServerMode, "spawn");
+      NodeAssert.equal(hello.canAdoptSessions, true);
+
+      reader.send({
+        ...makeAttach(context, "client-adopt", "attachment-adopt", undefined, {
+          resumeCursor: { threadId: "provider-thread-adopt" },
+        }),
+        mode: "adopt",
+      });
+
+      await reader.take(isSnapshotFor(context.threadId));
+      NodeAssert.equal(context.runtimeCreationCount(), 1);
+      NodeAssert.equal(context.runtimes[0]?.options.resumePolicy, "resume-only");
+    }),
+  );
+
+  it.effect("replaces a disconnected host runtime through resume-only adoption", () =>
+    withHost(async (context) => {
+      const creator = await context.connect();
+      creator.send(makeAttach(context, "client-create", "attachment-create"));
+      await creator.take(isSnapshotFor(context.threadId));
+
+      const original = context.runtimes[0]!;
+      original.getSessionImpl.mockResolvedValue({
+        ...(await original.getSessionImpl()),
+        status: "error",
+        activeTurnId: undefined,
+        lastError: "provider transport disconnected",
+      });
+
+      const adopter = await context.connect();
+      adopter.send({
+        ...makeAttach(context, "client-adopt", "attachment-adopt", undefined, {
+          resumeCursor: { threadId: "provider-thread-recover" },
+        }),
+        mode: "adopt",
+      });
+      await adopter.take(isSnapshotFor(context.threadId));
+
+      NodeAssert.equal(context.runtimeCreationCount(), 2);
+      NodeAssert.equal(original.detachImpl.mock.calls.length, 1);
+      NodeAssert.deepStrictEqual(context.runtimes[1]?.options.resumeCursor, {
+        threadId: "provider-thread-recover",
+      });
+      NodeAssert.equal(context.runtimes[1]?.options.resumePolicy, "resume-only");
+    }),
+  );
+
+  it.effect("replaces an ordinary concurrent creation when adoption targets another thread", () =>
+    withHost(
+      async (context) => {
+        const releaseRuntimeCreation = context.blockRuntimeCreation();
+        const creator = await context.connect();
+        creator.send(makeAttach(context, "client-create", "attachment-create"));
+        await context.waitForRuntimeCreation();
+
+        const adopter = await context.connect();
+        adopter.send({
+          ...makeAttach(context, "client-adopt", "attachment-adopt", undefined, {
+            resumeCursor: { threadId: "provider-thread-adoption-conflict" },
+          }),
+          mode: "adopt",
+        });
+        await nextImmediate();
+
+        releaseRuntimeCreation();
+        await creator.take(isSnapshotFor(context.threadId));
+        await adopter.take(isSnapshotFor(context.threadId));
+
+        NodeAssert.equal(context.runtimeCreationCount(), 2);
+        NodeAssert.equal(context.runtimes[0]?.options.resumePolicy, undefined);
+        NodeAssert.equal(context.runtimes[0]?.detachImpl.mock.calls.length, 1);
+        NodeAssert.deepStrictEqual(context.runtimes[1]?.options.resumeCursor, {
+          threadId: "provider-thread-adoption-conflict",
+        });
+        NodeAssert.equal(context.runtimes[1]?.options.resumePolicy, "resume-only");
+      },
+      { appServerMode: "attach" },
+    ),
+  );
+
+  it.effect("reuses a healthy concurrent creation when it already owns the adopted thread", () =>
+    withHost(
+      async (context) => {
+        const releaseRuntimeCreation = context.blockRuntimeCreation();
+        const resumeCursor = { threadId: "provider-thread-adoption-match" };
+        const creator = await context.connect();
+        creator.send(
+          makeAttach(context, "client-create", "attachment-create", undefined, {
+            resumeCursor,
+          }),
+        );
+        await context.waitForRuntimeCreation();
+
+        const adopter = await context.connect();
+        adopter.send({
+          ...makeAttach(context, "client-adopt", "attachment-adopt", undefined, {
+            resumeCursor,
+          }),
+          mode: "adopt",
+        });
+        await nextImmediate();
+
+        releaseRuntimeCreation();
+        await creator.take(isSnapshotFor(context.threadId));
+        await adopter.take(isSnapshotFor(context.threadId));
+
+        NodeAssert.equal(context.runtimeCreationCount(), 1);
+        NodeAssert.equal(context.runtimes[0]?.detachImpl.mock.calls.length, 0);
+      },
+      { appServerMode: "attach" },
+    ),
+  );
+
   it.effect("closes a reader-only attachment when no runtime exists", () =>
     withHost(async (context) => {
       const reader = await context.connect();
@@ -737,6 +1026,7 @@ describe("CodexProviderHostServer", () => {
       NodeAssert.equal(context.runtimes[0]?.startImpl.mock.calls.length, 1);
 
       const inventoryReader = await context.connect();
+      inventoryReader.send(makeReaderAttach(context, "client-inventory", "attachment-inventory"));
       const inventory = await inventoryReader.take((envelope) => envelope.type === "inventory");
       const threads = inventory.threads as ReadonlyArray<{
         readonly threadId: string;
@@ -1465,6 +1755,131 @@ describe("CodexProviderHostServer", () => {
         maxCommandFibers: 1,
         priorityCommandFiberReserve: 1,
       },
+    ),
+  );
+
+  it.effect("times out a hung command and releases the session command lock", () =>
+    withHostEffect(
+      (context) =>
+        Effect.gen(function* () {
+          const client = yield* Effect.promise(() => context.connect());
+          client.send(makeAttach(context, "client-deadline", "attachment-deadline"));
+          yield* Effect.promise(() => client.take(isSnapshotFor(context.threadId)));
+          const runtime = context.runtimes[0]!;
+          let markReadStarted: () => void = () => undefined;
+          const readStarted = new Promise<void>((resolve) => {
+            markReadStarted = resolve;
+          });
+          runtime.readThreadEffect = Effect.sync(markReadStarted).pipe(
+            Effect.andThen(Effect.never),
+          );
+
+          client.send(
+            makeCommand(context, {
+              clientId: "client-deadline",
+              attachmentId: "attachment-deadline",
+              commandId: "command-deadline",
+              operation: CODEX_PROVIDER_HOST_OPERATIONS.readThread,
+            }),
+          );
+          yield* Effect.promise(() => readStarted);
+          yield* TestClock.adjust("25 millis");
+          const timedOut = yield* Effect.promise(() =>
+            client.take(isCommandResult("command-deadline")),
+          );
+          NodeAssert.equal(timedOut.ok, false);
+          NodeAssert.equal(timedOut.errorCode, "deadline-exceeded");
+
+          runtime.readThreadEffect = undefined;
+          runtime.readThreadImpl.mockResolvedValue({
+            threadId: context.threadId,
+            turns: [],
+          });
+
+          client.send(
+            makeCommand(context, {
+              clientId: "client-deadline",
+              attachmentId: "attachment-deadline",
+              commandId: "command-after-deadline",
+              operation: CODEX_PROVIDER_HOST_OPERATIONS.readThread,
+            }),
+          );
+          const recovered = yield* Effect.promise(() =>
+            client.take(isCommandResult("command-after-deadline")),
+          );
+          NodeAssert.equal(recovered.ok, true);
+          NodeAssert.equal(runtime.readThreadImpl.mock.calls.length, 1);
+        }),
+      { commandTimeoutMs: 25 },
+    ),
+  );
+
+  it.effect("clears a timed-out session stop so commands and adoption can continue", () =>
+    withHostEffect(
+      (context) =>
+        Effect.gen(function* () {
+          const client = yield* Effect.promise(() => context.connect());
+          client.send(makeAttach(context, "client-stop-deadline", "attachment-stop-deadline"));
+          yield* Effect.promise(() => client.take(isSnapshotFor(context.threadId)));
+          const runtime = context.runtimes[0]!;
+          const interruptStarted = yield* Deferred.make<void>();
+          runtime.interruptTurnEffect = Deferred.succeed(interruptStarted, undefined).pipe(
+            Effect.andThen(Effect.never),
+          );
+
+          client.send(
+            makeCommand(context, {
+              clientId: "client-stop-deadline",
+              attachmentId: "attachment-stop-deadline",
+              commandId: "command-stop-deadline",
+              operation: CODEX_PROVIDER_HOST_OPERATIONS.stopSession,
+            }),
+          );
+          yield* Deferred.await(interruptStarted);
+          yield* TestClock.adjust("25 millis");
+          const timedOut = yield* Effect.promise(() =>
+            client.take(isCommandResult("command-stop-deadline")),
+          );
+          NodeAssert.equal(timedOut.ok, false);
+          NodeAssert.equal(timedOut.errorCode, "deadline-exceeded");
+
+          runtime.interruptTurnEffect = undefined;
+          client.send(
+            makeCommand(context, {
+              clientId: "client-stop-deadline",
+              attachmentId: "attachment-stop-deadline",
+              commandId: "command-after-stop-deadline",
+              operation: CODEX_PROVIDER_HOST_OPERATIONS.readThread,
+            }),
+          );
+          const recovered = yield* Effect.promise(() =>
+            client.take(isCommandResult("command-after-stop-deadline")),
+          );
+          NodeAssert.equal(recovered.ok, true);
+          NodeAssert.equal(runtime.readThreadImpl.mock.calls.length, 1);
+
+          const adopter = yield* Effect.promise(() => context.connect());
+          adopter.send({
+            ...makeAttach(
+              context,
+              "client-adopt-after-stop-deadline",
+              "attachment-adopt-after-stop-deadline",
+              undefined,
+              {
+                resumeCursor: { threadId: "provider-thread-after-stop-deadline" },
+              },
+            ),
+            mode: "adopt",
+          });
+          yield* Effect.promise(() => adopter.take(isSnapshotFor(context.threadId)));
+
+          NodeAssert.equal(context.runtimeCreationCount(), 2);
+          NodeAssert.deepStrictEqual(context.runtimes[1]?.options.resumeCursor, {
+            threadId: "provider-thread-after-stop-deadline",
+          });
+          NodeAssert.equal(context.runtimes[1]?.options.resumePolicy, "resume-only");
+        }),
+      { commandTimeoutMs: 25 },
     ),
   );
 

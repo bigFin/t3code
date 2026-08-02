@@ -6,21 +6,26 @@ import {
   ProviderEvent,
   ProviderInstanceId,
   ThreadId,
+  type ProviderSession,
   type ResourceTelemetryProcessIdentity,
 } from "@t3tools/contracts";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
 import * as NodeChildProcess from "node:child_process";
+import * as NodeCrypto from "node:crypto";
 import * as NodeFSP from "node:fs/promises";
 import * as NodeNet from "node:net";
 import * as NodePath from "node:path";
 import * as NodeUtil from "node:util";
 import * as Cause from "effect/Cause";
+import * as Clock from "effect/Clock";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
+import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
@@ -61,6 +66,7 @@ import {
 import {
   PROVIDER_HOST_PROTOCOL_VERSION,
   ProviderHostAttachmentId,
+  ProviderHostBuildFingerprint,
   type ProviderHostClientId,
   ProviderHostClientEnvelope,
   ProviderHostCommandResultEnvelope,
@@ -92,9 +98,14 @@ const MAX_OUTBOUND_BUFFER_BYTES = MAX_OUTBOUND_FRAME_BYTES * 2;
 const MAX_COMMAND_RESULT_CACHE_BYTES = 64 * 1024 * 1024;
 const MAX_COMMAND_FIBERS = 256;
 const PRIORITY_COMMAND_FIBER_RESERVE = 16;
+const COMMAND_TIMEOUT_MS = 120_000;
 const MAX_PENDING_ENVELOPES_PER_CONNECTION = 256;
 const MAX_PENDING_ENVELOPE_BYTES_PER_CONNECTION = MAX_INBOUND_LINE_BYTES * 2;
-const ZERO_SESSION_IDLE_TIMEOUT_MS = 60_000;
+const ZERO_ATTACHMENT_IDLE_TIMEOUT_MS = 60_000;
+const APP_SERVER_MONITOR_INITIAL_DELAY_MS = 5_000;
+const APP_SERVER_MONITOR_MAX_DELAY_MS = 60_000;
+const APP_SERVER_MONITOR_FAILURE_DELAY_MS = 1_000;
+const APP_SERVER_MONITOR_FAILURE_THRESHOLD = 3;
 
 const decodeClientEnvelope = Schema.decodeUnknownResult(
   Schema.fromJsonString(ProviderHostClientEnvelope),
@@ -131,6 +142,7 @@ interface HostConnection {
 
 interface HostSession {
   readonly options: CodexProviderHostSessionOptions;
+  readonly creationMode: "normal" | "resume-only";
   readonly scope: Scope.Closeable;
   readonly runtime: CodexSessionRuntimeShape;
   readonly eventFiber: Fiber.Fiber<void, never>;
@@ -152,6 +164,17 @@ function sessionOptionsRequireReplacement(
   );
 }
 
+function sessionMatchesResumeCursor(
+  snapshot: ProviderSession,
+  requested: CodexProviderHostSessionOptions,
+): boolean {
+  return (
+    isCodexResumeCursor(snapshot.resumeCursor) &&
+    isCodexResumeCursor(requested.resumeCursor) &&
+    snapshot.resumeCursor.threadId === requested.resumeCursor.threadId
+  );
+}
+
 export interface CodexProviderHostServerOptions {
   readonly makeRuntime?: (
     options: CodexSessionRuntimeOptions,
@@ -165,9 +188,14 @@ export interface CodexProviderHostServerOptions {
   readonly maxReplayBytes?: number;
   readonly idleTimeoutMs?: number;
   readonly maxCommandFibers?: number;
+  readonly commandTimeoutMs?: number;
   readonly priorityCommandFiberReserve?: number;
   readonly maxPendingEnvelopesPerConnection?: number;
   readonly maxPendingEnvelopeBytesPerConnection?: number;
+  readonly probeAppServer?: (socketPath: string) => Promise<boolean>;
+  readonly inspectAppServerProcess?: (
+    process: ResourceTelemetryProcessIdentity,
+  ) => Promise<ProcessIdentityStatus>;
 }
 
 export class CodexProviderHostError extends Schema.TaggedErrorClass<CodexProviderHostError>()(
@@ -197,12 +225,53 @@ function currentProcessIdentity(): ResourceTelemetryProcessIdentity {
   };
 }
 
-function childProcessIdentity(
+export type ProcessIdentityStatus = "current" | "stale" | "unknown";
+
+function readProcessStartTimeMs(pid: number): Promise<number | undefined> {
+  return new Promise((resolve) => {
+    NodeChildProcess.execFile(
+      "ps",
+      ["-o", "lstart=", "-p", String(pid)],
+      {
+        env: {
+          ...process.env,
+          LANG: "C",
+          LC_ALL: "C",
+        },
+      },
+      (cause, stdout) => {
+        if (cause) {
+          resolve(undefined);
+          return;
+        }
+        const startTimeMs = Date.parse(stdout.trim());
+        resolve(Number.isFinite(startTimeMs) ? startTimeMs : undefined);
+      },
+    );
+  });
+}
+
+async function inspectProcessIdentity(
+  identity: ResourceTelemetryProcessIdentity,
+): Promise<ProcessIdentityStatus> {
+  try {
+    process.kill(identity.pid, 0);
+  } catch (cause) {
+    return (cause as NodeJS.ErrnoException).code === "EPERM" ? "unknown" : "stale";
+  }
+  const startTimeMs = await readProcessStartTimeMs(identity.pid);
+  if (startTimeMs === undefined) return "unknown";
+  return Math.abs(startTimeMs - identity.startTimeMs) <= 2_000 ? "current" : "stale";
+}
+
+async function childProcessIdentity(
   child: NodeChildProcess.ChildProcess,
-): ResourceTelemetryProcessIdentity {
+  observedStartTimeMs: number,
+): Promise<ResourceTelemetryProcessIdentity> {
+  const pid = child.pid ?? 0;
   return {
-    pid: child.pid ?? 0,
-    startTimeMs: Date.now(),
+    pid,
+    startTimeMs: (pid > 0 ? await readProcessStartTimeMs(pid) : undefined) ?? observedStartTimeMs,
   };
 }
 
@@ -264,94 +333,56 @@ async function waitForCodexSocket(socketPath: string): Promise<boolean> {
   return false;
 }
 
-function terminateChild(child: NodeChildProcess.ChildProcess): Promise<void> {
-  return new Promise((resolve) => {
-    let settled = false;
-    let forceTimer: ReturnType<typeof setTimeout> | undefined;
-    const hasExited = () =>
-      child.exitCode !== null || child.signalCode !== null || child.pid === undefined;
-    const finish = () => {
-      if (settled) return;
-      settled = true;
-      if (forceTimer !== undefined) {
-        clearTimeout(forceTimer);
-        forceTimer = undefined;
-      }
-      child.off("exit", finish);
-      resolve();
-    };
-    child.once("exit", finish);
+type ProviderHostExit = { readonly _tag: "app-server-unavailable" } | { readonly _tag: "idle" };
 
-    if (hasExited()) {
-      finish();
-      return;
-    }
-
-    forceTimer = setTimeout(() => {
-      forceTimer = undefined;
-      if (!hasExited()) {
-        try {
-          child.kill("SIGKILL");
-        } catch {
-          // The captured child already exited.
-        }
-      }
-      finish();
-    }, 2_000);
-
-    try {
-      if (!child.kill("SIGTERM") && hasExited()) {
-        finish();
-      }
-    } catch {
-      finish();
-    }
-  });
+interface AppServerMonitorState {
+  readonly delayMs: number;
+  readonly consecutiveFailures: number;
 }
 
-interface CodexChildExit {
-  readonly code: number | null;
-  readonly signal: NodeJS.Signals | null;
-  readonly cause?: Error;
+interface SocketPathIdentity {
+  readonly device: number;
+  readonly inode: number;
 }
 
-function waitForCodexChildExit(
-  child: NodeChildProcess.ChildProcess,
-): Effect.Effect<CodexChildExit> {
-  return Effect.callback((resume) => {
-    if (child.exitCode !== null || child.signalCode !== null) {
-      resume(
-        Effect.succeed({
-          code: child.exitCode,
-          signal: child.signalCode,
-        }),
-      );
-      return;
-    }
+async function readSocketPathIdentity(socketPath: string): Promise<SocketPathIdentity | undefined> {
+  try {
+    const stat = await NodeFSP.lstat(socketPath);
+    return {
+      device: stat.dev,
+      inode: stat.ino,
+    };
+  } catch (cause) {
+    if ((cause as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw cause;
+  }
+}
 
-    const cleanup = () => {
-      child.removeListener("exit", onExit);
-      child.removeListener("error", onError);
-    };
-    const onExit = (code: number | null, signal: NodeJS.Signals | null) => {
-      cleanup();
-      resume(Effect.succeed({ code, signal }));
-    };
-    const onError = (cause: Error) => {
-      cleanup();
-      resume(
-        Effect.succeed({
-          code: child.exitCode,
-          signal: child.signalCode,
-          cause,
-        }),
-      );
-    };
+async function removeSocketPathIfOwned(
+  socketPath: string,
+  expected: SocketPathIdentity,
+): Promise<boolean> {
+  const current = await readSocketPathIdentity(socketPath);
+  if (!current || current.device !== expected.device || current.inode !== expected.inode) {
+    return false;
+  }
+  await NodeFSP.rm(socketPath, { force: true });
+  return true;
+}
 
-    child.once("exit", onExit);
-    child.once("error", onError);
-    return Effect.sync(cleanup);
-  });
+function nextAppServerMonitorState(
+  state: AppServerMonitorState,
+  available: boolean,
+): AppServerMonitorState {
+  return available
+    ? {
+        delayMs: Math.min(state.delayMs * 2, APP_SERVER_MONITOR_MAX_DELAY_MS),
+        consecutiveFailures: 0,
+      }
+    : {
+        delayMs: APP_SERVER_MONITOR_FAILURE_DELAY_MS,
+        consecutiveFailures: state.consecutiveFailures + 1,
+      };
 }
 
 async function defaultSpawnCodex(
@@ -378,13 +409,15 @@ async function defaultSpawnCodex(
       },
     ),
   );
-  await NodeFSP.rm(config.appServerSocketPath, { force: true });
-  return NodeChildProcess.spawn(spawnCommand.command, [...spawnCommand.args], {
+  const child = NodeChildProcess.spawn(spawnCommand.command, [...spawnCommand.args], {
     cwd: config.codex.cwd,
+    detached: true,
     env,
     shell: spawnCommand.shell,
     stdio: ["ignore", "inherit", "inherit"],
   });
+  child.unref();
+  return child;
 }
 
 function readCodexVersion(config: CodexProviderHostConfig): Promise<string> {
@@ -428,7 +461,10 @@ export const runCodexProviderHost = Effect.fn("runCodexProviderHost")(function* 
   const sessions = new Map<ThreadId, HostSession>();
   const sessionCreations = new Map<
     ThreadId,
-    Deferred.Deferred<HostSession, CodexSessionRuntimeError>
+    {
+      readonly mode: "normal" | "resume-only";
+      readonly deferred: Deferred.Deferred<HostSession, CodexSessionRuntimeError>;
+    }
   >();
   const sessionStops = new Map<ThreadId, Deferred.Deferred<boolean>>();
   const commandResults: ProviderHostCommandResultCache<ProviderHostCommandResultEnvelope, never> =
@@ -444,8 +480,9 @@ export const runCodexProviderHost = Effect.fn("runCodexProviderHost")(function* 
   const droppedReplayCursorByThread = new Map<ThreadId, ProviderHostReplayCursor>();
   const maxReplayEvents = options?.maxReplayEvents ?? MAX_REPLAY_EVENTS;
   const maxReplayBytes = options?.maxReplayBytes ?? MAX_REPLAY_BYTES;
-  const idleTimeoutMs = options?.idleTimeoutMs ?? ZERO_SESSION_IDLE_TIMEOUT_MS;
+  const idleTimeoutMs = options?.idleTimeoutMs ?? ZERO_ATTACHMENT_IDLE_TIMEOUT_MS;
   const maxCommandFibers = options?.maxCommandFibers ?? MAX_COMMAND_FIBERS;
+  const commandTimeoutMs = Math.max(1, options?.commandTimeoutMs ?? COMMAND_TIMEOUT_MS);
   const priorityCommandFiberReserve =
     options?.priorityCommandFiberReserve ?? PRIORITY_COMMAND_FIBER_RESERVE;
   const maxPendingEnvelopesPerConnection =
@@ -455,21 +492,83 @@ export const runCodexProviderHost = Effect.fn("runCodexProviderHost")(function* 
   let latestCursor = ProviderHostReplayCursor.make(0);
   const hostProcess = currentProcessIdentity();
   const generationFingerprint = ProviderHostGenerationFingerprint.make(
-    `${config.generationFingerprint}:${hostProcess.pid}:${hostProcess.startTimeMs}`,
+    NodeCrypto.createHash("sha256")
+      .update(
+        `${config.buildFingerprint}:${config.configurationFingerprint}:` +
+          `${hostProcess.pid}:${hostProcess.startTimeMs}`,
+      )
+      .digest("hex"),
   );
+  const buildFingerprint = ProviderHostBuildFingerprint.make(config.buildFingerprint);
+  const canAdoptSessions = true;
   const startedAt = yield* DateTime.now;
+  const hostExit = yield* Deferred.make<ProviderHostExit>();
   const spawnCodex = options?.spawnCodex ?? defaultSpawnCodex;
-  const codexChild = yield* Effect.tryPromise({
-    try: () => spawnCodex(config),
-    catch: (cause) =>
-      new CodexProviderHostError({
-        operation: "spawn-codex",
-        cause,
-      }),
+  const probeAppServer = options?.probeAppServer ?? probeCodexAppServerWebSocket;
+  const inspectAppServerProcess = options?.inspectAppServerProcess ?? inspectProcessIdentity;
+  const codexSpawnObservedAtMs = yield* Clock.currentTimeMillis;
+  const codexChild =
+    config.appServerMode === "spawn"
+      ? yield* Effect.tryPromise({
+          try: () => spawnCodex(config),
+          catch: (cause) =>
+            new CodexProviderHostError({
+              operation: "spawn-codex",
+              cause,
+            }),
+        })
+      : undefined;
+  const appServerProvenance = codexChild
+    ? {
+        owner: {
+          generationFingerprint,
+          process: hostProcess,
+        },
+        appServer: {
+          process: yield* Effect.promise(() =>
+            childProcessIdentity(codexChild, codexSpawnObservedAtMs),
+          ),
+          socketPath: config.appServerSocketPath,
+          resolvedBinary: config.codex.binaryPath,
+          version: yield* Effect.promise(() => readCodexVersion(config)),
+          launchConfig: {
+            arguments: [
+              ...codexAppServerArgs(config.codex.launchArgs),
+              "--listen",
+              `unix://${config.appServerSocketPath}`,
+            ],
+            workingDirectory: config.codex.cwd,
+            environmentKeys: Object.keys(inheritedEnvironment()).sort(),
+          },
+        },
+      }
+    : config.adoptedAppServer;
+  if (!appServerProvenance) {
+    return yield* new CodexProviderHostError({
+      operation: "adopt-app-server",
+      cause: new Error("Attach-mode provider host requires verified app-server provenance."),
+    });
+  }
+  yield* persistProviderHostManifest({
+    path: config.manifestPath,
+    manifest: {
+      schemaVersion: PROVIDER_HOST_MANIFEST_SCHEMA_VERSION,
+      protocolVersion: PROVIDER_HOST_PROTOCOL_VERSION,
+      buildFingerprint,
+      generationFingerprint,
+      hostProcess,
+      controlSocketPath: config.controlSocketPath,
+      codex: {
+        appServerMode: config.appServerMode,
+        ...appServerProvenance,
+      },
+      startedAt,
+    },
   });
-  yield* Effect.addFinalizer(() => Effect.promise(() => terminateChild(codexChild)));
   let idleTimer: ReturnType<typeof setTimeout> | undefined;
   let idleShutdownStarted = false;
+  const hasAttachedClients = () =>
+    Array.from(sessions.values()).some((session) => session.attachments.size > 0);
   const cancelIdleShutdown = () => {
     if (idleTimer === undefined) return;
     clearTimeout(idleTimer);
@@ -480,18 +579,18 @@ export const runCodexProviderHost = Effect.fn("runCodexProviderHost")(function* 
       idleTimeoutMs <= 0 ||
       idleShutdownStarted ||
       idleTimer !== undefined ||
-      sessions.size > 0 ||
+      hasAttachedClients() ||
       sessionCreations.size > 0
     ) {
       return;
     }
     idleTimer = setTimeout(() => {
       idleTimer = undefined;
-      if (sessions.size > 0 || sessionCreations.size > 0 || idleShutdownStarted) {
+      if (hasAttachedClients() || sessionCreations.size > 0 || idleShutdownStarted) {
         return;
       }
       idleShutdownStarted = true;
-      void terminateChild(codexChild);
+      void runPromise(Deferred.succeed(hostExit, { _tag: "idle" as const }));
     }, idleTimeoutMs);
     idleTimer.unref?.();
   };
@@ -500,54 +599,56 @@ export const runCodexProviderHost = Effect.fn("runCodexProviderHost")(function* 
       cancelIdleShutdown();
     }),
   );
-  const childExitFiber = yield* waitForCodexChildExit(codexChild).pipe(Effect.forkIn(hostScope));
   const ready = yield* Effect.promise(() => waitForCodexSocket(config.appServerSocketPath));
   if (!ready) {
-    yield* Effect.promise(() => terminateChild(codexChild));
     return yield* new CodexProviderHostError({
       operation: "wait-for-codex",
       cause: new Error(`Codex app-server did not become ready at ${config.appServerSocketPath}.`),
     });
   }
+  yield* Effect.gen(function* () {
+    let monitorState: AppServerMonitorState = {
+      delayMs: APP_SERVER_MONITOR_INITIAL_DELAY_MS,
+      consecutiveFailures: 0,
+    };
+    while (monitorState.consecutiveFailures < APP_SERVER_MONITOR_FAILURE_THRESHOLD) {
+      yield* Effect.sleep(`${monitorState.delayMs} millis`);
+      const [socketAvailable, processStatus] = yield* Effect.all(
+        [
+          Effect.tryPromise(() => probeAppServer(config.appServerSocketPath)).pipe(
+            Effect.orElseSucceed(() => false),
+          ),
+          Effect.tryPromise(() =>
+            inspectAppServerProcess(appServerProvenance.appServer.process),
+          ).pipe(Effect.orElseSucceed(() => "unknown" as const)),
+        ],
+        { concurrency: 2 },
+      );
+      monitorState = nextAppServerMonitorState(
+        monitorState,
+        socketAvailable && processStatus !== "stale",
+      );
+    }
+    yield* Deferred.succeed(hostExit, { _tag: "app-server-unavailable" as const });
+  }).pipe(Effect.forkIn(hostScope));
 
-  const codexVersion = yield* Effect.promise(() => readCodexVersion(config));
-  yield* persistProviderHostManifest({
-    path: config.manifestPath,
-    manifest: {
-      schemaVersion: PROVIDER_HOST_MANIFEST_SCHEMA_VERSION,
-      protocolVersion: PROVIDER_HOST_PROTOCOL_VERSION,
-      generationFingerprint,
-      hostProcess,
-      socketPath: config.controlSocketPath,
-      codex: {
-        childProcess: childProcessIdentity(codexChild),
-        resolvedBinary: config.codex.binaryPath,
-        version: codexVersion,
-        launchConfig: {
-          arguments: [
-            ...codexAppServerArgs(config.codex.launchArgs),
-            "--listen",
-            `unix://${config.appServerSocketPath}`,
-          ],
-          workingDirectory: config.codex.cwd,
-          environmentKeys: Object.keys(inheritedEnvironment()).sort(),
-        },
-      },
-      startedAt,
-    },
-  });
-
-  const inventoryEnvelope = (): ProviderHostInventoryEnvelope =>
-    ProviderHostInventoryEnvelope.make({
+  const inventoryEnvelope = (threadId: ThreadId): ProviderHostInventoryEnvelope => {
+    const session = sessions.get(threadId);
+    return ProviderHostInventoryEnvelope.make({
       version: PROVIDER_HOST_PROTOCOL_VERSION,
       type: "inventory",
-      threads: Array.from(sessions.entries()).map(([threadId, session]) => ({
-        threadId,
-        status: "unknown",
-        attachmentCount: session.attachments.size,
-        cursor: latestCursor,
-      })),
+      threads: session
+        ? [
+            {
+              threadId,
+              status: "unknown",
+              attachmentCount: session.attachments.size,
+              cursor: latestCursor,
+            },
+          ]
+        : [],
     });
+  };
 
   const publishEvent = (event: ProviderEvent) =>
     eventLock.withPermit(
@@ -608,9 +709,10 @@ export const runCodexProviderHost = Effect.fn("runCodexProviderHost")(function* 
   };
   const createSession: (
     requestedSessionOptions: CodexProviderHostSessionOptions,
+    adoptionMode?: "normal" | "resume-only",
   ) => Effect.Effect<HostSession, CodexSessionRuntimeError | CodexProviderHostError> = Effect.fn(
     "CodexProviderHost.createSession",
-  )(function* (requestedSessionOptions: CodexProviderHostSessionOptions) {
+  )(function* (requestedSessionOptions: CodexProviderHostSessionOptions, adoptionMode = "normal") {
     const admission = yield* sessionCreationLock.withPermit(
       Effect.gen(function* () {
         const stopping = sessionStops.get(requestedSessionOptions.threadId);
@@ -619,7 +721,7 @@ export const runCodexProviderHost = Effect.fn("runCodexProviderHost")(function* 
         }
         const pending = sessionCreations.get(requestedSessionOptions.threadId);
         if (pending) {
-          return { _tag: "pending" as const, deferred: pending };
+          return { _tag: "pending" as const, ...pending };
         }
         const existing = sessions.get(requestedSessionOptions.threadId);
         if (existing) {
@@ -627,12 +729,17 @@ export const runCodexProviderHost = Effect.fn("runCodexProviderHost")(function* 
           if (
             snapshot.status !== "error" &&
             snapshot.status !== "closed" &&
+            (adoptionMode !== "resume-only" ||
+              sessionMatchesResumeCursor(snapshot, requestedSessionOptions)) &&
             !sessionOptionsRequireReplacement(existing.options, requestedSessionOptions)
           ) {
             return { _tag: "existing" as const, session: existing };
           }
           const deferred = yield* Deferred.make<HostSession, CodexSessionRuntimeError>();
-          sessionCreations.set(requestedSessionOptions.threadId, deferred);
+          sessionCreations.set(requestedSessionOptions.threadId, {
+            mode: adoptionMode,
+            deferred,
+          });
           return {
             _tag: "create" as const,
             deferred,
@@ -647,7 +754,10 @@ export const runCodexProviderHost = Effect.fn("runCodexProviderHost")(function* 
           };
         }
         const deferred = yield* Deferred.make<HostSession, CodexSessionRuntimeError>();
-        sessionCreations.set(requestedSessionOptions.threadId, deferred);
+        sessionCreations.set(requestedSessionOptions.threadId, {
+          mode: adoptionMode,
+          deferred,
+        });
         return {
           _tag: "create" as const,
           deferred,
@@ -657,7 +767,17 @@ export const runCodexProviderHost = Effect.fn("runCodexProviderHost")(function* 
       }),
     );
     if (admission._tag === "existing") return admission.session;
-    if (admission._tag === "pending") return yield* Deferred.await(admission.deferred);
+    if (admission._tag === "pending") {
+      const session = yield* Deferred.await(admission.deferred);
+      if (adoptionMode === "resume-only" && admission.mode !== "resume-only") {
+        const snapshot = yield* session.runtime.getSession;
+        if (sessionMatchesResumeCursor(snapshot, requestedSessionOptions)) {
+          return session;
+        }
+        return yield* createSession(requestedSessionOptions, adoptionMode);
+      }
+      return session;
+    }
     if (admission._tag === "stopping") {
       const stopped = yield* Deferred.await(admission.deferred);
       if (stopped) {
@@ -668,7 +788,7 @@ export const runCodexProviderHost = Effect.fn("runCodexProviderHost")(function* 
           ),
         });
       }
-      return yield* createSession(requestedSessionOptions);
+      return yield* createSession(requestedSessionOptions, adoptionMode);
     }
 
     cancelIdleShutdown();
@@ -732,6 +852,7 @@ export const runCodexProviderHost = Effect.fn("runCodexProviderHost")(function* 
         ...(config.codex.homePath ? { homePath: config.codex.homePath } : {}),
         environment: inheritedEnvironment(),
         appServerSocketPath: config.appServerSocketPath,
+        ...(adoptionMode === "resume-only" ? { resumePolicy: "resume-only" as const } : {}),
         ...(serviceTier ? { serviceTier } : {}),
       };
       runtime = yield* makeRuntime(runtimeOptions).pipe(
@@ -745,6 +866,7 @@ export const runCodexProviderHost = Effect.fn("runCodexProviderHost")(function* 
       ).pipe(Effect.forkIn(hostScope));
       const hostSession = {
         options: sessionOptions,
+        creationMode: adoptionMode,
         scope,
         runtime,
         eventFiber,
@@ -775,7 +897,7 @@ export const runCodexProviderHost = Effect.fn("runCodexProviderHost")(function* 
       ),
       Effect.ensuring(
         Effect.sync(() => {
-          if (sessionCreations.get(sessionOptions.threadId) === admission.deferred) {
+          if (sessionCreations.get(sessionOptions.threadId)?.deferred === admission.deferred) {
             sessionCreations.delete(sessionOptions.threadId);
           }
           scheduleIdleShutdown();
@@ -786,67 +908,70 @@ export const runCodexProviderHost = Effect.fn("runCodexProviderHost")(function* 
 
   const stopSession: (threadId: ThreadId) => Effect.Effect<void, CodexSessionRuntimeError> =
     Effect.fn("CodexProviderHost.stopSession")(function* (threadId: ThreadId) {
-      const admission = yield* sessionCreationLock.withPermit(
+      const completed = yield* Deferred.make<boolean>();
+      return yield* Effect.uninterruptibleMask((restore) =>
         Effect.gen(function* () {
-          const pendingCreation = sessionCreations.get(threadId);
-          if (pendingCreation) {
-            return { _tag: "creating" as const, deferred: pendingCreation };
-          }
-          const pendingStop = sessionStops.get(threadId);
-          if (pendingStop) {
-            return { _tag: "stopping" as const, deferred: pendingStop };
-          }
-          const session = sessions.get(threadId);
-          if (!session) {
-            return { _tag: "missing" as const };
-          }
-          const completed = yield* Deferred.make<boolean>();
-          sessionStops.set(threadId, completed);
-          return { _tag: "stop" as const, session, completed };
-        }),
-      );
+          const admission = yield* restore(
+            sessionCreationLock.withPermit(
+              Effect.sync(() => {
+                const pendingCreation = sessionCreations.get(threadId);
+                if (pendingCreation) {
+                  return { _tag: "creating" as const, deferred: pendingCreation.deferred };
+                }
+                const pendingStop = sessionStops.get(threadId);
+                if (pendingStop) {
+                  return { _tag: "stopping" as const, deferred: pendingStop };
+                }
+                const session = sessions.get(threadId);
+                if (!session) {
+                  return { _tag: "missing" as const };
+                }
+                sessionStops.set(threadId, completed);
+                return { _tag: "stop" as const, session, completed };
+              }),
+            ),
+          );
 
-      if (admission._tag === "creating") {
-        yield* Deferred.await(admission.deferred);
-        return yield* Effect.suspend(() => stopSession(threadId));
-      }
-      if (admission._tag === "stopping") {
-        const stopped = yield* Deferred.await(admission.deferred);
-        if (stopped) return;
-        return yield* Effect.suspend(() => stopSession(threadId));
-      }
-      if (admission._tag === "missing") return;
+          if (admission._tag === "creating") {
+            yield* restore(Deferred.await(admission.deferred));
+            return yield* restore(Effect.suspend(() => stopSession(threadId)));
+          }
+          if (admission._tag === "stopping") {
+            const stopped = yield* restore(Deferred.await(admission.deferred));
+            if (stopped) return;
+            return yield* restore(Effect.suspend(() => stopSession(threadId)));
+          }
+          if (admission._tag === "missing") return;
 
-      const outcome = yield* Effect.exit(
-        Effect.gen(function* () {
-          yield* admission.session.runtime.interruptTurn();
-          yield* admission.session.runtime.close;
-          yield* Fiber.join(admission.session.eventFiber);
-          sessions.delete(threadId);
-          yield* eventLock.withPermit(Effect.sync(() => clearReplayForThread(threadId)));
-          yield* Scope.close(admission.session.scope, Exit.void).pipe(Effect.ignore);
-          for (const connection of admission.session.attachments) {
-            for (const [attachmentId, attachment] of connection.attachments) {
-              if (attachment.threadId === threadId) {
-                connection.attachments.delete(attachmentId);
+          return yield* restore(
+            Effect.gen(function* () {
+              yield* admission.session.runtime.interruptTurn();
+              yield* admission.session.runtime.close;
+              yield* Fiber.join(admission.session.eventFiber);
+              sessions.delete(threadId);
+              yield* eventLock.withPermit(Effect.sync(() => clearReplayForThread(threadId)));
+              yield* Scope.close(admission.session.scope, Exit.void).pipe(Effect.ignore);
+              for (const connection of admission.session.attachments) {
+                for (const [attachmentId, attachment] of connection.attachments) {
+                  if (attachment.threadId === threadId) {
+                    connection.attachments.delete(attachmentId);
+                  }
+                }
               }
-            }
-          }
-          scheduleIdleShutdown();
+              scheduleIdleShutdown();
+            }),
+          ).pipe(
+            Effect.onExit((outcome) =>
+              Effect.gen(function* () {
+                if (sessionStops.get(threadId) === admission.completed) {
+                  sessionStops.delete(threadId);
+                }
+                yield* Deferred.succeed(admission.completed, Exit.isSuccess(outcome));
+              }),
+            ),
+          );
         }),
       );
-
-      yield* sessionCreationLock.withPermit(
-        Effect.gen(function* () {
-          if (sessionStops.get(threadId) === admission.completed) {
-            sessionStops.delete(threadId);
-          }
-          yield* Deferred.succeed(admission.completed, Exit.isSuccess(outcome));
-        }),
-      );
-      if (Exit.isFailure(outcome)) {
-        return yield* Effect.failCause(outcome.cause);
-      }
     });
 
   const runCommand = Effect.fn("CodexProviderHost.runCommand")(function* (
@@ -973,12 +1098,27 @@ export const runCodexProviderHost = Effect.fn("runCodexProviderHost")(function* 
           })();
           return value;
         });
-        const outcome = yield* Effect.exit(
+        const deadlineAtMs =
+          command.deadlineAtMs ?? (yield* Clock.currentTimeMillis) + commandTimeoutMs;
+        const remainingMs = Math.max(0, Number(deadlineAtMs) - (yield* Clock.currentTimeMillis));
+        const outcomeOption = yield* Effect.exit(
           operation === CODEX_PROVIDER_HOST_OPERATIONS.interruptTurn ||
             operation === CODEX_PROVIDER_HOST_OPERATIONS.stopSession
             ? execute
             : activeSession.commandLock.withPermit(execute),
-        );
+        ).pipe(Effect.timeoutOption(Duration.millis(remainingMs)));
+        if (Option.isNone(outcomeOption)) {
+          return ProviderHostCommandResultEnvelope.make({
+            version: PROVIDER_HOST_PROTOCOL_VERSION,
+            type: "commandResult",
+            commandId: command.commandId,
+            threadId: command.threadId,
+            ok: false,
+            error: `Provider-host command '${operation}' exceeded its deadline.`,
+            errorCode: "deadline-exceeded",
+          });
+        }
+        const outcome = outcomeOption.value;
         if (Exit.isFailure(outcome)) {
           return ProviderHostCommandResultEnvelope.make({
             version: PROVIDER_HOST_PROTOCOL_VERSION,
@@ -1022,6 +1162,7 @@ export const runCodexProviderHost = Effect.fn("runCodexProviderHost")(function* 
       sessions.get(attachment.threadId)?.attachments.delete(connection);
     }
     connection.attachments.clear();
+    scheduleIdleShutdown();
   };
 
   const handleEnvelope = Effect.fn("CodexProviderHost.handleEnvelope")(function* (
@@ -1031,17 +1172,24 @@ export const runCodexProviderHost = Effect.fn("runCodexProviderHost")(function* 
     switch (envelope.type) {
       case "attach": {
         return yield* Effect.gen(function* () {
+          if (idleShutdownStarted) {
+            return yield* new CodexProviderHostError({
+              operation: "attach-idle-provider-host",
+              cause: new Error("Provider host idle shutdown has already started."),
+            });
+          }
           const replayFrom = envelope.replayFrom ?? latestCursor;
           let session: HostSession;
-          if (envelope.session === undefined) {
-            const existing = sessions.get(envelope.threadId);
+          const existing = sessions.get(envelope.threadId);
+          if (envelope.mode === "reuse") {
             if (
               !existing ||
               sessionCreations.has(envelope.threadId) ||
               sessionStops.has(envelope.threadId)
             ) {
+              writeEnvelope(connection, inventoryEnvelope(envelope.threadId));
               return yield* new CodexProviderHostError({
-                operation: "attach-existing-session",
+                operation: "reuse-session",
                 cause: new Error(
                   `No running provider-host session exists for ${envelope.threadId}.`,
                 ),
@@ -1049,6 +1197,20 @@ export const runCodexProviderHost = Effect.fn("runCodexProviderHost")(function* 
             }
             session = existing;
           } else {
+            if (envelope.mode === "adopt" && !canAdoptSessions) {
+              return yield* new CodexProviderHostError({
+                operation: "adopt-session",
+                cause: new Error("This provider host cannot adopt Codex sessions."),
+              });
+            }
+            if (envelope.session === undefined) {
+              return yield* new CodexProviderHostError({
+                operation: envelope.mode === "adopt" ? "adopt-session" : "create-session",
+                cause: new Error(
+                  `Provider-host session options are required for ${envelope.mode}.`,
+                ),
+              });
+            }
             const decoded = yield* decodeSessionOptions(envelope.session).pipe(Effect.result);
             if (Result.isFailure(decoded)) {
               connection.socket.destroy(new Error("Invalid provider-host session options."));
@@ -1058,7 +1220,18 @@ export const runCodexProviderHost = Effect.fn("runCodexProviderHost")(function* 
               connection.socket.destroy(new Error("Provider-host attachment thread mismatch."));
               return;
             }
-            session = yield* createSession(decoded.success);
+            if (envelope.mode === "adopt" && decoded.success.resumeCursor === undefined) {
+              return yield* new CodexProviderHostError({
+                operation: "adopt-session",
+                cause: new Error(
+                  `Cannot adopt provider-host session ${envelope.threadId} without a Codex resume cursor.`,
+                ),
+              });
+            }
+            session = yield* createSession(
+              decoded.success,
+              envelope.mode === "adopt" ? "resume-only" : "normal",
+            );
           }
           yield* eventLock.withPermit(
             Effect.gen(function* () {
@@ -1091,6 +1264,8 @@ export const runCodexProviderHost = Effect.fn("runCodexProviderHost")(function* 
                   ),
                 });
               }
+              cancelIdleShutdown();
+              writeEnvelope(connection, inventoryEnvelope(envelope.threadId));
               session.attachments.add(connection);
               connection.attachments.set(envelope.attachmentId, {
                 clientId: envelope.clientId,
@@ -1152,6 +1327,7 @@ export const runCodexProviderHost = Effect.fn("runCodexProviderHost")(function* 
         ) {
           session.attachments.delete(connection);
         }
+        scheduleIdleShutdown();
         return;
       }
       case "command": {
@@ -1203,7 +1379,10 @@ export const runCodexProviderHost = Effect.fn("runCodexProviderHost")(function* 
         version: PROVIDER_HOST_PROTOCOL_VERSION,
         type: "hello",
         providerInstanceId: ProviderInstanceId.make(config.providerInstanceId),
+        buildFingerprint,
         generationFingerprint,
+        appServerMode: config.appServerMode,
+        canAdoptSessions,
         hostProcess,
         startedAt,
         latestCursor,
@@ -1215,14 +1394,15 @@ export const runCodexProviderHost = Effect.fn("runCodexProviderHost")(function* 
         version: PROVIDER_HOST_PROTOCOL_VERSION,
         type: "health",
         status: "healthy",
+        buildFingerprint,
         generationFingerprint,
+        appServerMode: config.appServerMode,
+        canAdoptSessions,
         hostProcess,
-        codexChildProcess: childProcessIdentity(codexChild),
+        codexChildProcess: appServerProvenance.appServer.process,
         latestCursor,
       }),
     );
-    writeEnvelope(connection, inventoryEnvelope());
-
     socket.setEncoding("utf8");
     socket.on("data", (chunk: string) => {
       const framed = connection.lineFramer.push(chunk);
@@ -1273,6 +1453,7 @@ export const runCodexProviderHost = Effect.fn("runCodexProviderHost")(function* 
     socket.on("error", () => detachConnection(connection));
   });
 
+  let controlSocketIdentity: SocketPathIdentity | undefined;
   let transportShutdown: Promise<void> | undefined;
   const shutdownTransport = () => {
     if (!transportShutdown) {
@@ -1283,8 +1464,9 @@ export const runCodexProviderHost = Effect.fn("runCodexProviderHost")(function* 
         if (server.listening) {
           await new Promise<void>((resolve) => server.close(() => resolve()));
         }
-        await NodeFSP.rm(config.controlSocketPath, { force: true });
-        await NodeFSP.rm(config.appServerSocketPath, { force: true });
+        if (controlSocketIdentity) {
+          await removeSocketPathIfOwned(config.controlSocketPath, controlSocketIdentity);
+        }
       })();
     }
     return transportShutdown;
@@ -1307,6 +1489,10 @@ export const runCodexProviderHost = Effect.fn("runCodexProviderHost")(function* 
         });
       });
       await NodeFSP.chmod(config.controlSocketPath, 0o600);
+      controlSocketIdentity = await readSocketPathIdentity(config.controlSocketPath);
+      if (!controlSocketIdentity) {
+        throw new Error("Provider-host control socket disappeared after startup.");
+      }
       scheduleIdleShutdown();
     },
     catch: (cause) =>
@@ -1323,18 +1509,31 @@ export const runCodexProviderHost = Effect.fn("runCodexProviderHost")(function* 
     pid: process.pid,
   });
 
-  const childExit = yield* Fiber.join(childExitFiber);
-  yield* Effect.logWarning("codex.provider-host.codex-exited", {
+  const exit = yield* Deferred.await(hostExit);
+  yield* Effect.logInfo("codex.provider-host.stopped", {
     providerInstanceId: config.providerInstanceId,
-    code: childExit.code,
-    signal: childExit.signal,
-    ...(childExit.cause ? { cause: childExit.cause } : {}),
+    reason: exit._tag,
   });
   yield* Effect.promise(shutdownTransport);
+  yield* Effect.forEach(
+    Array.from(sessions.values()),
+    (session) =>
+      session.runtime.detach.pipe(
+        Effect.andThen(Fiber.join(session.eventFiber)),
+        Effect.ensuring(Scope.close(session.scope, Exit.void).pipe(Effect.ignore)),
+        Effect.ignore,
+      ),
+    { concurrency: "unbounded", discard: true },
+  );
 });
 
 export const __testing = {
+  appServerMonitorFailureThreshold: APP_SERVER_MONITOR_FAILURE_THRESHOLD,
+  appServerMonitorInitialDelayMs: APP_SERVER_MONITOR_INITIAL_DELAY_MS,
+  appServerMonitorMaxDelayMs: APP_SERVER_MONITOR_MAX_DELAY_MS,
+  nextAppServerMonitorState,
+  readSocketPathIdentity,
+  removeSocketPathIfOwned,
   maxOutboundFrameBytes: MAX_OUTBOUND_FRAME_BYTES,
-  terminateChild,
-  zeroSessionIdleTimeoutMs: ZERO_SESSION_IDLE_TIMEOUT_MS,
+  zeroAttachmentIdleTimeoutMs: ZERO_ATTACHMENT_IDLE_TIMEOUT_MS,
 };
