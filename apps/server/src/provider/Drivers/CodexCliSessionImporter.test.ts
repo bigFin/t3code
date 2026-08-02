@@ -922,7 +922,7 @@ describe("CodexCliSessionImporter transcript conversion", () => {
     ).toBe(false);
   });
 
-  it("preserves unchanged open CLI turns without rereading their transcripts", () => {
+  it("preserves active open CLI turns without rereading their transcripts", () => {
     const binding = {
       threadId: ThreadId.make("019codex-thread"),
       provider: ProviderDriverKind.make("codex"),
@@ -969,6 +969,25 @@ describe("CodexCliSessionImporter transcript conversion", () => {
       shouldPreserveCurrentOpenCodexCliImport({
         ...input,
         listedThread: { ...input.listedThread, updatedAt: 1_700_000_003 },
+      }),
+    ).toBe(true);
+    expect(
+      shouldReconcileCurrentCodexCliSessionWithoutRead({
+        ...input,
+        listedThread: { ...input.listedThread, updatedAt: 1_700_000_003 },
+        rolloutIsOpen: false,
+      }),
+    ).toBe(false);
+    expect(
+      shouldPreserveCurrentOpenCodexCliImport({
+        ...input,
+        binding: {
+          ...input.binding,
+          runtimePayload: {
+            ...input.binding.runtimePayload,
+            codexCliImportVersion: 1,
+          },
+        },
       }),
     ).toBe(false);
     expect(

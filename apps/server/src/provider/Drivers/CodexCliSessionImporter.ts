@@ -893,9 +893,13 @@ export function isCurrentCodexCliImport(
   listedThread: CodexListedThread,
 ): boolean {
   return (
-    readCodexCliImportVersion(binding?.runtimePayload) === CODEX_CLI_IMPORT_VERSION &&
+    hasCurrentCodexCliImportVersion(binding) &&
     readImportedCodexUpdatedAt(binding?.runtimePayload) === listedThread.updatedAt
   );
+}
+
+function hasCurrentCodexCliImportVersion(binding: ProviderRuntimeBinding | undefined): boolean {
+  return readCodexCliImportVersion(binding?.runtimePayload) === CODEX_CLI_IMPORT_VERSION;
 }
 
 export function shouldSkipCurrentCodexCliImport(
@@ -915,7 +919,7 @@ export function shouldPreserveCurrentOpenCodexCliImport(input: {
   readonly nowMillis: number;
 }): boolean {
   return (
-    isCurrentCodexCliImport(input.binding, input.listedThread) &&
+    hasCurrentCodexCliImportVersion(input.binding) &&
     input.staleActiveTurnId !== null &&
     input.rolloutIsOpen &&
     isRecentCodexCliActivity(input.listedThread.updatedAt, input.nowMillis) &&
