@@ -3212,6 +3212,184 @@ describe("ProviderRuntimeIngestion", () => {
     ).toBe(true);
   });
 
+  it("clears retry state when the active turn produces fresh authoritative progress", async () => {
+    const harness = await createHarness();
+    const turnId = asTurnId("turn-retry-progress");
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-retry-progress-turn-started"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: "2026-01-01T00:00:00.000Z",
+      threadId: asThreadId("thread-1"),
+      turnId,
+      payload: {},
+    });
+    await waitForThread(
+      harness.readModel,
+      (thread) => thread.session?.status === "running" && thread.session.activeTurnId === turnId,
+    );
+
+    harness.emit({
+      type: "runtime.warning",
+      eventId: asEventId("evt-retry-progress-warning"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: "2026-01-01T00:00:01.000Z",
+      threadId: asThreadId("thread-1"),
+      turnId,
+      payload: {
+        message: "Reconnecting... 1/5",
+        retrying: true,
+      },
+    });
+    await waitForThread(
+      harness.readModel,
+      (thread) =>
+        thread.session?.retrying === true &&
+        thread.session.activeTurnId === turnId &&
+        thread.session.lastError === "Reconnecting... 1/5",
+    );
+
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-retry-progress-content"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: "2026-01-01T00:00:02.000Z",
+      threadId: asThreadId("thread-1"),
+      turnId,
+      itemId: asItemId("item-retry-progress"),
+      payload: {
+        streamKind: "assistant_text",
+        delta: "Resumed",
+      },
+    });
+
+    const thread = await waitForThread(
+      harness.readModel,
+      (entry) =>
+        entry.session?.status === "running" &&
+        entry.session.activeTurnId === turnId &&
+        entry.session.retrying !== true &&
+        entry.session.lastError === null,
+    );
+    expect(thread.session).toMatchObject({
+      status: "running",
+      activeTurnId: turnId,
+      lastError: null,
+    });
+    expect(thread.session?.retrying).not.toBe(true);
+  });
+
+  it("keeps retry state for noise, stale progress, and progress from another turn", async () => {
+    const harness = await createHarness();
+    const turnId = asTurnId("turn-retry-guard");
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-retry-guard-turn-started"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: "2026-01-01T00:00:00.000Z",
+      threadId: asThreadId("thread-1"),
+      turnId,
+      payload: {},
+    });
+    await waitForThread(
+      harness.readModel,
+      (thread) => thread.session?.status === "running" && thread.session.activeTurnId === turnId,
+    );
+
+    harness.emit({
+      type: "runtime.warning",
+      eventId: asEventId("evt-retry-guard-warning"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: "2026-01-01T00:00:05.000Z",
+      threadId: asThreadId("thread-1"),
+      turnId,
+      payload: {
+        message: "Reconnecting... 2/5",
+        retrying: true,
+      },
+    });
+    await waitForThread(
+      harness.readModel,
+      (thread) =>
+        thread.session?.retrying === true &&
+        thread.session.activeTurnId === turnId &&
+        thread.session.lastError === "Reconnecting... 2/5",
+    );
+
+    harness.emit({
+      type: "thread.metadata.updated",
+      eventId: asEventId("evt-retry-guard-metadata"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: "2026-01-01T00:00:06.000Z",
+      threadId: asThreadId("thread-1"),
+      turnId,
+      payload: {
+        name: "Metadata is not turn progress",
+      },
+    });
+    harness.emit({
+      type: "account.updated",
+      eventId: asEventId("evt-retry-guard-account"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: "2026-01-01T00:00:06.000Z",
+      threadId: asThreadId("thread-1"),
+      turnId,
+      payload: {
+        account: { plan: "pro" },
+      },
+    });
+    harness.emit({
+      type: "auth.status",
+      eventId: asEventId("evt-retry-guard-status"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: "2026-01-01T00:00:06.000Z",
+      threadId: asThreadId("thread-1"),
+      turnId,
+      payload: {
+        isAuthenticating: false,
+      },
+    });
+    harness.emit({
+      type: "item.updated",
+      eventId: asEventId("evt-retry-guard-stale-progress"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: "2026-01-01T00:00:04.000Z",
+      threadId: asThreadId("thread-1"),
+      turnId,
+      itemId: asItemId("item-retry-guard-stale"),
+      payload: {
+        itemType: "command_execution",
+        status: "inProgress",
+      },
+    });
+    harness.emit({
+      type: "item.updated",
+      eventId: asEventId("evt-retry-guard-conflicting-progress"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: "2026-01-01T00:00:06.000Z",
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-retry-guard-other"),
+      itemId: asItemId("item-retry-guard-conflicting"),
+      payload: {
+        itemType: "command_execution",
+        status: "inProgress",
+      },
+    });
+
+    await harness.drain();
+    const thread = (await harness.readModel()).threads.find(
+      (entry) => entry.id === asThreadId("thread-1"),
+    );
+    expect(thread?.session).toMatchObject({
+      status: "running",
+      activeTurnId: turnId,
+      lastError: "Reconnecting... 2/5",
+      retrying: true,
+    });
+  });
+
   it("maps session/thread lifecycle and item.started into session/activity projections", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";

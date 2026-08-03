@@ -291,6 +291,22 @@ describe("hasUnseenCompletion", () => {
       }),
     ).toBe(false);
   });
+
+  it("does not treat interrupted or failed turns as completed", () => {
+    for (const state of ["interrupted", "error"] as const) {
+      expect(
+        hasUnseenCompletion({
+          hasActionableProposedPlan: false,
+          hasPendingApprovals: false,
+          hasPendingUserInput: false,
+          interactionMode: "default",
+          latestTurn: makeLatestTurn({ state }),
+          lastVisitedAt: "2026-03-09T10:04:00.000Z",
+          session: null,
+        }),
+      ).toBe(false);
+    }
+  });
 });
 
 describe("createThreadJumpHintVisibilityController", () => {
@@ -649,18 +665,24 @@ describe("resolveSidebarV2Status", () => {
     hasPendingUserInput: false,
     latestTurn: null,
   };
+  const completed = {
+    ...idle,
+    latestTurn: makeLatestTurn(),
+  };
 
   it("prioritizes approval over a running session", () => {
-    expect(resolveSidebarV2Status({ ...idle, hasPendingApprovals: true, session })).toBe(
+    expect(resolveSidebarV2Status({ ...completed, hasPendingApprovals: true, session })).toBe(
       "approval",
     );
   });
 
   it("prioritizes awaiting input over a running session, below approval", () => {
-    expect(resolveSidebarV2Status({ ...idle, hasPendingUserInput: true, session })).toBe("input");
+    expect(resolveSidebarV2Status({ ...completed, hasPendingUserInput: true, session })).toBe(
+      "input",
+    );
     expect(
       resolveSidebarV2Status({
-        ...idle,
+        ...completed,
         hasPendingApprovals: true,
         hasPendingUserInput: true,
         session,
@@ -669,10 +691,10 @@ describe("resolveSidebarV2Status", () => {
   });
 
   it("reports working for running and starting sessions", () => {
-    expect(resolveSidebarV2Status({ ...idle, session })).toBe("working");
+    expect(resolveSidebarV2Status({ ...completed, session })).toBe("working");
     expect(
       resolveSidebarV2Status({
-        ...idle,
+        ...completed,
         session: { ...session, status: "starting" as const },
       }),
     ).toBe("working");
@@ -681,7 +703,7 @@ describe("resolveSidebarV2Status", () => {
   it("reports retrying before a running session", () => {
     expect(
       resolveSidebarV2Status({
-        ...idle,
+        ...completed,
         session: { ...session, retrying: true, lastError: "Server overloaded" },
       }),
     ).toBe("retrying");
@@ -691,7 +713,7 @@ describe("resolveSidebarV2Status", () => {
     expect(
       resolveSidebarV2Status(
         {
-          ...idle,
+          ...completed,
           session: { ...session, retrying: true, lastError: "Server overloaded" },
         },
         { environmentUnavailable: true },
@@ -699,13 +721,13 @@ describe("resolveSidebarV2Status", () => {
     ).toBe("disconnected");
     expect(
       resolveSidebarV2Status(
-        { ...idle, hasPendingApprovals: true, session },
+        { ...completed, hasPendingApprovals: true, session },
         { environmentUnavailable: true },
       ),
     ).toBe("approval");
     expect(
       resolveSidebarV2Status(
-        { ...idle, hasPendingUserInput: true, session },
+        { ...completed, hasPendingUserInput: true, session },
         { environmentUnavailable: true },
       ),
     ).toBe("input");
@@ -739,12 +761,18 @@ describe("resolveSidebarV2Status", () => {
     ).toBe("interrupted");
   });
 
-  it("reports failed only while the session status is error", () => {
+  it("reports durable turn errors and live session errors", () => {
+    expect(
+      resolveSidebarV2Status({
+        ...completed,
+        session: { ...session, status: "error" as const, lastError: "boom" },
+      }),
+    ).toBe("failed");
     expect(
       resolveSidebarV2Status({
         ...idle,
-        latestTurn: null,
-        session: { ...session, status: "error" as const, lastError: "boom" },
+        latestTurn: makeLatestTurn({ state: "error" }),
+        session: { ...session, status: "ready" as const, lastError: "persisted" },
       }),
     ).toBe("failed");
     expect(
@@ -761,6 +789,38 @@ describe("resolveSidebarV2Status", () => {
         session: { ...session, status: "ready" as const, lastError: "persisted" },
       }),
     ).toBe("ready");
+  });
+
+  it("reports a durable completed state without a live session", () => {
+    expect(
+      resolveSidebarV2Status({
+        ...completed,
+        session: null,
+      }),
+    ).toBe("completed");
+    expect(
+      resolveSidebarV2Status({
+        ...completed,
+        session: { ...session, status: "ready" as const, activeTurnId: null },
+      }),
+    ).toBe("completed");
+  });
+
+  it("does not report completion for interrupted or failed turns with completion timestamps", () => {
+    expect(
+      resolveSidebarV2Status({
+        ...idle,
+        latestTurn: makeLatestTurn({ state: "interrupted" }),
+        session: null,
+      }),
+    ).toBe("interrupted");
+    expect(
+      resolveSidebarV2Status({
+        ...idle,
+        latestTurn: makeLatestTurn({ state: "error" }),
+        session: null,
+      }),
+    ).toBe("failed");
   });
 
   it("defaults to ready with no session", () => {
@@ -783,16 +843,29 @@ describe("resolveSidebarV2CompactAttention", () => {
     expect(
       resolveSidebarV2CompactAttention({
         isInterrupted: false,
+        isCompleted: true,
         isUnread: true,
         isWoke: true,
       }),
     ).toBe("woke");
   });
 
+  it("keeps durable completion visible after unread state is cleared", () => {
+    expect(
+      resolveSidebarV2CompactAttention({
+        isInterrupted: false,
+        isCompleted: true,
+        isUnread: false,
+        isWoke: false,
+      }),
+    ).toBe("completed");
+  });
+
   it("prioritizes interrupted attention over wake and completion labels", () => {
     expect(
       resolveSidebarV2CompactAttention({
         isInterrupted: true,
+        isCompleted: true,
         isUnread: true,
         isWoke: true,
       }),
@@ -869,6 +942,20 @@ describe("resolveSidebarV2AttentionDetail", () => {
       status: "retrying",
       text: "Retrying: Backoff",
     });
+  });
+
+  it("ignores stale session errors after a durable completion", () => {
+    expect(
+      resolveSidebarV2AttentionDetail({
+        ...base,
+        latestTurn: makeLatestTurn(),
+        session: {
+          ...base.session,
+          status: "ready",
+          lastError: "Earlier transport failure",
+        },
+      }),
+    ).toBeNull();
   });
 });
 
@@ -1304,7 +1391,7 @@ describe("resolveThreadStatusPill", () => {
     hasPendingApprovals: false,
     hasPendingUserInput: false,
     interactionMode: "plan" as const,
-    latestTurn: null,
+    latestTurn: makeLatestTurn(),
     lastVisitedAt: undefined,
     session: {
       threadId: ThreadId.make("thread-1"),
@@ -1317,6 +1404,14 @@ describe("resolveThreadStatusPill", () => {
       updatedAt: "2026-03-09T10:00:00.000Z",
     },
   };
+
+  beforeEach(() => {
+    vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-03-09T10:17:00.000Z"));
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
 
   it("shows pending approval before all other statuses", () => {
     expect(
@@ -1444,7 +1539,7 @@ describe("resolveThreadStatusPill", () => {
     ).toMatchObject({ label: "Plan Ready", pulse: false });
   });
 
-  it("does not manufacture completed state without a client visit marker", () => {
+  it("shows durable completion without a client visit marker", () => {
     expect(
       resolveThreadStatusPill({
         thread: {
@@ -1457,17 +1552,20 @@ describe("resolveThreadStatusPill", () => {
           },
         },
       }),
-    ).toBeNull();
+    ).toMatchObject({
+      label: "Completed 12m ago — ready for follow-up",
+      pulse: false,
+    });
   });
 
-  it("shows completed when there is an unseen completion and no active blocker", () => {
+  it("keeps durable completion visible after the completion has been visited", () => {
     expect(
       resolveThreadStatusPill({
         thread: {
           ...baseThread,
           interactionMode: "default",
           latestTurn: makeLatestTurn(),
-          lastVisitedAt: "2026-03-09T10:04:00.000Z",
+          lastVisitedAt: "2026-03-09T10:06:00.000Z",
           session: {
             ...baseThread.session,
             status: "ready",
@@ -1475,7 +1573,31 @@ describe("resolveThreadStatusPill", () => {
           },
         },
       }),
-    ).toMatchObject({ label: "Completed", pulse: false });
+    ).toMatchObject({
+      label: "Completed 12m ago — ready for follow-up",
+      pulse: false,
+    });
+  });
+
+  it("does not show completion for interrupted or failed turns", () => {
+    expect(
+      resolveThreadStatusPill({
+        thread: {
+          ...baseThread,
+          latestTurn: makeLatestTurn({ state: "interrupted" }),
+          session: null,
+        },
+      }),
+    ).toMatchObject({ label: "Interrupted" });
+    expect(
+      resolveThreadStatusPill({
+        thread: {
+          ...baseThread,
+          latestTurn: makeLatestTurn({ state: "error" }),
+          session: null,
+        },
+      }),
+    ).toMatchObject({ label: "Error" });
   });
 });
 
@@ -1510,7 +1632,7 @@ describe("resolveProjectStatusIndicator", () => {
     expect(
       resolveProjectStatusIndicator([
         {
-          label: "Completed",
+          label: "Completed 12m ago — ready for follow-up",
           colorClass: "text-emerald-600",
           dotClass: "bg-emerald-500",
           pulse: false,
@@ -1535,7 +1657,7 @@ describe("resolveProjectStatusIndicator", () => {
     expect(
       resolveProjectStatusIndicator([
         {
-          label: "Completed",
+          label: "Completed 12m ago — ready for follow-up",
           colorClass: "text-emerald-600",
           dotClass: "bg-emerald-500",
           pulse: false,
@@ -1554,7 +1676,7 @@ describe("resolveProjectStatusIndicator", () => {
     expect(
       resolveProjectStatusIndicator([
         {
-          label: "Completed",
+          label: "Completed 12m ago — ready for follow-up",
           colorClass: "text-emerald-600",
           dotClass: "bg-emerald-500",
           pulse: false,

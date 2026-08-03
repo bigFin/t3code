@@ -104,7 +104,8 @@ T3 server briefly disconnects the app, but it does not stop an active Codex turn
 restores the provider's current status when the server returns. If you continue the same conversation
 from Codex CLI while T3 is disconnected, T3 discovers the newer transcript and mirrors it after
 reconnecting. This synchronization is passive: it does not submit a prompt or take ownership of the
-CLI session.
+CLI session. After a successful turn settles, the sidebar keeps its completion time and shows that
+the thread is ready for follow-up even after T3 restarts.
 
 T3 does not submit a message or automatically resume work when the Codex execution is actually
 gone. A machine restart, spot-instance eviction, or explicit **Stop** can end that execution; after

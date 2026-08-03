@@ -18,6 +18,7 @@ import type { ThreadRouteTarget } from "../threadRoutes";
 import { cn } from "../lib/utils";
 import { isLatestTurnSettled } from "../session-logic";
 import { resolveServerBackedAppStageLabel } from "../branding.logic";
+import { formatRelativeTimeLabel } from "../timestampFormat";
 
 export const THREAD_SELECTION_SAFE_SELECTOR = "[data-thread-item], [data-thread-selection-safe]";
 export const THREAD_JUMP_HINT_SHOW_DELAY_MS = 100;
@@ -119,25 +120,30 @@ export function buildBulkTitleRegenerationContextMenuItem(input: {
   };
 }
 
+type CompletedReadyLabel = `Completed ${string} — ready for follow-up`;
+
+type StaticThreadStatusLabel =
+  | "Working"
+  | "Connecting"
+  | "Retrying"
+  | "Disconnected"
+  | "Capacity Limited"
+  | "Interrupted"
+  | "Error"
+  | "Pending Approval"
+  | "Awaiting Input"
+  | "Plan Ready";
+
+type ThreadStatusLabel = StaticThreadStatusLabel | CompletedReadyLabel;
+
 export interface ThreadStatusPill {
-  label:
-    | "Working"
-    | "Connecting"
-    | "Retrying"
-    | "Disconnected"
-    | "Capacity Limited"
-    | "Interrupted"
-    | "Error"
-    | "Completed"
-    | "Pending Approval"
-    | "Awaiting Input"
-    | "Plan Ready";
+  label: ThreadStatusLabel;
   colorClass: string;
   dotClass: string;
   pulse: boolean;
 }
 
-const THREAD_STATUS_PRIORITY: Record<ThreadStatusPill["label"], number> = {
+const THREAD_STATUS_PRIORITY: Record<StaticThreadStatusLabel, number> = {
   Error: 8,
   "Capacity Limited": 8,
   Interrupted: 7,
@@ -148,8 +154,15 @@ const THREAD_STATUS_PRIORITY: Record<ThreadStatusPill["label"], number> = {
   Working: 3,
   Connecting: 3,
   "Plan Ready": 2,
-  Completed: 1,
 };
+
+function isCompletedReadyLabel(label: ThreadStatusLabel): label is CompletedReadyLabel {
+  return label.startsWith("Completed ");
+}
+
+function threadStatusPriority(label: ThreadStatusLabel): number {
+  return isCompletedReadyLabel(label) ? 1 : THREAD_STATUS_PRIORITY[label];
+}
 
 type ThreadStatusInput = Pick<
   SidebarThreadSummary,
@@ -256,7 +269,7 @@ export function useThreadJumpHintVisibility(): {
 }
 
 export function hasUnseenCompletion(thread: ThreadStatusInput): boolean {
-  if (!thread.latestTurn?.completedAt) return false;
+  if (thread.latestTurn?.state !== "completed" || !thread.latestTurn.completedAt) return false;
   const completedAt = Date.parse(thread.latestTurn.completedAt);
   if (Number.isNaN(completedAt)) return false;
   if (!thread.lastVisitedAt) return false;
@@ -264,6 +277,29 @@ export function hasUnseenCompletion(thread: ThreadStatusInput): boolean {
   const lastVisitedAt = Date.parse(thread.lastVisitedAt);
   if (Number.isNaN(lastVisitedAt)) return true;
   return completedAt > lastVisitedAt;
+}
+
+type DurableCompletionInput = Pick<SidebarThreadSummary, "latestTurn">;
+
+function resolveDurableCompletionAt(thread: DurableCompletionInput): string | null {
+  const turn = thread.latestTurn;
+  if (
+    turn?.state !== "completed" ||
+    turn.completedAt === null ||
+    Number.isNaN(Date.parse(turn.completedAt))
+  ) {
+    return null;
+  }
+  return turn.completedAt;
+}
+
+export function resolveCompletedReadyLabel(
+  thread: DurableCompletionInput,
+): CompletedReadyLabel | null {
+  const completedAt = resolveDurableCompletionAt(thread);
+  if (completedAt === null) return null;
+  const relative = formatRelativeTimeLabel(completedAt);
+  return relative === "" ? null : `Completed ${relative} — ready for follow-up`;
 }
 
 export function shouldClearThreadSelectionOnMouseDown(target: HTMLElement | null): boolean {
@@ -430,12 +466,12 @@ export function resolveThreadRowClassName(input: {
 }
 
 // ── Sidebar v2 status model ─────────────────────────────────────────
-// Seven visual states: color is reserved for "act now" (approval/input),
+// Nine visual states: color is reserved for "act now" (approval/input),
 // "in motion" (working/retrying), and terminal attention
-// (interrupted/failed). Ready is the unlabeled resting state — the agent
-// stopped and is waiting on the user, whether it finished, asked a question,
-// or proposed a plan.
-// Unread completion is tracked separately: it describes whether a ready
+// (interrupted/failed). A durable completed state keeps the last successful
+// turn visible after restart or reconnect. Ready remains the unlabeled resting
+// state when there is no completed turn to describe.
+// Unread completion is tracked separately: it describes whether a completed
 // thread needs attention, not what the thread is currently doing.
 export type SidebarV2Status =
   | "approval"
@@ -445,8 +481,9 @@ export type SidebarV2Status =
   | "working"
   | "interrupted"
   | "failed"
+  | "completed"
   | "ready";
-export type SidebarV2CompactAttention = "interrupted" | "woke" | "done" | null;
+export type SidebarV2CompactAttention = "interrupted" | "woke" | "completed" | "done" | null;
 
 type SidebarV2StatusInput = Pick<
   SidebarThreadSummary,
@@ -480,8 +517,11 @@ export function resolveSidebarV2Status(
   if (isThreadInterrupted(thread)) {
     return "interrupted";
   }
-  if (thread.session?.status === "error") {
+  if (thread.session?.status === "error" || thread.latestTurn?.state === "error") {
     return "failed";
+  }
+  if (resolveDurableCompletionAt(thread) !== null) {
+    return "completed";
   }
   return "ready";
 }
@@ -514,7 +554,7 @@ export function resolveSidebarV2AttentionDetail(
         : "Interrupted — needs attention",
     };
   }
-  if (thread.session?.lastError) {
+  if (status === "failed" && thread.session?.lastError) {
     return {
       status: "failed",
       text: `${classifyThreadFailure(thread.session.lastError) === "capacity" ? "Capacity limited — needs attention" : "Error — needs attention"}: ${thread.session.lastError}`,
@@ -525,11 +565,13 @@ export function resolveSidebarV2AttentionDetail(
 
 export function resolveSidebarV2CompactAttention(input: {
   isInterrupted: boolean;
+  isCompleted?: boolean;
   isUnread: boolean;
   isWoke: boolean;
 }): SidebarV2CompactAttention {
   if (input.isInterrupted) return "interrupted";
   if (input.isWoke) return "woke";
+  if (input.isCompleted) return "completed";
   if (input.isUnread) return "done";
   return null;
 }
@@ -848,9 +890,10 @@ export function resolveThreadStatusPill(input: {
     };
   }
 
-  if (hasUnseenCompletion(thread)) {
+  const completedReadyLabel = resolveCompletedReadyLabel(thread);
+  if (completedReadyLabel !== null) {
     return {
-      label: "Completed",
+      label: completedReadyLabel,
       colorClass: "text-emerald-600 dark:text-emerald-300/90",
       dotClass: "bg-emerald-500 dark:bg-emerald-300/90",
       pulse: false,
@@ -869,7 +912,7 @@ export function resolveProjectStatusIndicator(
     if (status === null) continue;
     if (
       highestPriorityStatus === null ||
-      THREAD_STATUS_PRIORITY[status.label] > THREAD_STATUS_PRIORITY[highestPriorityStatus.label]
+      threadStatusPriority(status.label) > threadStatusPriority(highestPriorityStatus.label)
     ) {
       highestPriorityStatus = status;
     }

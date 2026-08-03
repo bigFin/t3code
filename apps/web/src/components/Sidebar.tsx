@@ -56,6 +56,7 @@ import {
   scopeProjectRef,
   scopeThreadRef,
 } from "@t3tools/client-runtime/environment";
+import { isEnvironmentUnavailable } from "@t3tools/client-runtime/connection";
 import { safeErrorLogAttributes } from "@t3tools/client-runtime/errors";
 import {
   isAtomCommandInterrupted,
@@ -450,7 +451,7 @@ export const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThr
       ...thread,
       lastVisitedAt,
     },
-    environmentUnavailable: environment?.connection.phase !== "connected",
+    environmentUnavailable: environment != null && isEnvironmentUnavailable(environment.connection),
   });
   const pr = resolveThreadPr({
     threadBranch: thread.branch,
@@ -3062,7 +3063,7 @@ export default function Sidebar() {
     () =>
       new Set(
         environments
-          .filter((environment) => environment.connection.phase !== "connected")
+          .filter((environment) => isEnvironmentUnavailable(environment.connection))
           .map((environment) => environment.environmentId),
       ),
     [environments],

@@ -140,6 +140,44 @@ function sameId(left: string | null | undefined, right: string | null | undefine
   return left === right;
 }
 
+function isAuthoritativeProgressForRetryingTurn(
+  event: ProviderRuntimeEvent,
+  session: OrchestrationThread["session"],
+): boolean {
+  if (
+    session?.status !== "running" ||
+    session.retrying !== true ||
+    session.activeTurnId === null ||
+    !sameId(session.activeTurnId, event.turnId) ||
+    event.createdAt < session.updatedAt
+  ) {
+    return false;
+  }
+
+  switch (event.type) {
+    case "turn.plan.updated":
+    case "turn.proposed.completed":
+    case "turn.diff.updated":
+    case "item.started":
+    case "item.updated":
+    case "item.completed":
+    case "task.started":
+    case "task.progress":
+    case "task.completed":
+    case "hook.started":
+    case "hook.progress":
+    case "hook.completed":
+    case "tool.progress":
+    case "tool.summary":
+      return true;
+    case "turn.proposed.delta":
+    case "content.delta":
+      return event.payload.delta.length > 0;
+    default:
+      return false;
+  }
+}
+
 function hasAssistantMessageForTurn(
   messages: ReadonlyArray<OrchestrationMessage>,
   turnId: TurnId,
@@ -1765,6 +1803,26 @@ const make = Effect.gen(function* () {
             createdAt: now,
           });
         }
+      }
+
+      const retryingSession = thread.session;
+      if (
+        retryingSession !== null &&
+        isAuthoritativeProgressForRetryingTurn(event, retryingSession)
+      ) {
+        yield* orchestrationEngine.dispatch({
+          type: "thread.session.set",
+          commandId: yield* providerCommandId(event, "runtime-retry-progress-session-set"),
+          threadId: thread.id,
+          session: {
+            ...retryingSession,
+            lastError: null,
+            retrying: false,
+            updatedAt: now,
+          },
+          expectedSession: retryingSession,
+          createdAt: now,
+        });
       }
 
       if (isProviderHostReattachBarrier(event)) {

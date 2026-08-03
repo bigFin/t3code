@@ -12,6 +12,7 @@ import {
   scopeThreadRef,
   scopedThreadKey,
 } from "@t3tools/client-runtime/environment";
+import { isEnvironmentUnavailable } from "@t3tools/client-runtime/connection";
 import type { ScopedThreadRef, SidebarProjectGroupingMode } from "@t3tools/contracts";
 import type { SidebarV2ThreadSortOrder } from "@t3tools/contracts/settings";
 import {
@@ -117,6 +118,7 @@ import {
   isTrailingDoubleClick,
   orderItemsByPreferredIds,
   resolveAdjacentThreadId,
+  resolveCompletedReadyLabel,
   resolveLatestCompletedThread,
   resolveNextWorkingThread,
   resolveSettledTimestamp,
@@ -483,6 +485,7 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
   const status = resolveSidebarV2Status(thread, {
     environmentUnavailable: props.environmentUnavailable,
   });
+  const completedReadyLabel = resolveCompletedReadyLabel(thread);
   // A woken thread reappears at its original position (the sort is
   // deliberately static), so the pill has to carry the weight. Snoozing is
   // an explicit act, so unlike Done, a never-visited woke thread still
@@ -494,6 +497,7 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
   const isWoke = wokeAtDate !== null && (lastVisitedDate === null || lastVisitedDate < wokeAtDate);
   const compactAttention = resolveSidebarV2CompactAttention({
     isInterrupted: status === "interrupted",
+    isCompleted: status === "completed",
     isUnread,
     isWoke,
   });
@@ -507,7 +511,11 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
   const isInFlight =
     status === "working" || status === "retrying" || status === "approval" || status === "input";
   const shouldRecede =
-    (status === "ready" || isInFlight) && !isUnread && !isWoke && !props.isActive && !isSelected;
+    (status === "ready" || status === "completed" || isInFlight) &&
+    !isUnread &&
+    !isWoke &&
+    !props.isActive &&
+    !isSelected;
   // Status hues follow the system-wide convention set by sidebar v1 and the
   // mobile Live Activity/widgets (amber approval, indigo input, sky working)
   // so a thread reads the same color everywhere it surfaces.
@@ -565,13 +573,19 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
                         icon: "woke" as const,
                         className: "text-amber-700 dark:text-amber-300",
                       }
-                    : isUnread
+                    : status === "completed" && completedReadyLabel !== null
                       ? {
-                          label: "Done",
+                          label: completedReadyLabel,
                           icon: "done" as const,
                           className: "text-emerald-700 dark:text-emerald-300",
                         }
-                      : null;
+                      : isUnread
+                        ? {
+                            label: "Done",
+                            icon: "done" as const,
+                            className: "text-emerald-700 dark:text-emerald-300",
+                          }
+                        : null;
 
   const gitCwd = thread.worktreePath ?? props.projectCwd;
   const gitStatus = useEnvironmentQuery(
@@ -908,6 +922,15 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
                   >
                     <AlarmClockIcon aria-hidden className="size-3" />
                     Woke
+                  </span>
+                ) : compactAttention === "completed" && completedReadyLabel !== null ? (
+                  <span
+                    role="status"
+                    aria-label={completedReadyLabel}
+                    className="inline-flex items-center gap-1 text-xs font-medium text-emerald-700 dark:text-emerald-300"
+                  >
+                    <CircleCheckIcon aria-hidden className="size-3" />
+                    {completedReadyLabel}
                   </span>
                 ) : compactAttention === "done" ? (
                   // Completion must survive a move into the compact tail too.
@@ -1360,7 +1383,7 @@ export default function SidebarV2() {
     () =>
       new Set(
         environments
-          .filter((environment) => environment.connection.phase !== "connected")
+          .filter((environment) => isEnvironmentUnavailable(environment.connection))
           .map((environment) => environment.environmentId),
       ),
     [environments],
