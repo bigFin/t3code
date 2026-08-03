@@ -239,6 +239,117 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
   );
 });
 
+it.layer(makeProjectionPipelinePrefixedTestLayer("t3-projection-latest-user-message-test-"))(
+  "OrchestrationProjectionPipeline historical message summaries",
+  (it) => {
+    it.effect("keeps the latest user-message timestamp during historical imports", () =>
+      Effect.gen(function* () {
+        const projectionPipeline = yield* OrchestrationProjectionPipeline;
+        const eventStore = yield* OrchestrationEventStore;
+        const sql = yield* SqlClient.SqlClient;
+        const threadId = ThreadId.make("thread-historical-messages");
+
+        yield* eventStore.append({
+          type: "project.created",
+          eventId: EventId.make("evt-historical-project"),
+          aggregateKind: "project",
+          aggregateId: ProjectId.make("project-historical-messages"),
+          occurredAt: "2026-01-01T00:00:00.000Z",
+          commandId: CommandId.make("cmd-historical-project"),
+          causationEventId: null,
+          correlationId: CommandId.make("cmd-historical-project"),
+          metadata: {},
+          payload: {
+            projectId: ProjectId.make("project-historical-messages"),
+            title: "Historical messages",
+            workspaceRoot: "/tmp/historical-messages",
+            defaultModelSelection: null,
+            scripts: [],
+            createdAt: "2026-01-01T00:00:00.000Z",
+            updatedAt: "2026-01-01T00:00:00.000Z",
+          },
+        });
+        yield* eventStore.append({
+          type: "thread.created",
+          eventId: EventId.make("evt-historical-thread"),
+          aggregateKind: "thread",
+          aggregateId: threadId,
+          occurredAt: "2026-01-01T00:00:00.000Z",
+          commandId: CommandId.make("cmd-historical-thread"),
+          causationEventId: null,
+          correlationId: CommandId.make("cmd-historical-thread"),
+          metadata: {},
+          payload: {
+            threadId,
+            projectId: ProjectId.make("project-historical-messages"),
+            title: "Historical messages",
+            modelSelection: {
+              instanceId: ProviderInstanceId.make("codex"),
+              model: "gpt-5-codex",
+            },
+            runtimeMode: "full-access",
+            branch: null,
+            worktreePath: null,
+            createdAt: "2026-01-01T00:00:00.000Z",
+            updatedAt: "2026-01-01T00:00:00.000Z",
+          },
+        });
+        yield* eventStore.append({
+          type: "thread.message-sent",
+          eventId: EventId.make("evt-historical-newer"),
+          aggregateKind: "thread",
+          aggregateId: threadId,
+          occurredAt: "2026-01-01T00:00:02.000Z",
+          commandId: CommandId.make("cmd-historical-messages"),
+          causationEventId: null,
+          correlationId: CommandId.make("cmd-historical-messages"),
+          metadata: {},
+          payload: {
+            threadId,
+            messageId: MessageId.make("message-historical-newer"),
+            role: "user",
+            text: "Newer prompt",
+            turnId: TurnId.make("turn-historical-newer"),
+            streaming: false,
+            createdAt: "2026-01-01T00:00:02.000Z",
+            updatedAt: "2026-01-01T00:00:02.000Z",
+          },
+        });
+        yield* eventStore.append({
+          type: "thread.message-sent",
+          eventId: EventId.make("evt-historical-older"),
+          aggregateKind: "thread",
+          aggregateId: threadId,
+          occurredAt: "2026-01-01T00:00:03.000Z",
+          commandId: CommandId.make("cmd-historical-messages"),
+          causationEventId: null,
+          correlationId: CommandId.make("cmd-historical-messages"),
+          metadata: {},
+          payload: {
+            threadId,
+            messageId: MessageId.make("message-historical-older"),
+            role: "user",
+            text: "Older prompt imported later",
+            turnId: TurnId.make("turn-historical-older"),
+            streaming: false,
+            createdAt: "2026-01-01T00:00:01.000Z",
+            updatedAt: "2026-01-01T00:00:01.000Z",
+          },
+        });
+
+        yield* projectionPipeline.bootstrap;
+
+        const rows = yield* sql<{ readonly latestUserMessageAt: string | null }>`
+          SELECT latest_user_message_at AS "latestUserMessageAt"
+          FROM projection_threads
+          WHERE thread_id = ${threadId}
+        `;
+        assert.deepEqual(rows, [{ latestUserMessageAt: "2026-01-01T00:00:02.000Z" }]);
+      }),
+    );
+  },
+);
+
 it.layer(Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-base-")))(
   "OrchestrationProjectionPipeline",
   (it) => {
@@ -1428,6 +1539,425 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
       `;
       assert.deepEqual(settledRows, [
         { state: "completed", completedAt: "2026-01-01T00:01:00.000Z" },
+      ]);
+    }),
+  );
+
+  it.effect("projects imported activities and advances the thread shell timestamp", () =>
+    Effect.gen(function* () {
+      const projectionPipeline = yield* OrchestrationProjectionPipeline;
+      const eventStore = yield* OrchestrationEventStore;
+      const sql = yield* SqlClient.SqlClient;
+      const threadId = ThreadId.make("thread-imported-activities");
+      const turnId = TurnId.make("turn-imported-activities");
+      const createdAt = "2026-08-03T11:59:00.000Z";
+      const importedAt = "2026-08-03T12:00:00.000Z";
+
+      yield* eventStore.append({
+        type: "thread.created",
+        eventId: EventId.make("evt-imported-activities-1"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: createdAt,
+        commandId: CommandId.make("cmd-imported-activities-1"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-imported-activities-1"),
+        metadata: {},
+        payload: {
+          threadId,
+          projectId: ProjectId.make("project-imported-activities"),
+          title: "Imported activities",
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "gpt-5.3-codex",
+          },
+          runtimeMode: "full-access",
+          branch: null,
+          worktreePath: null,
+          createdAt,
+          updatedAt: createdAt,
+        },
+      });
+      yield* eventStore.append({
+        type: "thread.activities-imported",
+        eventId: EventId.make("evt-imported-activities-2"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: importedAt,
+        commandId: CommandId.make("cmd-imported-activities-2"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-imported-activities-2"),
+        metadata: {},
+        payload: {
+          threadId,
+          activities: [
+            {
+              id: EventId.make("activity-imported-1"),
+              tone: "tool",
+              kind: "tool.completed",
+              summary: "Applied patch",
+              payload: {
+                itemType: "file_change",
+                data: {
+                  locations: [{ path: "apps/server/src/orchestration/projector.ts" }],
+                },
+              },
+              turnId,
+              sequence: 4,
+              createdAt: "2026-08-03T11:59:59.000Z",
+            },
+          ],
+        },
+      });
+
+      yield* projectionPipeline.bootstrap;
+
+      const activityRows = yield* sql<{
+        readonly activityId: string;
+        readonly threadId: string;
+        readonly turnId: string | null;
+        readonly kind: string;
+        readonly summary: string;
+        readonly sequence: number | null;
+      }>`
+        SELECT
+          activity_id AS "activityId",
+          thread_id AS "threadId",
+          turn_id AS "turnId",
+          kind,
+          summary,
+          sequence
+        FROM projection_thread_activities
+        WHERE thread_id = ${threadId}
+      `;
+      assert.deepEqual(activityRows, [
+        {
+          activityId: "activity-imported-1",
+          threadId,
+          turnId,
+          kind: "tool.completed",
+          summary: "Applied patch",
+          sequence: 4,
+        },
+      ]);
+
+      const threadRows = yield* sql<{ readonly updatedAt: string }>`
+        SELECT updated_at AS "updatedAt"
+        FROM projection_threads
+        WHERE thread_id = ${threadId}
+      `;
+      assert.deepEqual(threadRows, [{ updatedAt: importedAt }]);
+    }),
+  );
+
+  it.effect("refreshes the thread shell summary once for an imported activity batch", () =>
+    Effect.gen(function* () {
+      const projectionPipeline = yield* OrchestrationProjectionPipeline;
+      const eventStore = yield* OrchestrationEventStore;
+      const sql = yield* SqlClient.SqlClient;
+      const threadId = ThreadId.make("thread-imported-activity-batch");
+      const createdAt = "2026-08-03T12:10:00.000Z";
+      const requestedAt = "2026-08-03T12:10:01.000Z";
+      const completedAt = "2026-08-03T12:10:02.000Z";
+
+      const createdEvent = yield* eventStore.append({
+        type: "thread.created",
+        eventId: EventId.make("evt-imported-activity-batch-1"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: createdAt,
+        commandId: CommandId.make("cmd-imported-activity-batch-1"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-imported-activity-batch-1"),
+        metadata: {},
+        payload: {
+          threadId,
+          projectId: ProjectId.make("project-imported-activity-batch"),
+          title: "Imported activity batch",
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "gpt-5.3-codex",
+          },
+          runtimeMode: "full-access",
+          branch: null,
+          worktreePath: null,
+          createdAt,
+          updatedAt: createdAt,
+        },
+      });
+      yield* projectionPipeline.projectEvent(createdEvent);
+
+      yield* sql`
+        CREATE TEMP TABLE imported_activity_batch_updates (
+          update_count INTEGER NOT NULL
+        )
+      `;
+      yield* sql`
+        INSERT INTO imported_activity_batch_updates (update_count)
+        VALUES (0)
+      `;
+      yield* sql`
+        CREATE TEMP TRIGGER count_imported_activity_batch_updates
+        AFTER UPDATE ON projection_threads
+        WHEN NEW.thread_id = 'thread-imported-activity-batch'
+        BEGIN
+          UPDATE imported_activity_batch_updates
+          SET update_count = update_count + 1;
+        END
+      `;
+
+      const requestedEvent = yield* eventStore.append({
+        type: "thread.activities-imported",
+        eventId: EventId.make("evt-imported-activity-batch-2"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: requestedAt,
+        commandId: CommandId.make("cmd-imported-activity-batch-2"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-imported-activity-batch-2"),
+        metadata: {},
+        payload: {
+          threadId,
+          activities: [
+            {
+              id: EventId.make("activity-imported-user-input-requested"),
+              tone: "info",
+              kind: "user-input.requested",
+              summary: "User input requested",
+              payload: {
+                requestId: "request-imported-activity-batch",
+              },
+              turnId: null,
+              createdAt: requestedAt,
+            },
+          ],
+        },
+      });
+      const completedEvent = yield* eventStore.append({
+        type: "thread.activities-imported",
+        eventId: EventId.make("evt-imported-activity-batch-3"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: completedAt,
+        commandId: CommandId.make("cmd-imported-activity-batch-3"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-imported-activity-batch-3"),
+        metadata: {},
+        payload: {
+          threadId,
+          activities: [
+            {
+              id: EventId.make("activity-imported-tool-completed"),
+              tone: "tool",
+              kind: "tool.completed",
+              summary: "Ran command",
+              payload: {
+                itemType: "command_execution",
+                status: "completed",
+              },
+              turnId: null,
+              createdAt: completedAt,
+            },
+          ],
+        },
+      });
+
+      yield* projectionPipeline.projectEvents([requestedEvent, completedEvent]);
+
+      const updateRows = yield* sql<{ readonly updateCount: number }>`
+        SELECT update_count AS "updateCount"
+        FROM imported_activity_batch_updates
+      `;
+      assert.deepEqual(updateRows, [{ updateCount: 3 }]);
+
+      const threadRows = yield* sql<{
+        readonly pendingUserInputCount: number;
+        readonly updatedAt: string;
+      }>`
+        SELECT
+          pending_user_input_count AS "pendingUserInputCount",
+          updated_at AS "updatedAt"
+        FROM projection_threads
+        WHERE thread_id = ${threadId}
+      `;
+      assert.deepEqual(threadRows, [
+        {
+          pendingUserInputCount: 1,
+          updatedAt: completedAt,
+        },
+      ]);
+
+      yield* sql`
+        UPDATE imported_activity_batch_updates
+        SET update_count = 0
+      `;
+      const laterToolAt = "2026-08-03T12:10:03.000Z";
+      const laterToolEvent = yield* eventStore.append({
+        type: "thread.activities-imported",
+        eventId: EventId.make("evt-imported-activity-batch-4"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: laterToolAt,
+        commandId: CommandId.make("cmd-imported-activity-batch-4"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-imported-activity-batch-4"),
+        metadata: {},
+        payload: {
+          threadId,
+          activities: [
+            {
+              id: EventId.make("activity-imported-tool-completed-later"),
+              tone: "tool",
+              kind: "tool.completed",
+              summary: "Ran another command",
+              payload: {
+                itemType: "command_execution",
+                status: "completed",
+              },
+              turnId: null,
+              createdAt: laterToolAt,
+            },
+          ],
+        },
+      });
+
+      yield* projectionPipeline.projectEvent(laterToolEvent);
+
+      const laterUpdateRows = yield* sql<{ readonly updateCount: number }>`
+        SELECT update_count AS "updateCount"
+        FROM imported_activity_batch_updates
+      `;
+      assert.deepEqual(laterUpdateRows, [{ updateCount: 1 }]);
+    }),
+  );
+
+  it.effect("keeps checkpoint files while rebinding a late imported final response", () =>
+    Effect.gen(function* () {
+      const projectionPipeline = yield* OrchestrationProjectionPipeline;
+      const eventStore = yield* OrchestrationEventStore;
+      const sql = yield* SqlClient.SqlClient;
+      const threadId = ThreadId.make("thread-late-imported-final");
+      const turnId = TurnId.make("turn-late-imported-final");
+
+      yield* eventStore.append({
+        type: "thread.created",
+        eventId: EventId.make("evt-late-final-1"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: "2026-08-03T12:00:00.000Z",
+        commandId: CommandId.make("cmd-late-final-1"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-late-final-1"),
+        metadata: {},
+        payload: {
+          threadId,
+          projectId: ProjectId.make("project-late-final"),
+          title: "Late imported final",
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "gpt-5.3-codex",
+          },
+          runtimeMode: "full-access",
+          branch: null,
+          worktreePath: null,
+          createdAt: "2026-08-03T12:00:00.000Z",
+          updatedAt: "2026-08-03T12:00:00.000Z",
+        },
+      });
+      yield* eventStore.append({
+        type: "thread.message-sent",
+        eventId: EventId.make("evt-late-final-2"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: "2026-08-03T12:00:01.000Z",
+        commandId: CommandId.make("cmd-late-final-2"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-late-final-2"),
+        metadata: {},
+        payload: {
+          threadId,
+          messageId: MessageId.make("assistant-commentary"),
+          role: "assistant",
+          text: "Still checking.",
+          turnId,
+          streaming: false,
+          createdAt: "2026-08-03T12:00:01.000Z",
+          updatedAt: "2026-08-03T12:00:01.000Z",
+        },
+      });
+      yield* eventStore.append({
+        type: "thread.turn-diff-completed",
+        eventId: EventId.make("evt-late-final-3"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: "2026-08-03T12:00:02.000Z",
+        commandId: CommandId.make("cmd-late-final-3"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-late-final-3"),
+        metadata: {},
+        payload: {
+          threadId,
+          turnId,
+          checkpointTurnCount: 1,
+          checkpointRef: CheckpointRef.make(
+            "refs/t3/checkpoints/thread-late-imported-final/turn/1",
+          ),
+          status: "ready",
+          files: [
+            {
+              path: "apps/server/src/provider/Drivers/CodexCliSessionImporter.ts",
+              kind: "modified",
+              additions: 1,
+              deletions: 1,
+            },
+          ],
+          assistantMessageId: MessageId.make("assistant-commentary"),
+          completedAt: "2026-08-03T12:00:02.000Z",
+        },
+      });
+      yield* eventStore.append({
+        type: "thread.message-sent",
+        eventId: EventId.make("evt-late-final-4"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: "2026-08-03T12:00:03.000Z",
+        commandId: CommandId.make("cmd-late-final-4"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-late-final-4"),
+        metadata: {},
+        payload: {
+          threadId,
+          messageId: MessageId.make("assistant-final"),
+          role: "assistant",
+          text: "Done.",
+          turnId,
+          streaming: false,
+          createdAt: "2026-08-03T12:00:03.000Z",
+          updatedAt: "2026-08-03T12:00:03.000Z",
+        },
+      });
+
+      yield* projectionPipeline.bootstrap;
+
+      const rows = yield* sql<{
+        readonly assistantMessageId: string | null;
+        readonly checkpointTurnCount: number | null;
+        readonly checkpointFilesJson: string;
+      }>`
+        SELECT
+          assistant_message_id AS "assistantMessageId",
+          checkpoint_turn_count AS "checkpointTurnCount",
+          checkpoint_files_json AS "checkpointFilesJson"
+        FROM projection_turns
+        WHERE thread_id = ${threadId} AND turn_id = ${turnId}
+      `;
+      assert.deepEqual(rows, [
+        {
+          assistantMessageId: "assistant-final",
+          checkpointTurnCount: 1,
+          checkpointFilesJson:
+            '[{"path":"apps/server/src/provider/Drivers/CodexCliSessionImporter.ts","kind":"modified","additions":1,"deletions":1}]',
+        },
       ]);
     }),
   );

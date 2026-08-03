@@ -558,6 +558,10 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         from: "apps/desktop/prod-resources/resource-monitor",
         to: "resource-monitor",
       },
+      {
+        from: "apps/desktop/prod-resources/t3-server.tgz",
+        to: "t3-server.tgz",
+      },
     ]);
     assert.deepStrictEqual(resolveResourceMonitorRustTargets("mac", "universal"), [
       "aarch64-apple-darwin",

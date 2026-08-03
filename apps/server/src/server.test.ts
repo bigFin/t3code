@@ -6122,6 +6122,89 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
+  it.effect("subscribeThread replays projected imported activity batches", () =>
+    Effect.gen(function* () {
+      const now = "2026-01-01T00:00:00.000Z";
+      const importedActivitiesEvent = {
+        sequence: 2,
+        eventId: EventId.make("event-imported-activities"),
+        aggregateKind: "thread",
+        aggregateId: defaultThreadId,
+        occurredAt: now,
+        commandId: null,
+        causationEventId: null,
+        correlationId: null,
+        metadata: {},
+        type: "thread.activities-imported",
+        payload: {
+          threadId: defaultThreadId,
+          activities: [
+            {
+              id: EventId.make("activity-imported-command"),
+              tone: "tool",
+              kind: "tool.completed",
+              summary: "Ran command",
+              payload: {
+                itemType: "command_execution",
+                title: "Ran command",
+                status: "completed",
+                data: {
+                  item: {
+                    command: "printf hello",
+                  },
+                  rawOutput: {
+                    content: "hello from the imported command\nadditional output",
+                  },
+                },
+              },
+              turnId: null,
+              createdAt: now,
+            },
+          ],
+        },
+      } satisfies Extract<OrchestrationEvent, { type: "thread.activities-imported" }>;
+
+      yield* buildAppUnderTest({
+        layers: {
+          orchestrationEngine: {
+            latestSequence: Effect.succeed(2),
+            readAggregateEvents: () => Stream.make(importedActivitiesEvent),
+          },
+        },
+      });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const items = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[ORCHESTRATION_WS_METHODS.subscribeThread]({
+            threadId: defaultThreadId,
+            afterSequence: 1,
+            requestCompletionMarker: true,
+          }).pipe(Stream.take(2), Stream.runCollect),
+        ),
+      );
+
+      assert.equal(items[0]?.kind, "event");
+      if (items[0]?.kind !== "event" || items[0].event.type !== "thread.activities-imported") {
+        return assert.fail("Expected an imported activity event.");
+      }
+      assert.deepEqual(items[0].event.payload.activities[0]?.payload, {
+        itemType: "command_execution",
+        title: "Ran command",
+        status: "completed",
+        data: {
+          item: {
+            command: "printf hello",
+          },
+          rawOutput: {
+            content: "hello from the imported command",
+          },
+        },
+      });
+      assert.deepEqual(items[1], { kind: "synchronized" });
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
   it.effect("subscribeThread falls back to a snapshot when aggregate replay is too large", () =>
     Effect.gen(function* () {
       const thread = makeDefaultOrchestrationReadModel().threads[0]!;

@@ -6,6 +6,7 @@ import {
   ThreadId,
   type OrchestrationEvent,
 } from "@t3tools/contracts";
+import { it as effectIt } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import { describe, expect, it } from "vite-plus/test";
 
@@ -102,6 +103,83 @@ describe("orchestration projector", () => {
       },
     ]);
   });
+
+  effectIt.effect("merges imported activity batches by stable id", () =>
+    Effect.gen(function* () {
+      const now = "2026-08-03T00:00:00.000Z";
+      const afterCreate = yield* projectEvent(
+        createEmptyReadModel(now),
+        makeEvent({
+          sequence: 1,
+          type: "thread.created",
+          aggregateKind: "thread",
+          aggregateId: "thread-activities-import",
+          occurredAt: now,
+          commandId: "cmd-thread-activities-import-create",
+          payload: {
+            threadId: "thread-activities-import",
+            projectId: "project-1",
+            title: "activity import",
+            modelSelection: {
+              provider: ProviderDriverKind.make("codex"),
+              model: "gpt-5-codex",
+            },
+            runtimeMode: "full-access",
+            branch: null,
+            worktreePath: null,
+            createdAt: now,
+            updatedAt: now,
+          },
+        }),
+      );
+      const afterImport = yield* projectEvent(
+        afterCreate,
+        makeEvent({
+          sequence: 2,
+          type: "thread.activities-imported",
+          aggregateKind: "thread",
+          aggregateId: "thread-activities-import",
+          occurredAt: "2026-08-03T00:00:02.000Z",
+          commandId: "cmd-thread-activities-import",
+          payload: {
+            threadId: "thread-activities-import",
+            activities: [
+              {
+                id: "activity-import-1",
+                tone: "tool",
+                kind: "tool.started",
+                summary: "Tool started",
+                payload: null,
+                turnId: "turn-import",
+                createdAt: "2026-08-03T00:00:01.000Z",
+              },
+              {
+                id: "activity-import-1",
+                tone: "tool",
+                kind: "tool.completed",
+                summary: "Tool completed",
+                payload: { result: "done" },
+                turnId: "turn-import",
+                createdAt: "2026-08-03T00:00:02.000Z",
+              },
+            ],
+          },
+        }),
+      );
+
+      expect(afterImport.threads[0]?.activities).toEqual([
+        {
+          id: "activity-import-1",
+          tone: "tool",
+          kind: "tool.completed",
+          summary: "Tool completed",
+          payload: { result: "done" },
+          turnId: "turn-import",
+          createdAt: "2026-08-03T00:00:02.000Z",
+        },
+      ]);
+    }),
+  );
 
   it("fails when event payload cannot be decoded by runtime schema", async () => {
     const now = "2026-01-01T00:00:00.000Z";
@@ -702,6 +780,108 @@ describe("orchestration projector", () => {
     expect(thread?.checkpoints.map((checkpoint) => checkpoint.checkpointTurnCount)).toEqual([1]);
     expect(thread?.latestTurn?.turnId).toBe("turn-1");
   });
+
+  effectIt.effect(
+    "moves a completed checkpoint to the latest assistant message imported for its turn",
+    () =>
+      Effect.gen(function* () {
+        const createdAt = "2026-08-03T12:00:00.000Z";
+        const model = createEmptyReadModel(createdAt);
+        const events: ReadonlyArray<OrchestrationEvent> = [
+          makeEvent({
+            sequence: 1,
+            type: "thread.created",
+            aggregateKind: "thread",
+            aggregateId: "thread-late-final",
+            occurredAt: createdAt,
+            commandId: "cmd-late-final-create",
+            payload: {
+              threadId: "thread-late-final",
+              projectId: "project-1",
+              title: "late final",
+              modelSelection: {
+                provider: ProviderDriverKind.make("codex"),
+                model: "gpt-5.3-codex",
+              },
+              runtimeMode: "full-access",
+              branch: null,
+              worktreePath: null,
+              createdAt,
+              updatedAt: createdAt,
+            },
+          }),
+          makeEvent({
+            sequence: 2,
+            type: "thread.message-sent",
+            aggregateKind: "thread",
+            aggregateId: "thread-late-final",
+            occurredAt: "2026-08-03T12:00:01.000Z",
+            commandId: "cmd-late-final-commentary",
+            payload: {
+              threadId: "thread-late-final",
+              messageId: "assistant-commentary",
+              role: "assistant",
+              text: "Still checking.",
+              turnId: "turn-late-final",
+              streaming: false,
+              createdAt: "2026-08-03T12:00:01.000Z",
+              updatedAt: "2026-08-03T12:00:01.000Z",
+            },
+          }),
+          makeEvent({
+            sequence: 3,
+            type: "thread.turn-diff-completed",
+            aggregateKind: "thread",
+            aggregateId: "thread-late-final",
+            occurredAt: "2026-08-03T12:00:02.000Z",
+            commandId: "cmd-late-final-checkpoint",
+            payload: {
+              threadId: "thread-late-final",
+              turnId: "turn-late-final",
+              checkpointTurnCount: 1,
+              checkpointRef: "refs/t3/checkpoints/thread-late-final/turn/1",
+              status: "ready",
+              files: [
+                {
+                  path: "apps/server/src/provider/Drivers/CodexCliSessionImporter.ts",
+                  kind: "modified",
+                  additions: 1,
+                  deletions: 1,
+                },
+              ],
+              assistantMessageId: "assistant-commentary",
+              completedAt: "2026-08-03T12:00:02.000Z",
+            },
+          }),
+          makeEvent({
+            sequence: 4,
+            type: "thread.message-sent",
+            aggregateKind: "thread",
+            aggregateId: "thread-late-final",
+            occurredAt: "2026-08-03T12:00:03.000Z",
+            commandId: "cmd-late-final-answer",
+            payload: {
+              threadId: "thread-late-final",
+              messageId: "assistant-final",
+              role: "assistant",
+              text: "Done.",
+              turnId: "turn-late-final",
+              streaming: false,
+              createdAt: "2026-08-03T12:00:03.000Z",
+              updatedAt: "2026-08-03T12:00:03.000Z",
+            },
+          }),
+        ];
+
+        const projected = yield* Effect.reduce(events, () => model, projectEvent);
+        const thread = projected.threads[0];
+
+        expect(thread?.checkpoints).toHaveLength(1);
+        expect(thread?.checkpoints[0]?.assistantMessageId).toBe("assistant-final");
+        expect(thread?.checkpoints[0]?.files).toHaveLength(1);
+        expect(thread?.latestTurn?.assistantMessageId).toBe("assistant-final");
+      }),
+  );
 
   it("does not fallback-retain messages tied to removed turn IDs", async () => {
     const createdAt = "2026-02-26T12:00:00.000Z";

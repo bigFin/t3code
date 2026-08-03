@@ -136,7 +136,14 @@ export const make = Effect.gen(function* () {
   const driver = yield* ConnectionDriver.ConnectionDriver;
   const wakeups = yield* ConnectionWakeups.ConnectionWakeups;
   const ssh = yield* ClientCapabilities.SshEnvironmentGateway;
-  const persistedTargets = yield* storage.list;
+  const persistedTargets = yield* storage.list.pipe(
+    Effect.catch((error) =>
+      Effect.logWarning(
+        "Could not load persisted connection targets; continuing with platform environments.",
+        { error },
+      ).pipe(Effect.as<ReadonlyArray<ConnectionTarget>>([])),
+    ),
+  );
   const initialEntries = new Map(
     yield* Effect.forEach(
       persistedTargets,

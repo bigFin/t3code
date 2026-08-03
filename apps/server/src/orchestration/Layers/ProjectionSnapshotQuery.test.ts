@@ -456,6 +456,41 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
       );
       assert.equal((yield* snapshotQuery.getThreadShellsByIds([])).size, 0);
 
+      const threadTranscript = yield* snapshotQuery.getThreadTranscriptById(
+        ThreadId.make("thread-1"),
+      );
+      assert.equal(threadTranscript._tag, "Some");
+      if (threadTranscript._tag === "Some") {
+        assert.deepEqual(threadTranscript.value, {
+          messages: snapshot.threads[0]?.messages ?? [],
+          latestTurn: snapshot.threads[0]?.latestTurn ?? null,
+        });
+      }
+      assert.equal(
+        (yield* snapshotQuery.getThreadTranscriptById(ThreadId.make("thread-missing")))._tag,
+        "None",
+      );
+      assert.deepEqual(
+        [
+          ...(yield* snapshotQuery.getExistingThreadActivityIds({
+            threadId: ThreadId.make("thread-1"),
+            activityIds: [
+              EventId.make("activity-1"),
+              EventId.make("activity-1"),
+              EventId.make("activity-missing"),
+            ],
+          })),
+        ],
+        [EventId.make("activity-1")],
+      );
+      assert.equal(
+        (yield* snapshotQuery.getExistingThreadActivityIds({
+          threadId: ThreadId.make("thread-1"),
+          activityIds: [],
+        })).size,
+        0,
+      );
+
       const threadDetail = yield* snapshotQuery.getThreadDetailById(ThreadId.make("thread-1"));
       assert.equal(threadDetail._tag, "Some");
       if (threadDetail._tag === "Some") {

@@ -291,6 +291,8 @@ describe("ProviderSessionReaper", () => {
                 ? Option.some(input.readModel.threads.find((thread) => thread.id === threadId)!)
                 : Option.none(),
             ),
+          getThreadTranscriptById: () => Effect.die("unused"),
+          getExistingThreadActivityIds: () => Effect.die("unused"),
           getThreadDetailById: () => Effect.die("unused"),
           getThreadDetailSnapshot: () => Effect.die("unused"),
           searchThreads: () => Effect.succeed({ matches: [] }),
@@ -647,12 +649,11 @@ describe("ProviderSessionReaper", () => {
             id: threadId,
             session: {
               threadId,
-              status: "starting",
+              status,
               providerName: "codex",
               runtimeMode: "full-access",
               activeTurnId: turnId,
-              lastError:
-                "T3 could not reattach to the detached provider execution yet. The provider was not interrupted; T3 will keep retrying.",
+              lastError: status === "error" ? "Waiting for transcript reconciliation." : null,
               updatedAt: now,
             },
           },

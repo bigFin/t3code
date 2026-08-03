@@ -1,4 +1,5 @@
 import {
+  CheckpointRef,
   MessageId,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -15,10 +16,12 @@ import type * as CodexSchema from "effect-codex-app-server/schema";
 import {
   advanceCodexRolloutTaskCursor,
   advanceCodexRolloutMessageCursor,
+  advanceCodexCliImportFailureBackoff,
   CODEX_INTERACTIVE_SOURCE_KINDS,
   codexRolloutCompleteUtf8PrefixLength,
-  codexCliMessageImportCommand,
+  codexCliMessagesImportCommand,
   collectCodexCliImportedMessages,
+  collectCodexCliRolloutActivities,
   collectCodexCliRolloutMessages,
   hasSynchronizedCodexCliTranscript,
   isCodexRolloutPathWithinSessionsRoot,
@@ -31,7 +34,6 @@ import {
   isDifferentlyKeyedCodexCliOwnerBinding,
   isImportableCodexInteractiveThread,
   isLiveCodexBinding,
-  isRecentCodexCliActivity,
   isRecentCodexCliRolloutActivity,
   mergeCodexCliRolloutMessages,
   parseCodexRolloutTerminalEvidence,
@@ -41,19 +43,27 @@ import {
   resolveCodexCliImportBinding,
   resolveCodexCliExpectedUserMessageIds,
   resolveCodexCliProviderRuntimeExpectation,
+  resolveCodexCliRecoveredCheckpointRequest,
+  resolveObservedCodexCliSessionSyncAction,
   resolveCodexCliTranscriptMessages,
   readCodexCliImportedAt,
   resolveObservedCodexCliSessionState,
   resolveStaleCodexCliSession,
+  selectUnsynchronizedCodexCliMessages,
   shouldInspectInterruptedCodexCliMirror,
   shouldInspectDetachedCodexCliObserver,
   shouldApplyObservedCodexCliSessionState,
+  shouldBackoffCodexCliImportFailure,
+  shouldHydrateObservedCodexCliTranscript,
   shouldImportCodexCliMessages,
   shouldInterruptStaleCodexCliSession,
   shouldPersistCodexCliImportMetadata,
   shouldProbeCodexCliRolloutOwner,
+  shouldReadCodexRolloutActivities,
   shouldSkipCurrentCodexCliImport,
   shouldSkipUnchangedDetachedCodexCliObserver,
+  shouldSynchronizeObservedCodexCliSessionBeforeHydration,
+  shouldUseCodexRolloutTranscriptWithoutThreadRead,
 } from "./CodexCliSessionImporter.ts";
 
 function makeThread(): CodexSchema.V2ThreadReadResponse["thread"] {
@@ -235,6 +245,53 @@ describe("CodexCliSessionImporter transcript conversion", () => {
     ]);
   });
 
+  it("strips trailing internal memory citations from rollout assistant messages", () => {
+    const contents = JSON.stringify({
+      timestamp: "2026-08-03T00:00:00.000Z",
+      type: "response_item",
+      payload: {
+        type: "message",
+        id: "msg_final",
+        role: "assistant",
+        content: [
+          {
+            type: "output_text",
+            text: [
+              "The implementation is complete.",
+              "",
+              "<oai-mem-citation>",
+              "<citation_entries>",
+              "MEMORY.md:1-2|note=[internal]",
+              "</citation_entries>",
+              "<rollout_ids>",
+              "</rollout_ids>",
+              "</oai-mem-citation>",
+            ].join("\n"),
+          },
+        ],
+        internal_chat_message_metadata_passthrough: {
+          turn_id: "turn-final",
+        },
+      },
+    });
+
+    expect(
+      collectCodexCliRolloutMessages({
+        threadId: "019legacy-thread",
+        contents,
+        createdAt: 1_784_215_777,
+      }),
+    ).toEqual([
+      {
+        messageId: MessageId.make("codex-cli:019legacy-thread:msg_final"),
+        role: "assistant",
+        text: "The implementation is complete.",
+        turnId: TurnId.make("turn-final"),
+        createdAt: "2026-08-03T00:00:00.000Z",
+      },
+    ]);
+  });
+
   it("falls back to safe raw user response items when user events are absent", () => {
     const contents = [
       JSON.stringify({
@@ -253,6 +310,17 @@ describe("CodexCliSessionImporter transcript conversion", () => {
           type: "message",
           role: "user",
           content: [{ type: "input_text", text: "<turn_aborted>hidden</turn_aborted>" }],
+        },
+      }),
+      JSON.stringify({
+        timestamp: "2026-07-16T15:29:37.590Z",
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "user",
+          content: [
+            { type: "input_text", text: "<subagent_notification>hidden</subagent_notification>" },
+          ],
         },
       }),
     ].join("\n");
@@ -400,6 +468,301 @@ describe("CodexCliSessionImporter transcript conversion", () => {
     expect(rolloutMessage?.turnId).toBe(appServerMessage?.turnId);
   });
 
+  it("recovers the current turn's command lifecycle from rollout records", () => {
+    const contents = [
+      JSON.stringify({
+        timestamp: "2026-08-03T00:00:00.000Z",
+        type: "response_item",
+        payload: {
+          type: "function_call",
+          id: "fc-command",
+          call_id: "call-command",
+          name: "exec_command",
+          arguments: JSON.stringify({
+            cmd: "rtk git status --short",
+            workdir: "/tmp/project",
+          }),
+          internal_chat_message_metadata_passthrough: {
+            turn_id: "turn-current",
+          },
+        },
+      }),
+      JSON.stringify({
+        timestamp: "2026-08-03T00:00:00.100Z",
+        type: "response_item",
+        payload: {
+          type: "function_call_output",
+          id: "fco-command",
+          call_id: "call-command",
+          output: [
+            "Chunk ID: command",
+            "Wall time: 0.01 seconds",
+            "Process exited with code 0",
+            "Output:",
+            " M importer.ts",
+          ].join("\n"),
+          internal_chat_message_metadata_passthrough: {
+            turn_id: "turn-current",
+          },
+        },
+      }),
+      JSON.stringify({
+        timestamp: "2026-08-03T00:00:00.200Z",
+        type: "response_item",
+        payload: {
+          type: "function_call",
+          id: "fc-other",
+          call_id: "call-other",
+          name: "exec_command",
+          arguments: JSON.stringify({ cmd: "should not import" }),
+          internal_chat_message_metadata_passthrough: {
+            turn_id: "turn-other",
+          },
+        },
+      }),
+    ].join("\n");
+
+    expect(
+      collectCodexCliRolloutActivities({
+        threadId: "019codex-thread",
+        contents,
+        createdAt: 1_700_000_000,
+        turnId: "turn-current",
+      }),
+    ).toEqual([
+      {
+        id: "codex-cli:019codex-thread:tool:call-command:started",
+        tone: "tool",
+        kind: "tool.started",
+        summary: "Ran command started",
+        payload: {
+          itemType: "command_execution",
+          title: "Ran command",
+          status: "inProgress",
+          data: {
+            toolCallId: "call-command",
+            kind: "execute",
+            item: {
+              name: "Ran command",
+              command: "rtk git status --short",
+            },
+            command: "rtk git status --short",
+          },
+        },
+        turnId: TurnId.make("turn-current"),
+        createdAt: "2026-08-03T00:00:00.000Z",
+      },
+      {
+        id: "codex-cli:019codex-thread:tool:call-command:completed",
+        tone: "tool",
+        kind: "tool.completed",
+        summary: "Ran command",
+        payload: {
+          itemType: "command_execution",
+          title: "Ran command",
+          status: "completed",
+          detail: "M importer.ts",
+          data: {
+            toolCallId: "call-command",
+            kind: "execute",
+            item: {
+              name: "Ran command",
+              command: "rtk git status --short",
+            },
+            command: "rtk git status --short",
+            rawOutput: {
+              content: "M importer.ts",
+            },
+          },
+        },
+        turnId: TurnId.make("turn-current"),
+        createdAt: "2026-08-03T00:00:00.100Z",
+      },
+    ]);
+  });
+
+  it("does not truncate a cold-start activity history at the import batch size", () => {
+    const contents = Array.from({ length: 260 }, (_, index) => {
+      const callId = `call-${index}`;
+      const metadata = {
+        turn_id: "turn-current",
+      };
+      return [
+        JSON.stringify({
+          timestamp: "2026-08-03T00:00:00.000Z",
+          type: "response_item",
+          payload: {
+            type: "function_call",
+            id: `fc-${index}`,
+            call_id: callId,
+            name: "exec_command",
+            arguments: JSON.stringify({ cmd: `rtk echo ${index}` }),
+            internal_chat_message_metadata_passthrough: metadata,
+          },
+        }),
+        JSON.stringify({
+          timestamp: "2026-08-03T00:00:00.100Z",
+          type: "response_item",
+          payload: {
+            type: "function_call_output",
+            id: `fco-${index}`,
+            call_id: callId,
+            output: `Process exited with code 0\nOutput:\n${index}`,
+            internal_chat_message_metadata_passthrough: metadata,
+          },
+        }),
+      ];
+    })
+      .flat()
+      .join("\n");
+
+    const activities = collectCodexCliRolloutActivities({
+      threadId: "019codex-thread",
+      contents,
+      createdAt: 1_700_000_000,
+      turnId: "turn-current",
+    });
+
+    expect(activities).toHaveLength(520);
+    expect(activities[0]?.id).toBe("codex-cli:019codex-thread:tool:call-0:started");
+    expect(activities.at(-1)?.id).toBe("codex-cli:019codex-thread:tool:call-259:completed");
+  });
+
+  it("retains active tool metadata across incremental rollout chunks", () => {
+    const first = advanceCodexRolloutMessageCursor({
+      cursor: undefined,
+      contents: JSON.stringify({
+        timestamp: "2026-08-03T00:00:00.000Z",
+        type: "response_item",
+        payload: {
+          type: "function_call",
+          id: "fc-command",
+          call_id: "call-command",
+          name: "exec_command",
+          arguments: JSON.stringify({ cmd: "rtk git diff --check" }),
+          internal_chat_message_metadata_passthrough: {
+            turn_id: "turn-current",
+          },
+        },
+      }),
+      offset: 100,
+      modifiedAtMillis: 1,
+      threadId: "019codex-thread",
+      createdAt: 1_700_000_000,
+      activityTurnId: "turn-current",
+    });
+    const completed = advanceCodexRolloutMessageCursor({
+      cursor: {
+        ...first,
+        messages: [],
+        activities: [],
+      },
+      contents: JSON.stringify({
+        timestamp: "2026-08-03T00:00:01.000Z",
+        type: "response_item",
+        payload: {
+          type: "function_call_output",
+          id: "fco-command",
+          call_id: "call-command",
+          output: "Process exited with code 1\nOutput:\ndiff failed",
+          internal_chat_message_metadata_passthrough: {
+            turn_id: "turn-current",
+          },
+        },
+      }),
+      offset: 200,
+      modifiedAtMillis: 2,
+      threadId: "019codex-thread",
+      createdAt: 1_700_000_000,
+      activityTurnId: "turn-current",
+    });
+
+    expect(first.activities).toHaveLength(1);
+    expect(completed.activities).toHaveLength(1);
+    expect(completed.activities[0]).toMatchObject({
+      tone: "error",
+      kind: "tool.completed",
+      payload: {
+        status: "failed",
+        data: {
+          toolCallId: "call-command",
+          command: "rtk git diff --check",
+        },
+      },
+    });
+    expect(completed.toolCalls.size).toBe(0);
+  });
+
+  it("projects changed files from detached apply-patch activity", () => {
+    const activities = collectCodexCliRolloutActivities({
+      threadId: "019codex-thread",
+      contents: [
+        JSON.stringify({
+          timestamp: "2026-08-03T00:00:00.000Z",
+          type: "response_item",
+          payload: {
+            type: "custom_tool_call",
+            id: "ctc-patch",
+            call_id: "call-patch",
+            name: "apply_patch",
+            input: [
+              "*** Begin Patch",
+              "*** Update File: apps/server/src/importer.ts",
+              "*** Add File: apps/server/src/importer.test.ts",
+              "*** Move to: apps/server/src/importer-renamed.ts",
+              "*** End Patch",
+            ].join("\n"),
+            internal_chat_message_metadata_passthrough: {
+              turn_id: "turn-current",
+            },
+          },
+        }),
+        JSON.stringify({
+          timestamp: "2026-08-03T00:00:00.100Z",
+          type: "response_item",
+          payload: {
+            type: "custom_tool_call_output",
+            id: "ctco-patch",
+            call_id: "call-patch",
+            output: [
+              "Exit code: 0",
+              "Output:",
+              "Success. Updated the following files:",
+              "M apps/server/src/importer.ts",
+              "A apps/server/src/importer.test.ts",
+            ].join("\n"),
+            internal_chat_message_metadata_passthrough: {
+              turn_id: "turn-current",
+            },
+          },
+        }),
+      ].join("\n"),
+      createdAt: 1_700_000_000,
+      turnId: "turn-current",
+    });
+
+    expect(activities.at(-1)).toMatchObject({
+      kind: "tool.completed",
+      summary: "Applied patch",
+      payload: {
+        itemType: "file_change",
+        data: {
+          toolCallId: "call-patch",
+          files: [
+            { path: "apps/server/src/importer.ts" },
+            { path: "apps/server/src/importer.test.ts" },
+            { path: "apps/server/src/importer-renamed.ts" },
+          ],
+          locations: [
+            { path: "apps/server/src/importer.ts" },
+            { path: "apps/server/src/importer.test.ts" },
+            { path: "apps/server/src/importer-renamed.ts" },
+          ],
+        },
+      },
+    });
+  });
+
   it("uses rollout recovery for non-empty partial app-server transcripts", () => {
     const thread = {
       ...makeThread(),
@@ -443,28 +806,57 @@ describe("CodexCliSessionImporter transcript conversion", () => {
     });
   });
 
-  it("does not require rollout fallback for complete app-server transcripts", () => {
-    const thread = makeThread();
+  it("merges a newer rollout final when app-server claims its older transcript is complete", () => {
+    const thread = {
+      ...makeThread(),
+      turns: [
+        {
+          id: "turn-late-final",
+          items: [
+            {
+              id: "message-user-late-final",
+              type: "userMessage" as const,
+              content: [{ type: "text" as const, text: "Check the implementation." }],
+            },
+            {
+              id: "message-commentary",
+              type: "agentMessage" as const,
+              text: "I am checking the implementation now.",
+              phase: "commentary" as const,
+            },
+          ],
+          itemsView: "full" as const,
+          startedAt: 1_700_000_001,
+          status: "completed" as const,
+        },
+      ],
+    };
+    const finalMessage = {
+      messageId: MessageId.make("codex-cli:019codex-thread:message-final"),
+      role: "assistant" as const,
+      text: "The implementation is complete.",
+      turnId: TurnId.make("turn-late-final"),
+      createdAt: "2026-08-03T00:00:00.000Z",
+    };
     const resolved = resolveCodexCliTranscriptMessages({
       thread,
       rollout: {
-        complete: false,
+        complete: true,
         messages: [
+          finalMessage,
           {
-            messageId: MessageId.make("rollout-only"),
+            messageId: MessageId.make("codex-cli:019codex-thread:subagent-final"),
             role: "assistant",
-            text: "Should not be selected.",
-            turnId: TurnId.make("turn-rollout"),
-            createdAt: "2026-08-03T00:00:00.000Z",
+            text: "Subagent handoff that is not part of the parent transcript.",
+            turnId: TurnId.make("turn-subagent"),
+            createdAt: "2026-08-03T00:00:00.001Z",
           },
         ],
       },
     });
 
-    expect(resolved).toEqual({
-      complete: true,
-      messages: collectCodexCliImportedMessages(thread),
-    });
+    expect(resolved.complete).toBe(true);
+    expect(resolved.messages).toEqual([...collectCodexCliImportedMessages(thread), finalMessage]);
   });
 
   effectIt.effect("rejects rollout paths outside the configured sessions root", () =>
@@ -494,32 +886,41 @@ describe("CodexCliSessionImporter transcript conversion", () => {
     }).pipe(Effect.provide(Path.layer)),
   );
 
-  it("uses stable command ids and changes them when projected content changes", () => {
-    const [message] = collectCodexCliImportedMessages(makeThread());
-    expect(message).toBeDefined();
-    if (message === undefined) {
+  it("uses stable batch command ids and includes content, order, and runtime guards", () => {
+    const messages = collectCodexCliImportedMessages(makeThread()).slice(0, 2);
+    expect(messages).toHaveLength(2);
+    const [firstMessage, secondMessage] = messages;
+    if (firstMessage === undefined || secondMessage === undefined) {
       return;
     }
 
-    const first = codexCliMessageImportCommand({
+    const first = codexCliMessagesImportCommand({
       threadId: ThreadId.make("019codex-thread"),
-      message,
+      messages,
     });
-    const repeated = codexCliMessageImportCommand({
+    const repeated = codexCliMessagesImportCommand({
       threadId: ThreadId.make("019codex-thread"),
-      message,
+      messages,
     });
-    const changed = codexCliMessageImportCommand({
+    const changed = codexCliMessagesImportCommand({
       threadId: ThreadId.make("019codex-thread"),
-      message: {
-        ...message,
-        text: `${message.text}\nUpdated`,
-      },
+      messages: [
+        {
+          ...firstMessage,
+          text: `${firstMessage.text}\nUpdated`,
+        },
+        secondMessage,
+      ],
+    });
+    const reordered = codexCliMessagesImportCommand({
+      threadId: ThreadId.make("019codex-thread"),
+      messages: [secondMessage, firstMessage],
     });
 
     expect(repeated.commandId).toBe(first.commandId);
     expect(changed.commandId).not.toBe(first.commandId);
-    expect(first.messageId).toBe(message.messageId);
+    expect(reordered.commandId).not.toBe(first.commandId);
+    expect(first.messages).toEqual(messages);
 
     const expectedProviderRuntime = {
       providerName: ProviderDriverKind.make("codex"),
@@ -529,13 +930,85 @@ describe("CodexCliSessionImporter transcript conversion", () => {
       resumeCursor: { threadId: "019codex-thread" },
       requiresDetachedIdle: true,
     };
-    const guarded = codexCliMessageImportCommand({
+    const guarded = codexCliMessagesImportCommand({
       threadId: ThreadId.make("019codex-thread"),
-      message,
+      messages,
       expectedProviderRuntime,
     });
     expect(guarded.expectedProviderRuntime).toEqual(expectedProviderRuntime);
     expect(guarded.commandId).not.toBe(first.commandId);
+  });
+
+  it("does not re-dispatch a large synchronized transcript", () => {
+    const imported = Array.from({ length: 700 }, (_, index) => ({
+      messageId: MessageId.make(`codex-cli:019codex-thread:message-${index}`),
+      role: index % 2 === 0 ? ("user" as const) : ("assistant" as const),
+      text: `Message ${index}`,
+      turnId: TurnId.make(`turn-${Math.floor(index / 2)}`),
+      createdAt: `2026-08-03T00:00:00.${String(index).padStart(3, "0")}Z`,
+    }));
+    const projected = {
+      messages: imported.map((message) => ({
+        id: message.messageId,
+        role: message.role,
+        text: `\n${message.text}\r\n`,
+        turnId: message.turnId,
+        streaming: false,
+        createdAt: message.createdAt,
+        updatedAt: message.createdAt,
+      })),
+    } satisfies Pick<OrchestrationThread, "messages">;
+
+    expect(selectUnsynchronizedCodexCliMessages(projected, imported)).toEqual([]);
+    expect(hasSynchronizedCodexCliTranscript(projected, imported)).toBe(true);
+  });
+
+  it("selects only newly added or extended transcript messages", () => {
+    const imported = Array.from({ length: 700 }, (_, index) => ({
+      messageId: MessageId.make(`codex-cli:019codex-thread:message-${index}`),
+      role: index % 2 === 0 ? ("user" as const) : ("assistant" as const),
+      text: `Message ${index}`,
+      turnId: TurnId.make(`turn-${Math.floor(index / 2)}`),
+      createdAt: `2026-08-03T00:00:00.${String(index).padStart(3, "0")}Z`,
+    }));
+    const projected = {
+      messages: imported.map((message) => ({
+        id: message.messageId,
+        role: message.role,
+        text: message.text,
+        turnId: message.turnId,
+        streaming: false,
+        createdAt: message.createdAt,
+        updatedAt: message.createdAt,
+      })),
+    } satisfies Pick<OrchestrationThread, "messages">;
+    const added = {
+      messageId: MessageId.make("codex-cli:019codex-thread:message-700"),
+      role: "user" as const,
+      text: "New prompt",
+      turnId: TurnId.make("turn-350"),
+      createdAt: "2026-08-03T00:12:00.000Z",
+    };
+    const extended = {
+      ...imported[699]!,
+      text: `${imported[699]!.text} with the completed response`,
+    };
+    const reassigned = {
+      ...imported[698]!,
+      turnId: TurnId.make("turn-reassigned"),
+    };
+
+    expect(selectUnsynchronizedCodexCliMessages(projected, [...imported, added])).toEqual([added]);
+    expect(
+      selectUnsynchronizedCodexCliMessages(projected, [...imported.slice(0, -1), extended]),
+    ).toEqual([extended]);
+    expect(
+      selectUnsynchronizedCodexCliMessages(projected, [
+        ...imported.slice(0, -2),
+        reassigned,
+        imported[699]!,
+      ]),
+    ).toEqual([reassigned]);
   });
 
   it("reuses a pending T3 message id for Codex's copy of the same prompt", () => {
@@ -614,6 +1087,70 @@ describe("CodexCliSessionImporter transcript conversion", () => {
         ...imported,
         messageId: MessageId.make("t3-pending-message"),
         createdAt: "2026-07-25T19:53:12.490Z",
+      },
+    ]);
+  });
+
+  it("reuses app-server message ids when rollout timestamps differ within the same turn", () => {
+    const imported = {
+      messageId: MessageId.make("codex-cli:019codex-thread:msg-rollout"),
+      role: "assistant" as const,
+      text: "Completed after a long-running tool sequence.",
+      turnId: TurnId.make("turn-long"),
+      createdAt: "2026-08-03T02:00:00.000Z",
+    };
+    const projectedThread = {
+      latestTurn: null,
+      messages: [
+        {
+          id: MessageId.make("codex-cli:019codex-thread:item-200"),
+          role: imported.role,
+          text: imported.text,
+          turnId: imported.turnId,
+          streaming: false,
+          createdAt: "2026-08-03T00:00:00.000Z",
+          updatedAt: "2026-08-03T02:00:00.000Z",
+        },
+      ],
+    } satisfies Parameters<typeof reconcileCodexCliImportedMessages>[1];
+
+    expect(reconcileCodexCliImportedMessages([imported], projectedThread)).toEqual([
+      {
+        ...imported,
+        messageId: MessageId.make("codex-cli:019codex-thread:item-200"),
+        createdAt: "2026-08-03T00:00:00.000Z",
+      },
+    ]);
+  });
+
+  it("reuses projected runtime ids for the same native Codex message", () => {
+    const imported = {
+      messageId: MessageId.make("codex-cli:019codex-thread:msg_shared"),
+      role: "assistant" as const,
+      text: "The implementation is complete.",
+      turnId: TurnId.make("turn-final"),
+      createdAt: "2026-08-03T02:00:00.000Z",
+    };
+    const projectedThread = {
+      latestTurn: null,
+      messages: [
+        {
+          id: MessageId.make("assistant:msg_shared"),
+          role: imported.role,
+          text: imported.text,
+          turnId: imported.turnId,
+          streaming: false,
+          createdAt: "2026-08-03T01:59:59.000Z",
+          updatedAt: "2026-08-03T02:00:00.000Z",
+        },
+      ],
+    } satisfies Parameters<typeof reconcileCodexCliImportedMessages>[1];
+
+    expect(reconcileCodexCliImportedMessages([imported], projectedThread)).toEqual([
+      {
+        ...imported,
+        messageId: MessageId.make("assistant:msg_shared"),
+        createdAt: "2026-08-03T01:59:59.000Z",
       },
     ]);
   });
@@ -851,6 +1388,89 @@ describe("CodexCliSessionImporter transcript conversion", () => {
     ).toBe(false);
   });
 
+  it("repairs a stale retrying observer before transcript hydration", () => {
+    const threadId = ThreadId.make("t3-owned-thread");
+    const activeTurnId = TurnId.make("turn-active");
+    const preparedThread = {
+      latestUserMessageAt: null,
+      session: {
+        threadId,
+        status: "starting" as const,
+        providerName: "codex",
+        providerInstanceId: ProviderInstanceId.make("codex"),
+        runtimeMode: "full-access" as const,
+        activeTurnId: null,
+        lastError:
+          "T3 could not reattach to the detached provider execution yet. The provider was not interrupted; T3 will keep retrying.",
+        retrying: true,
+        updatedAt: "2026-08-03T12:00:00.000Z",
+      },
+      updatedAt: "2026-08-03T12:00:00.000Z",
+    };
+    const observedState = {
+      status: "running" as const,
+      activeTurnId,
+      lastError: null,
+    };
+
+    expect(shouldSynchronizeObservedCodexCliSessionBeforeHydration(observedState)).toBe(true);
+    expect(
+      resolveObservedCodexCliSessionSyncAction({
+        currentThread: preparedThread,
+        preparedThread,
+        observedState,
+      }),
+    ).toBe("apply");
+  });
+
+  it("treats an already repaired observer as synchronized after hydration", () => {
+    const threadId = ThreadId.make("t3-owned-thread");
+    const activeTurnId = TurnId.make("turn-active");
+    const preparedThread = {
+      latestUserMessageAt: null,
+      session: {
+        threadId,
+        status: "starting" as const,
+        providerName: "codex",
+        providerInstanceId: ProviderInstanceId.make("codex"),
+        runtimeMode: "full-access" as const,
+        activeTurnId: null,
+        lastError: "Retrying.",
+        retrying: true,
+        updatedAt: "2026-08-03T12:00:00.000Z",
+      },
+      updatedAt: "2026-08-03T12:00:00.000Z",
+    };
+    const observedState = {
+      status: "running" as const,
+      activeTurnId,
+      lastError: null,
+    };
+    const currentThread = {
+      latestUserMessageAt: null,
+      session: {
+        ...preparedThread.session,
+        ...observedState,
+        retrying: false,
+        updatedAt: "2026-08-03T12:00:01.000Z",
+      },
+      updatedAt: "2026-08-03T12:00:01.000Z",
+    };
+
+    expect(
+      resolveObservedCodexCliSessionSyncAction({
+        currentThread,
+        preparedThread,
+        observedState,
+      }),
+    ).toBe("synchronized");
+    expect(
+      shouldSynchronizeObservedCodexCliSessionBeforeHydration({
+        status: "interrupted",
+      }),
+    ).toBe(false);
+  });
+
   it("tracks exact user message identity expected after transcript import", () => {
     const projectedThread = {
       messages: [
@@ -912,6 +1532,92 @@ describe("CodexCliSessionImporter transcript conversion", () => {
     ]);
   });
 
+  it("requests a recovered checkpoint only for a completed detached T3 turn", () => {
+    const threadId = ThreadId.make("t3-owned-thread");
+    const activeTurnId = TurnId.make("turn-recovered");
+    const assistantMessageId = MessageId.make("assistant-recovered");
+    const checkpointContext = {
+      threadId,
+      projectId: "project-1" as never,
+      workspaceRoot: "/tmp/project",
+      worktreePath: null,
+      checkpoints: [
+        {
+          turnId: TurnId.make("turn-before"),
+          checkpointTurnCount: 3,
+          checkpointRef: CheckpointRef.make("checkpoint-before"),
+          status: "ready" as const,
+          files: [],
+          assistantMessageId: MessageId.make("assistant-before"),
+          completedAt: "2026-08-03T00:00:00.000Z",
+        },
+      ],
+    };
+    const messages = [
+      {
+        messageId: MessageId.make("assistant-commentary"),
+        role: "assistant" as const,
+        text: "Still working.",
+        turnId: activeTurnId,
+        createdAt: "2026-08-03T00:00:01.000Z",
+      },
+      {
+        messageId: assistantMessageId,
+        role: "assistant" as const,
+        text: "Done.",
+        turnId: activeTurnId,
+        createdAt: "2026-08-03T00:00:02.000Z",
+      },
+    ];
+
+    expect(
+      resolveCodexCliRecoveredCheckpointRequest({
+        threadId,
+        activeTurnId,
+        resolutionStatus: "ready",
+        messages,
+        checkpointContext,
+        completedAt: "2026-08-03T00:00:03.000Z",
+      }),
+    ).toEqual({
+      turnId: activeTurnId,
+      assistantMessageId,
+      completedAt: "2026-08-03T00:00:03.000Z",
+      checkpointTurnCount: 4,
+      checkpointRef: CheckpointRef.make("codex-cli-recovery:t3-owned-thread:turn-recovered:4"),
+    });
+    expect(
+      resolveCodexCliRecoveredCheckpointRequest({
+        threadId,
+        activeTurnId,
+        resolutionStatus: "error",
+        messages,
+        checkpointContext,
+        completedAt: "2026-08-03T00:00:03.000Z",
+      }),
+    ).toBeUndefined();
+    expect(
+      resolveCodexCliRecoveredCheckpointRequest({
+        threadId,
+        activeTurnId,
+        resolutionStatus: "ready",
+        messages,
+        checkpointContext: {
+          ...checkpointContext,
+          checkpoints: [
+            ...checkpointContext.checkpoints,
+            {
+              ...checkpointContext.checkpoints[0]!,
+              turnId: activeTurnId,
+              checkpointTurnCount: 4,
+            },
+          ],
+        },
+        completedAt: "2026-08-03T00:00:03.000Z",
+      }),
+    ).toBeUndefined();
+  });
+
   it("prunes rollout and import caches to the current discovery window", () => {
     const cache = new Map([
       ["active", 1],
@@ -921,6 +1627,51 @@ describe("CodexCliSessionImporter transcript conversion", () => {
     pruneCodexCliImportCache(cache, new Set(["active"]));
 
     expect([...cache.entries()]).toEqual([["active", 1]]);
+  });
+
+  it("backs off unchanged import failures and retries immediately after provider progress", () => {
+    const first = advanceCodexCliImportFailureBackoff({
+      previous: undefined,
+      providerUpdatedAt: 100,
+      failedAtMillis: 1_000,
+    });
+    expect(first).toEqual({
+      providerUpdatedAt: 100,
+      failureCount: 1,
+      retryAfterMillis: 61_000,
+    });
+    expect(
+      shouldBackoffCodexCliImportFailure({
+        failure: first,
+        providerUpdatedAt: 100,
+        nowMillis: 60_999,
+      }),
+    ).toBe(true);
+    expect(
+      shouldBackoffCodexCliImportFailure({
+        failure: first,
+        providerUpdatedAt: 101,
+        nowMillis: 2_000,
+      }),
+    ).toBe(false);
+
+    const second = advanceCodexCliImportFailureBackoff({
+      previous: first,
+      providerUpdatedAt: 100,
+      failedAtMillis: 61_000,
+    });
+    expect(second).toEqual({
+      providerUpdatedAt: 100,
+      failureCount: 2,
+      retryAfterMillis: 181_000,
+    });
+    expect(
+      shouldBackoffCodexCliImportFailure({
+        failure: second,
+        providerUpdatedAt: 100,
+        nowMillis: 181_000,
+      }),
+    ).toBe(false);
   });
 
   it("incrementally parses rollout messages and recovers cleanly after truncation", () => {
@@ -1130,6 +1881,219 @@ describe("CodexCliSessionImporter transcript conversion", () => {
         hasStaleSession: false,
         observesDetachedCliSession: true,
         observerNeedsHydration: false,
+      }),
+    ).toBe(false);
+  });
+
+  it("reads rollout activities only for active observers or recent CLI-owned updates", () => {
+    const importedBinding = {
+      threadId: ThreadId.make("019codex-thread"),
+      provider: ProviderDriverKind.make("codex"),
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      status: "stopped" as const,
+      runtimeMode: "full-access" as const,
+      resumeCursor: { threadId: "019codex-thread" },
+      runtimePayload: {
+        importedFrom: "codex-cli",
+      },
+    };
+    const t3Binding = {
+      ...importedBinding,
+      runtimePayload: {},
+    };
+
+    expect(
+      shouldReadCodexRolloutActivities({
+        rolloutPathAvailable: true,
+        activityTurnId: "turn-current",
+        listedThreadIsRecent: true,
+        importIsCurrent: false,
+        binding: undefined,
+        observesDetachedCliSession: false,
+      }),
+    ).toBe(true);
+    expect(
+      shouldReadCodexRolloutActivities({
+        rolloutPathAvailable: true,
+        activityTurnId: "turn-current",
+        listedThreadIsRecent: true,
+        importIsCurrent: false,
+        binding: importedBinding,
+        observesDetachedCliSession: false,
+      }),
+    ).toBe(true);
+    expect(
+      shouldReadCodexRolloutActivities({
+        rolloutPathAvailable: true,
+        activityTurnId: "turn-current",
+        listedThreadIsRecent: false,
+        importIsCurrent: false,
+        binding: importedBinding,
+        observesDetachedCliSession: false,
+      }),
+    ).toBe(false);
+    expect(
+      shouldReadCodexRolloutActivities({
+        rolloutPathAvailable: true,
+        activityTurnId: "turn-current",
+        listedThreadIsRecent: true,
+        importIsCurrent: false,
+        binding: t3Binding,
+        observesDetachedCliSession: false,
+      }),
+    ).toBe(false);
+    expect(
+      shouldReadCodexRolloutActivities({
+        rolloutPathAvailable: true,
+        activityTurnId: "turn-current",
+        listedThreadIsRecent: false,
+        importIsCurrent: true,
+        binding: t3Binding,
+        observesDetachedCliSession: true,
+      }),
+    ).toBe(true);
+    expect(
+      shouldReadCodexRolloutActivities({
+        rolloutPathAvailable: false,
+        activityTurnId: "turn-current",
+        listedThreadIsRecent: true,
+        importIsCurrent: false,
+        binding: undefined,
+        observesDetachedCliSession: true,
+      }),
+    ).toBe(false);
+  });
+
+  it("hydrates detached observers only when transcript messages or terminal state changed", () => {
+    expect(
+      shouldHydrateObservedCodexCliTranscript({
+        observesDetachedCliSession: true,
+        importIsCurrent: true,
+        rolloutTranscriptInspected: true,
+        rolloutTranscriptChanged: false,
+        rolloutTranscriptComplete: true,
+        rolloutTranscriptSynchronized: true,
+        terminalTransitionObserved: false,
+      }),
+    ).toBe(false);
+    expect(
+      shouldHydrateObservedCodexCliTranscript({
+        observesDetachedCliSession: true,
+        importIsCurrent: true,
+        rolloutTranscriptInspected: true,
+        rolloutTranscriptChanged: true,
+        rolloutTranscriptComplete: true,
+        rolloutTranscriptSynchronized: false,
+        terminalTransitionObserved: false,
+      }),
+    ).toBe(true);
+    expect(
+      shouldHydrateObservedCodexCliTranscript({
+        observesDetachedCliSession: true,
+        importIsCurrent: true,
+        rolloutTranscriptInspected: true,
+        rolloutTranscriptChanged: false,
+        rolloutTranscriptComplete: true,
+        rolloutTranscriptSynchronized: true,
+        terminalTransitionObserved: true,
+      }),
+    ).toBe(true);
+    expect(
+      shouldHydrateObservedCodexCliTranscript({
+        observesDetachedCliSession: true,
+        importIsCurrent: false,
+        rolloutTranscriptInspected: false,
+        rolloutTranscriptChanged: false,
+        rolloutTranscriptComplete: false,
+        rolloutTranscriptSynchronized: false,
+        terminalTransitionObserved: false,
+      }),
+    ).toBe(true);
+    expect(
+      shouldHydrateObservedCodexCliTranscript({
+        observesDetachedCliSession: true,
+        importIsCurrent: false,
+        rolloutTranscriptInspected: true,
+        rolloutTranscriptChanged: false,
+        rolloutTranscriptComplete: true,
+        rolloutTranscriptSynchronized: true,
+        terminalTransitionObserved: false,
+      }),
+    ).toBe(false);
+    expect(
+      shouldHydrateObservedCodexCliTranscript({
+        observesDetachedCliSession: true,
+        importIsCurrent: true,
+        rolloutTranscriptInspected: true,
+        rolloutTranscriptChanged: true,
+        rolloutTranscriptComplete: false,
+        rolloutTranscriptSynchronized: true,
+        terminalTransitionObserved: false,
+      }),
+    ).toBe(true);
+    expect(
+      shouldHydrateObservedCodexCliTranscript({
+        observesDetachedCliSession: false,
+        importIsCurrent: false,
+        rolloutTranscriptInspected: true,
+        rolloutTranscriptChanged: true,
+        rolloutTranscriptComplete: false,
+        rolloutTranscriptSynchronized: false,
+        terminalTransitionObserved: true,
+      }),
+    ).toBe(false);
+    expect(
+      shouldHydrateObservedCodexCliTranscript({
+        observesDetachedCliSession: true,
+        importIsCurrent: true,
+        rolloutTranscriptInspected: true,
+        rolloutTranscriptChanged: false,
+        rolloutTranscriptComplete: false,
+        rolloutTranscriptSynchronized: false,
+        terminalTransitionObserved: false,
+      }),
+    ).toBe(false);
+  });
+
+  it("uses complete rollout transcripts directly only for active detached observers", () => {
+    expect(
+      shouldUseCodexRolloutTranscriptWithoutThreadRead({
+        observesDetachedCliSession: true,
+        observedSessionStatus: "running",
+        rolloutTranscriptComplete: true,
+        terminalTransitionObserved: false,
+      }),
+    ).toBe(true);
+    expect(
+      shouldUseCodexRolloutTranscriptWithoutThreadRead({
+        observesDetachedCliSession: true,
+        observedSessionStatus: "ready",
+        rolloutTranscriptComplete: true,
+        terminalTransitionObserved: false,
+      }),
+    ).toBe(false);
+    expect(
+      shouldUseCodexRolloutTranscriptWithoutThreadRead({
+        observesDetachedCliSession: true,
+        observedSessionStatus: "running",
+        rolloutTranscriptComplete: false,
+        terminalTransitionObserved: false,
+      }),
+    ).toBe(false);
+    expect(
+      shouldUseCodexRolloutTranscriptWithoutThreadRead({
+        observesDetachedCliSession: true,
+        observedSessionStatus: "running",
+        rolloutTranscriptComplete: true,
+        terminalTransitionObserved: true,
+      }),
+    ).toBe(false);
+    expect(
+      shouldUseCodexRolloutTranscriptWithoutThreadRead({
+        observesDetachedCliSession: false,
+        observedSessionStatus: "running",
+        rolloutTranscriptComplete: true,
+        terminalTransitionObserved: false,
       }),
     ).toBe(false);
   });
@@ -1455,6 +2419,30 @@ describe("CodexCliSessionImporter transcript conversion", () => {
       state: "interrupted",
       turnId: "turn-2",
     });
+
+    const responseOnly = JSON.stringify({
+      type: "response_item",
+      payload: {
+        type: "function_call",
+        internal_chat_message_metadata_passthrough: { turn_id: "turn-tail" },
+      },
+    });
+    expect(parseLatestCodexRolloutTaskState(responseOnly)).toEqual({
+      state: null,
+      turnId: "turn-tail",
+    });
+
+    const currentTurnAfterOlderCompletion = [
+      JSON.stringify({
+        type: "event_msg",
+        payload: { type: "task_complete", turn_id: "turn-old" },
+      }),
+      responseOnly,
+    ].join("\n");
+    expect(parseLatestCodexRolloutTaskState(currentTurnAfterOlderCompletion)).toEqual({
+      state: null,
+      turnId: "turn-tail",
+    });
   });
 
   it("incrementally tracks rollout task state without rereading unchanged history", () => {
@@ -1507,8 +2495,24 @@ describe("CodexCliSessionImporter transcript conversion", () => {
     expect(completed.terminalTransitionObserved).toBe(true);
     expect(completed.pendingLine).toBe("");
 
-    const nextTurn = advanceCodexRolloutTaskCursor(
+    const currentTurnFromTail = advanceCodexRolloutTaskCursor(
       completed,
+      `${JSON.stringify({
+        type: "response_item",
+        payload: {
+          type: "function_call",
+          internal_chat_message_metadata_passthrough: { turn_id: "turn-tail" },
+        },
+      })}\n`,
+      started.length + 400,
+    );
+    expect(currentTurnFromTail.lifecycle).toEqual({
+      state: null,
+      turnId: "turn-tail",
+    });
+
+    const nextTurn = advanceCodexRolloutTaskCursor(
+      currentTurnFromTail,
       [
         JSON.stringify({
           type: "event_msg",

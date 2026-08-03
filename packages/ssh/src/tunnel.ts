@@ -63,10 +63,12 @@ const REMOTE_REUSE_READY_TIMEOUT_MS = 2_000;
 const EXISTING_TUNNEL_READY_TIMEOUT_MS = 15_000;
 
 export interface RemoteT3RunnerOptions {
+  readonly packageCacheDir?: string | null;
   readonly packageSpec?: string;
   readonly localPackageArchivePath?: string | null;
   readonly nodeScriptPath?: string | null;
   readonly nodeEngineRange?: string | null;
+  readonly requireExactBuild?: boolean;
   readonly version?: string | null;
 }
 
@@ -480,6 +482,8 @@ set -eu
 ensure_remote_node_path || true
 T3_NODE_SCRIPT_PATH=@@T3_NODE_SCRIPT_PATH@@
 T3_PACKAGE_SPEC=@@T3_PACKAGE_SPEC@@
+T3_PACKAGE_CACHE_DIR=@@T3_PACKAGE_CACHE_DIR@@
+T3_REQUIRE_EXACT_BUILD=@@T3_REQUIRE_EXACT_BUILD@@
 if [ -n "$T3_NODE_SCRIPT_PATH" ]; then
   if ! command -v node >/dev/null 2>&1; then
     printf 'Remote host is missing node on PATH. Install Node or configure a supported version manager for non-interactive shells.\\n' >&2
@@ -487,14 +491,22 @@ if [ -n "$T3_NODE_SCRIPT_PATH" ]; then
   fi
   exec node "$T3_NODE_SCRIPT_PATH" "$@"
 fi
+if [ -n "$T3_PACKAGE_CACHE_DIR" ]; then
+  mkdir -p "$T3_PACKAGE_CACHE_DIR"
+  export npm_config_cache="$T3_PACKAGE_CACHE_DIR"
+fi
 if [ -n "$T3_PACKAGE_SPEC" ] && command -v npx >/dev/null 2>&1; then
   exec npx --yes --package="$T3_PACKAGE_SPEC" -- t3 "$@"
 fi
 if [ -n "$T3_PACKAGE_SPEC" ] && command -v npm >/dev/null 2>&1; then
   exec npm exec --yes --package="$T3_PACKAGE_SPEC" -- t3 "$@"
 fi
-if command -v t3 >/dev/null 2>&1; then
+if [ "$T3_REQUIRE_EXACT_BUILD" != "1" ] && command -v t3 >/dev/null 2>&1; then
   exec t3 "$@"
+fi
+if [ "$T3_REQUIRE_EXACT_BUILD" = "1" ]; then
+  printf 'The controlling T3 desktop requires its matching server build, but no runnable matching package is available on this host. Rebuild or reinstall the desktop package and reconnect.\\n' >&2
+  exit 1
 fi
 printf 'Remote host is missing the t3 CLI and could not install %s because node/npm/npx are unavailable on PATH. Install Node or configure a supported version manager for non-interactive shells.\\n' "$T3_PACKAGE_SPEC" >&2
 exit 1
@@ -505,6 +517,8 @@ export const REMOTE_LAUNCH_SCRIPT = `set -eu
 STATE_KEY="$1"
 RUNNER_ID=@@T3_RUNNER_ID@@
 DESIRED_SERVER_VERSION=@@T3_DESIRED_SERVER_VERSION@@
+PACKAGE_ARCHIVE_PATH=@@T3_PACKAGE_ARCHIVE_PATH@@
+PACKAGE_CACHE_DIR=@@T3_PACKAGE_CACHE_DIR@@
 STATE_DIR="$HOME/.t3/ssh-launch/$STATE_KEY"
 LAUNCH_LOCK_DIR="$HOME/.t3/ssh-launch/server-launch.lock"
 DEFAULT_SERVER_HOME="$HOME/.t3"
@@ -649,6 +663,43 @@ try {
 }
 NODE
 }
+prune_inactive_package_archives() {
+  if [ -z "$PACKAGE_ARCHIVE_PATH" ]; then
+    return
+  fi
+  ACTIVE_RUNTIME_INFO="$(resolve_default_runtime_port 2>/dev/null || true)"
+  if [ -z "$ACTIVE_RUNTIME_INFO" ]; then
+    return
+  fi
+  ACTIVE_RUNTIME_REST="\${ACTIVE_RUNTIME_INFO#*|}"
+  ACTIVE_RUNTIME_REST="\${ACTIVE_RUNTIME_REST#*|}"
+  ACTIVE_RUNTIME_REST="\${ACTIVE_RUNTIME_REST#*|}"
+  ACTIVE_RUNTIME_RUNNER_ID="\${ACTIVE_RUNTIME_REST%%|*}"
+  if [ "$ACTIVE_RUNTIME_RUNNER_ID" != "$RUNNER_ID" ]; then
+    return
+  fi
+  PACKAGE_ARCHIVE_DIR="\${PACKAGE_ARCHIVE_PATH%/*}"
+  if [ "$PACKAGE_ARCHIVE_DIR" = "$PACKAGE_ARCHIVE_PATH" ]; then
+    return
+  fi
+  for PACKAGE_CANDIDATE in "$PACKAGE_ARCHIVE_DIR"/t3-*.tgz; do
+    if [ -f "$PACKAGE_CANDIDATE" ] && [ "$PACKAGE_CANDIDATE" != "$PACKAGE_ARCHIVE_PATH" ]; then
+      rm -f "$PACKAGE_CANDIDATE"
+    fi
+  done
+  if [ -z "$PACKAGE_CACHE_DIR" ]; then
+    return
+  fi
+  PACKAGE_CACHE_ROOT="\${PACKAGE_CACHE_DIR%/*}"
+  if [ "$PACKAGE_CACHE_ROOT" = "$PACKAGE_CACHE_DIR" ]; then
+    return
+  fi
+  for PACKAGE_CACHE_CANDIDATE in "$PACKAGE_CACHE_ROOT"/t3-*; do
+    if [ -d "$PACKAGE_CACHE_CANDIDATE" ] && [ "$PACKAGE_CACHE_CANDIDATE" != "$PACKAGE_CACHE_DIR" ]; then
+      rm -rf "$PACKAGE_CACHE_CANDIDATE"
+    fi
+  done
+}
 stop_pid() {
   PID_TO_STOP="$1"
   if [ -n "$PID_TO_STOP" ] && kill -0 "$PID_TO_STOP" 2>/dev/null; then
@@ -714,7 +765,7 @@ fi
 if [ -n "$DEFAULT_REMOTE_PORT" ]; then
   REMOTE_PORT="$DEFAULT_REMOTE_PORT"
   if wait_ready "@@T3_REUSE_READY_TIMEOUT_MS@@"; then
-    if [ "$DEFAULT_RUNTIME_STATE_KEY" = "$STATE_KEY" ]; then
+    if [ -n "$DEFAULT_RUNTIME_STATE_KEY" ]; then
       REMOTE_PID="$DEFAULT_RUNTIME_PID"
       REMOTE_MANAGED="managed"
       printf '%s\\n' "$REMOTE_PID" >"$PID_FILE"
@@ -821,6 +872,7 @@ if [ -z "$REMOTE_PORT" ]; then
     fi
   fi
 fi
+prune_inactive_package_archives
 printf '{"remotePort":%s,"serverKind":"%s"}\\n' "$REMOTE_PORT" "\${REMOTE_MANAGED:-managed}"
 `;
 
@@ -895,12 +947,18 @@ fi
 `;
 
 export function buildRemoteT3RunnerScript(input?: RemoteT3RunnerOptions): string {
-  const packageSpec = shellSingleQuote(input?.packageSpec?.trim() || "t3@latest");
+  const requireExactBuild = input?.requireExactBuild === true;
+  const packageSpec = shellSingleQuote(
+    input?.packageSpec?.trim() || (requireExactBuild ? "" : "t3@latest"),
+  );
+  const packageCacheDir = input?.packageCacheDir?.trim() || "";
   const nodeScriptPath = input?.nodeScriptPath?.trim() || "";
   return stripTrailingNewlines(
     applyScriptPlaceholders(REMOTE_RUNNER_SCRIPT, {
+      T3_PACKAGE_CACHE_DIR: shellSingleQuote(packageCacheDir),
       T3_PACKAGE_SPEC: packageSpec,
       T3_NODE_SCRIPT_PATH: shellSingleQuote(nodeScriptPath),
+      T3_REQUIRE_EXACT_BUILD: requireExactBuild ? "1" : "0",
       T3_NODE_ENV_SCRIPT: buildRemoteNodeEnvScript(input),
     }),
   );
@@ -988,9 +1046,20 @@ const prepareRemoteT3Runner = Effect.fn("ssh/tunnel.prepareRemoteT3Runner")(func
       message: "SSH package upload did not return an absolute remote archive path.",
     });
   }
+  const remoteRuntimeRootSuffix = `/packages/t3-${digest}.tgz`;
+  if (!remoteArchivePath.endsWith(remoteRuntimeRootSuffix)) {
+    return yield* new SshCommandError({
+      command: ["ssh"],
+      exitCode: null,
+      stderr: "",
+      message: "SSH package upload returned an unexpected remote archive path.",
+    });
+  }
+  const remoteRuntimeRoot = remoteArchivePath.slice(0, -remoteRuntimeRootSuffix.length);
 
   return {
     ...runner,
+    packageCacheDir: `${remoteRuntimeRoot}/npm-cache/t3-${digest}`,
     packageSpec: remoteArchivePath,
   } satisfies RemoteT3RunnerOptions;
 });
@@ -1008,6 +1077,14 @@ export function buildRemoteLaunchScript(input?: RemoteT3RunnerOptions): string {
   const readyTimeoutMs = input?.localPackageArchivePath?.trim()
     ? REMOTE_PACKAGE_READY_TIMEOUT_MS
     : REMOTE_READY_TIMEOUT_MS;
+  const packageArchivePath =
+    input?.localPackageArchivePath?.trim() && input.packageSpec?.trim()
+      ? input.packageSpec.trim()
+      : "";
+  const packageCacheDir =
+    input?.localPackageArchivePath?.trim() && input.packageCacheDir?.trim()
+      ? input.packageCacheDir.trim()
+      : "";
   const runnerScript = stripTrailingNewlines(buildRemoteT3RunnerScript(input));
   const runnerId = NodeCrypto.createHash("sha256").update(runnerScript).digest("hex");
   return applyScriptPlaceholders(REMOTE_LAUNCH_SCRIPT, {
@@ -1015,6 +1092,8 @@ export function buildRemoteLaunchScript(input?: RemoteT3RunnerOptions): string {
     T3_RUNNER_SCRIPT: runnerScript,
     T3_RUNNER_ID: shellSingleQuote(runnerId),
     T3_DESIRED_SERVER_VERSION: shellSingleQuote(input?.version?.trim() || ""),
+    T3_PACKAGE_ARCHIVE_PATH: shellSingleQuote(packageArchivePath),
+    T3_PACKAGE_CACHE_DIR: shellSingleQuote(packageCacheDir),
     T3_VERSION_DECISION_SCRIPT: stripTrailingNewlines(buildRemoteVersionDecisionScript()),
     T3_PICK_PORT_SCRIPT: stripTrailingNewlines(REMOTE_PICK_PORT_SCRIPT),
     T3_WAIT_READY_SCRIPT: stripTrailingNewlines(REMOTE_WAIT_READY_SCRIPT),

@@ -522,6 +522,21 @@ export function applyThreadDetailEvent(
       };
     }
 
+    case "thread.activities-imported": {
+      const activitiesById = new Map(
+        thread.activities.map((activity) => [activity.id, activity] as const),
+      );
+      for (const activity of event.payload.activities) {
+        activitiesById.set(activity.id, activity);
+      }
+      const activities = Arr.sort([...activitiesById.values()], activityOrder);
+
+      return {
+        kind: "updated",
+        thread: { ...thread, activities, updatedAt: event.occurredAt },
+      };
+    }
+
     // ── Events that don't mutate thread state directly ──────────────
     case "thread.approval-response-requested":
     case "thread.user-input-response-requested":

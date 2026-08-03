@@ -177,7 +177,8 @@ const makeOrchestrationEngine = Effect.gen(function* () {
             Effect.gen(function* () {
               const providerRuntimeGuardedCommand =
                 envelope.command.type === "thread.session.set" ||
-                envelope.command.type === "thread.message.import"
+                envelope.command.type === "thread.message.import" ||
+                envelope.command.type === "thread.messages.import"
                   ? envelope.command
                   : undefined;
               const expectedProviderRuntime =
@@ -256,8 +257,10 @@ const makeOrchestrationEngine = Effect.gen(function* () {
               for (const nextEvent of eventBases) {
                 const savedEvent = yield* eventStore.append(nextEvent);
                 nextCommandReadModel = yield* projectEvent(nextCommandReadModel, savedEvent);
-                yield* projectionPipeline.projectEvent(savedEvent);
                 committedEvents.push(savedEvent);
+              }
+              if (committedEvents.length > 0) {
+                yield* projectionPipeline.projectEvents(committedEvents);
               }
 
               const lastSavedEvent = committedEvents.at(-1) ?? null;

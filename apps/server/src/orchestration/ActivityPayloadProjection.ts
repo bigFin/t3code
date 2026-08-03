@@ -262,14 +262,23 @@ export function projectThreadDetailSnapshot(
 }
 
 export function projectActivityEvent(event: OrchestrationEvent): OrchestrationEvent {
-  if (event.type !== "thread.activity-appended") {
-    return event;
+  if (event.type === "thread.activity-appended") {
+    return {
+      ...event,
+      payload: {
+        ...event.payload,
+        activity: projectActivityPayload(event.payload.activity),
+      },
+    };
   }
-  return {
-    ...event,
-    payload: {
-      ...event.payload,
-      activity: projectActivityPayload(event.payload.activity),
-    },
-  };
+  if (event.type === "thread.activities-imported") {
+    return {
+      ...event,
+      payload: {
+        ...event.payload,
+        activities: event.payload.activities.map(projectActivityPayload),
+      },
+    };
+  }
+  return event;
 }

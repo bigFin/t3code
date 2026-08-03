@@ -31,6 +31,16 @@ export interface OrchestrationProjectionPipelineShape {
   readonly projectEvent: (
     event: OrchestrationEvent,
   ) => Effect.Effect<void, ProjectionRepositoryError>;
+
+  /**
+   * Project an ordered command batch into projection repositories.
+   *
+   * Each projector advances once for the complete batch, avoiding redundant
+   * projection-state writes and transaction setup between sibling events.
+   */
+  readonly projectEvents: (
+    events: ReadonlyArray<OrchestrationEvent>,
+  ) => Effect.Effect<void, ProjectionRepositoryError>;
 }
 
 /**

@@ -382,6 +382,10 @@ function resolveLinuxSandboxArgs(electronBinaryPath) {
   return ["--no-sandbox"];
 }
 
+export function resolveLinuxPasswordStoreArgs(platform = hostPlatform) {
+  return platform === "linux" ? ["--password-store=gnome-libsecret"] : [];
+}
+
 export function resolveElectronPath() {
   const electronBinaryPath = resolveElectronBinaryPath();
 
@@ -396,7 +400,7 @@ export function resolveElectronLaunchCommand(args = []) {
   const electronPath = resolveElectronPath();
   return {
     electronPath,
-    args: [...resolveLinuxSandboxArgs(electronPath), ...args],
+    args: [...resolveLinuxSandboxArgs(electronPath), ...resolveLinuxPasswordStoreArgs(), ...args],
   };
 }
 

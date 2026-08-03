@@ -128,6 +128,7 @@ const makeHarness = Effect.fn("TestEnvironmentRegistry.makeHarness")(function* (
   initialProfiles: ReadonlyArray<ConnectionProfile> = [],
   initialCredentials: ReadonlyArray<readonly [string, ConnectionCredential]> = [],
   options?: {
+    readonly beforeTargetList?: Effect.Effect<void, Persistence.ConnectionPersistenceError>;
     readonly beforeSessionConnect?: (environmentId: EnvironmentId) => Effect.Effect<void>;
     readonly beforeRegistrationRegister?: (
       registration: ConnectionRegistration,
@@ -172,7 +173,10 @@ const makeHarness = Effect.fn("TestEnvironmentRegistry.makeHarness")(function* (
   const disconnectedSshTargets = yield* Ref.make<ReadonlyArray<DesktopSshEnvironmentTarget>>([]);
 
   const targetStore = Persistence.ConnectionTargetStore.of({
-    list: Ref.get(storedTargets).pipe(Effect.map((targets) => [...targets.values()])),
+    list: Effect.gen(function* () {
+      yield* options?.beforeTargetList ?? Effect.void;
+      return [...(yield* Ref.get(storedTargets)).values()];
+    }),
   });
   const registrationStore = Persistence.ConnectionRegistrationStore.of({
     register: (registration) =>
@@ -420,6 +424,28 @@ function awaitConnectionState(
 }
 
 describe("EnvironmentRegistry", () => {
+  it.effect("keeps platform environments available when persisted targets cannot be loaded", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness([], [], [], {
+        beforeTargetList: Effect.fail(
+          new Persistence.ConnectionPersistenceError({
+            operation: "list-targets",
+            message: "The encrypted connection catalog could not be read.",
+          }),
+        ),
+      });
+
+      yield* Effect.gen(function* () {
+        const registry = yield* EnvironmentRegistry.EnvironmentRegistry;
+        yield* registry.registerPlatform(new PrimaryConnectionRegistration({ target: TARGET }));
+
+        expect(
+          (yield* SubscriptionRef.get(registry.entries)).get(TARGET.environmentId)?.target,
+        ).toStrictEqual(TARGET);
+      }).pipe(Effect.provide(harness.layer), Effect.scoped);
+    }),
+  );
+
   it.effect("hydrates connection profiles into catalog entries", () =>
     Effect.gen(function* () {
       const harness = yield* makeHarness([SSH_CONNECTION], [SSH_PROFILE]);

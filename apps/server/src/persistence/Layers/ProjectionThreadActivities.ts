@@ -22,6 +22,7 @@ const ProjectionThreadActivityDbRowSchema = ProjectionThreadActivity.mapFields(
     sequence: Schema.NullOr(NonNegativeInt),
   }),
 );
+const PROJECTION_THREAD_ACTIVITY_UPSERT_BATCH_SIZE = 100;
 
 function toPersistenceSqlOrDecodeError(sqlOperation: string, decodeOperation: string) {
   return (cause: unknown) =>
@@ -116,6 +117,67 @@ const makeProjectionThreadActivityRepository = Effect.gen(function* () {
       ),
     );
 
+  const upsertMany: ProjectionThreadActivityRepositoryShape["upsertMany"] = (rows) =>
+    rows.length === 0
+      ? Effect.void
+      : Effect.forEach(
+          Array.from(
+            {
+              length: Math.ceil(rows.length / PROJECTION_THREAD_ACTIVITY_UPSERT_BATCH_SIZE),
+            },
+            (_, index) =>
+              rows.slice(
+                index * PROJECTION_THREAD_ACTIVITY_UPSERT_BATCH_SIZE,
+                (index + 1) * PROJECTION_THREAD_ACTIVITY_UPSERT_BATCH_SIZE,
+              ),
+          ),
+          (batch) => {
+            const values = batch.map(
+              (row) =>
+                sql`(
+                  ${row.activityId},
+                  ${row.threadId},
+                  ${row.turnId},
+                  ${row.tone},
+                  ${row.kind},
+                  ${row.summary},
+                  ${JSON.stringify(row.payload)},
+                  ${row.sequence ?? null},
+                  ${row.createdAt}
+                )`,
+            );
+            return sql`
+              INSERT INTO projection_thread_activities (
+                activity_id,
+                thread_id,
+                turn_id,
+                tone,
+                kind,
+                summary,
+                payload_json,
+                sequence,
+                created_at
+              )
+              VALUES ${sql.csv(values)}
+              ON CONFLICT (activity_id)
+              DO UPDATE SET
+                thread_id = excluded.thread_id,
+                turn_id = excluded.turn_id,
+                tone = excluded.tone,
+                kind = excluded.kind,
+                summary = excluded.summary,
+                payload_json = excluded.payload_json,
+                sequence = excluded.sequence,
+                created_at = excluded.created_at
+            `;
+          },
+          { concurrency: 1, discard: true },
+        ).pipe(
+          Effect.mapError(
+            toPersistenceSqlError("ProjectionThreadActivityRepository.upsertMany:query"),
+          ),
+        );
+
   const listByThreadId: ProjectionThreadActivityRepositoryShape["listByThreadId"] = (input) =>
     listProjectionThreadActivityRows(input).pipe(
       Effect.mapError(
@@ -148,6 +210,7 @@ const makeProjectionThreadActivityRepository = Effect.gen(function* () {
 
   return {
     upsert,
+    upsertMany,
     listByThreadId,
     deleteByThreadId,
   } satisfies ProjectionThreadActivityRepositoryShape;

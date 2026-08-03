@@ -207,6 +207,8 @@ describe("OrchestrationEngine", () => {
           getFullThreadDiffContext: () => Effect.succeed(Option.none()),
           getThreadShellById: () => Effect.succeed(Option.none()),
           getThreadShellsByIds: () => Effect.succeed(new Map()),
+          getThreadTranscriptById: () => Effect.die("unused"),
+          getExistingThreadActivityIds: () => Effect.die("unused"),
           getThreadDetailById: () => Effect.succeed(Option.none()),
           getThreadDetailSnapshot: () => Effect.succeed(Option.none()),
           searchThreads: () => Effect.succeed({ matches: [] }),
@@ -216,6 +218,7 @@ describe("OrchestrationEngine", () => {
         Layer.succeed(OrchestrationProjectionPipeline, {
           bootstrap: Effect.void,
           projectEvent: () => Effect.void,
+          projectEvents: () => Effect.void,
         } satisfies OrchestrationProjectionPipelineShape),
       ),
       Layer.provide(Layer.succeed(OrchestrationEventStore, eventStore)),
@@ -969,6 +972,45 @@ describe("OrchestrationEngine", () => {
         ?.messages.some((message) => message.id === MessageId.make("message-stale-transcript")),
     ).toBe(false);
 
+    const staleTranscriptBatchImport = await system.run(
+      engine.dispatch({
+        type: "thread.messages.import",
+        commandId: CommandId.make("cmd-session-provider-guard-stale-transcript-batch"),
+        threadId,
+        messages: [
+          {
+            messageId: MessageId.make("message-stale-transcript-batch-1"),
+            role: "user",
+            text: "Stale observer prompt",
+            turnId: asTurnId("turn-stale-transcript-batch"),
+            createdAt: "2026-01-01T00:00:11.600Z",
+          },
+          {
+            messageId: MessageId.make("message-stale-transcript-batch-2"),
+            role: "assistant",
+            text: "Stale observer response",
+            turnId: asTurnId("turn-stale-transcript-batch"),
+            createdAt: "2026-01-01T00:00:11.700Z",
+          },
+        ],
+        expectedProviderRuntime: {
+          providerName: ProviderDriverKind.make("codex"),
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          status: "stopped",
+          lastSeenAt: "2026-01-01T00:00:07.000Z",
+          resumeCursor: null,
+          requiresDetachedIdle: false,
+        },
+        createdAt: "2026-01-01T00:00:11.700Z",
+      }),
+    );
+    expect(staleTranscriptBatchImport.sequence).toBe(sequenceBeforeStaleTranscriptImport);
+    expect(
+      (await system.readModel()).threads
+        .find((entry) => entry.id === threadId)
+        ?.messages.some((message) => String(message.id).includes("stale-transcript-batch")),
+    ).toBe(false);
+
     await system.run(
       engine.dispatch({
         type: "thread.message.import",
@@ -1355,12 +1397,14 @@ describe("OrchestrationEngine", () => {
     let shouldFailRequestedProjection = true;
     const flakyProjectionPipeline: OrchestrationProjectionPipelineShape = {
       bootstrap: Effect.void,
-      projectEvent: (event) => {
-        if (
-          shouldFailRequestedProjection &&
-          event.commandId === CommandId.make("cmd-turn-start-atomic") &&
-          event.type === "thread.turn-start-requested"
-        ) {
+      projectEvent: () => Effect.void,
+      projectEvents: (events) => {
+        const event = events.find(
+          (candidate) =>
+            candidate.commandId === CommandId.make("cmd-turn-start-atomic") &&
+            candidate.type === "thread.turn-start-requested",
+        );
+        if (shouldFailRequestedProjection && event !== undefined) {
           shouldFailRequestedProjection = false;
           return Effect.fail(
             new PersistenceSqlError({
@@ -1502,11 +1546,12 @@ describe("OrchestrationEngine", () => {
     let shouldFailProjection = true;
     const flakyProjectionPipeline: OrchestrationProjectionPipelineShape = {
       bootstrap: Effect.void,
-      projectEvent: (event) => {
-        if (
-          shouldFailProjection &&
-          event.commandId === CommandId.make("cmd-thread-archive-sync-fail")
-        ) {
+      projectEvent: () => Effect.void,
+      projectEvents: (events) => {
+        const event = events.find(
+          (candidate) => candidate.commandId === CommandId.make("cmd-thread-archive-sync-fail"),
+        );
+        if (shouldFailProjection && event !== undefined) {
           shouldFailProjection = false;
           return Effect.fail(
             new PersistenceSqlError({

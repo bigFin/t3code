@@ -1,4 +1,4 @@
-import { ProjectId, ThreadId, ProviderInstanceId } from "@t3tools/contracts";
+import { EventId, ProjectId, ThreadId, TurnId, ProviderInstanceId } from "@t3tools/contracts";
 import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -7,13 +7,16 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { SqlitePersistenceMemory } from "./Sqlite.ts";
 import { ProjectionProjectRepositoryLive } from "./ProjectionProjects.ts";
+import { ProjectionThreadActivityRepositoryLive } from "./ProjectionThreadActivities.ts";
 import { ProjectionThreadRepositoryLive } from "./ProjectionThreads.ts";
 import { ProjectionProjectRepository } from "../Services/ProjectionProjects.ts";
+import { ProjectionThreadActivityRepository } from "../Services/ProjectionThreadActivities.ts";
 import { ProjectionThreadRepository } from "../Services/ProjectionThreads.ts";
 
 const projectionRepositoriesLayer = it.layer(
   Layer.mergeAll(
     ProjectionProjectRepositoryLive.pipe(Layer.provideMerge(SqlitePersistenceMemory)),
+    ProjectionThreadActivityRepositoryLive.pipe(Layer.provideMerge(SqlitePersistenceMemory)),
     ProjectionThreadRepositoryLive.pipe(Layer.provideMerge(SqlitePersistenceMemory)),
     SqlitePersistenceMemory,
   ),
@@ -193,6 +196,44 @@ projectionRepositoriesLayer("Projection repositories", (it) => {
       assert.strictEqual(updated?.settledAt, null);
       assert.strictEqual(updated?.snoozedUntil, null);
       assert.strictEqual(updated?.snoozedAt, null);
+    }),
+  );
+
+  it.effect("upserts projected thread activities in bounded batches", () =>
+    Effect.gen(function* () {
+      const activities = yield* ProjectionThreadActivityRepository;
+      const rows = Array.from({ length: 125 }, (_, index) => ({
+        activityId: EventId.make(`activity-batch-${index}`),
+        threadId: ThreadId.make("thread-activity-batch"),
+        turnId: TurnId.make("turn-activity-batch"),
+        tone: "tool" as const,
+        kind: index % 2 === 0 ? "tool.started" : "tool.completed",
+        summary: `Activity ${index}`,
+        payload: { index },
+        createdAt: `2026-08-03T00:00:${String(index % 60).padStart(2, "0")}.000Z`,
+      }));
+
+      yield* activities.upsertMany(rows);
+      yield* activities.upsertMany([
+        {
+          ...rows[0]!,
+          summary: "Updated activity",
+          payload: { index: 0, updated: true },
+        },
+      ]);
+
+      const persisted = yield* activities.listByThreadId({
+        threadId: ThreadId.make("thread-activity-batch"),
+      });
+      assert.equal(persisted.length, 125);
+      assert.deepEqual(
+        persisted.find((activity) => activity.activityId === EventId.make("activity-batch-0")),
+        {
+          ...rows[0]!,
+          summary: "Updated activity",
+          payload: { index: 0, updated: true },
+        },
+      );
     }),
   );
 });

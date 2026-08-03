@@ -560,4 +560,49 @@ it.layer(NodeServices.layer)("settled thread decider", (it) => {
       expect(routineEvents.map((event) => event.type)).toEqual(["thread.activity-appended"]);
     }),
   );
+
+  it.effect(
+    "imports historical activities as one ordered command without changing settled state",
+    () =>
+      Effect.gen(function* () {
+        const result = yield* decideOrchestrationCommand({
+          command: {
+            type: "thread.activities.import",
+            commandId: CommandId.make("cmd-activities-import"),
+            threadId: ThreadId.make("thread-1"),
+            activities: [
+              {
+                id: EventId.make("activity-import-1"),
+                tone: "tool",
+                kind: "tool.started",
+                summary: "Tool started",
+                payload: null,
+                turnId: TurnId.make("turn-import"),
+                createdAt: "2026-01-01T00:00:01.000Z",
+              },
+              {
+                id: EventId.make("activity-import-2"),
+                tone: "tool",
+                kind: "tool.completed",
+                summary: "Tool completed",
+                payload: null,
+                turnId: TurnId.make("turn-import"),
+                createdAt: "2026-01-01T00:00:02.000Z",
+              },
+            ],
+            createdAt: "2026-01-01T00:00:02.000Z",
+          },
+          readModel: makeReadModel("settled"),
+        });
+        const events = Array.isArray(result) ? result : [result];
+        expect(events.map((event) => event.type)).toEqual(["thread.activities-imported"]);
+        expect(
+          events.flatMap((event) =>
+            event.type === "thread.activities-imported"
+              ? event.payload.activities.map((activity: { readonly id: EventId }) => activity.id)
+              : [],
+          ),
+        ).toEqual([EventId.make("activity-import-1"), EventId.make("activity-import-2")]);
+      }),
+  );
 });

@@ -11,7 +11,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 
-import { decideOrchestrationCommand } from "./decider.ts";
+import { decideOrchestrationCommand, isOrchestrationCommandNoop } from "./decider.ts";
 
 const NOW = "2026-07-23T12:00:00.000Z";
 
@@ -94,6 +94,81 @@ it.layer(NodeServices.layer)("thread.message.import decider", (it) => {
           updatedAt: NOW,
         });
       }
+    }),
+  );
+
+  it.effect("emits an ordered event for every message in a historical batch", () =>
+    Effect.gen(function* () {
+      const result = yield* decideOrchestrationCommand({
+        command: {
+          type: "thread.messages.import",
+          commandId: CommandId.make("command-import-batch"),
+          threadId: ThreadId.make("thread-1"),
+          messages: [
+            {
+              messageId: MessageId.make("message-1"),
+              role: "user",
+              text: "Historical prompt",
+              turnId: TurnId.make("turn-1"),
+              createdAt: "2026-07-23T12:00:01.000Z",
+            },
+            {
+              messageId: MessageId.make("message-2"),
+              role: "assistant",
+              text: "Historical response",
+              turnId: TurnId.make("turn-1"),
+              createdAt: "2026-07-23T12:00:02.000Z",
+            },
+          ],
+          createdAt: "2026-07-23T12:00:02.000Z",
+        },
+        readModel,
+      });
+      const events = Array.isArray(result) ? result : [result];
+
+      expect(events).toHaveLength(2);
+      expect(
+        events.map((event) =>
+          event.type === "thread.message-sent"
+            ? {
+                messageId: event.payload.messageId,
+                role: event.payload.role,
+                text: event.payload.text,
+                occurredAt: event.occurredAt,
+              }
+            : event.type,
+        ),
+      ).toEqual([
+        {
+          messageId: MessageId.make("message-1"),
+          role: "user",
+          text: "Historical prompt",
+          occurredAt: "2026-07-23T12:00:01.000Z",
+        },
+        {
+          messageId: MessageId.make("message-2"),
+          role: "assistant",
+          text: "Historical response",
+          occurredAt: "2026-07-23T12:00:02.000Z",
+        },
+      ]);
+    }),
+  );
+
+  it.effect("treats an empty historical message batch as a no-op", () =>
+    Effect.gen(function* () {
+      const result = yield* decideOrchestrationCommand({
+        command: {
+          type: "thread.messages.import",
+          commandId: CommandId.make("command-import-empty-batch"),
+          threadId: ThreadId.make("thread-1"),
+          messages: [],
+          createdAt: NOW,
+        },
+        readModel,
+      });
+
+      expect(isOrchestrationCommandNoop(result)).toBe(true);
     }),
   );
 });

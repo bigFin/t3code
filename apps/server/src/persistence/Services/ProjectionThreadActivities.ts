@@ -58,6 +58,13 @@ export interface ProjectionThreadActivityRepositoryShape {
   ) => Effect.Effect<void, ProjectionRepositoryError>;
 
   /**
+   * Insert or replace a bounded batch of projected thread activity rows.
+   */
+  readonly upsertMany: (
+    rows: ReadonlyArray<ProjectionThreadActivity>,
+  ) => Effect.Effect<void, ProjectionRepositoryError>;
+
+  /**
    * List projected thread activity rows for a thread.
    *
    * Returned in ascending runtime sequence order (or creation order when

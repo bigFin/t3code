@@ -645,6 +645,10 @@ export const DESKTOP_EXTRA_RESOURCES = [
     from: "apps/desktop/prod-resources/resource-monitor",
     to: "resource-monitor",
   },
+  {
+    from: "apps/desktop/prod-resources/t3-server.tgz",
+    to: "t3-server.tgz",
+  },
 ] as const;
 
 export interface MacPasskeySigningConfiguration {
@@ -1857,7 +1861,28 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
   );
 
   // electron-builder is filtering out stageResourcesDir directory in the AppImage for production
-  yield* fs.copy(stageResourcesDir, path.join(stageAppDir, "apps/desktop/prod-resources"));
+  const stageProductionResourcesDir = path.join(stageAppDir, "apps/desktop/prod-resources");
+  yield* fs.copy(stageResourcesDir, stageProductionResourcesDir);
+
+  const remoteServerPackagePath = path.join(stageProductionResourcesDir, "t3-server.tgz");
+  const serverPackageScript = path.join(repoRoot, "apps/server/scripts/cli.ts");
+  yield* Effect.log("[desktop-artifact] Packing the matching remote T3 server...");
+  yield* runCommand(
+    ChildProcess.make(
+      process.execPath,
+      [serverPackageScript, "pack", "--out", remoteServerPackagePath, "--app-version", appVersion],
+      {
+        cwd: repoRoot,
+        stdout: options.verbose ? "inherit" : "ignore",
+        stderr: "inherit",
+        shell: false,
+      },
+    ),
+    {
+      label: `node apps/server/scripts/cli.ts pack --out ${remoteServerPackagePath} --app-version ${appVersion}`,
+      verbose: options.verbose,
+    },
+  );
 
   const configuredMacPasskeySigning =
     options.platform === "mac" && options.signed

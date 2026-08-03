@@ -198,6 +198,7 @@ export const ORCHESTRATION_COMMAND_NOOP = {
   _tag: "OrchestrationCommandNoop",
 } as const;
 export type OrchestrationCommandNoop = typeof ORCHESTRATION_COMMAND_NOOP;
+const THREAD_ACTIVITY_IMPORT_EVENT_BATCH_SIZE = 50;
 
 export function isOrchestrationCommandNoop(
   value: DecideOrchestrationCommandResult,
@@ -1151,6 +1152,42 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       };
     }
 
+    case "thread.messages.import": {
+      yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      if (command.messages.length === 0) {
+        return ORCHESTRATION_COMMAND_NOOP;
+      }
+      return yield* Effect.forEach(command.messages, (message) =>
+        Effect.map(
+          withEventBase({
+            aggregateKind: "thread",
+            aggregateId: command.threadId,
+            occurredAt: message.createdAt,
+            commandId: command.commandId,
+          }),
+          (eventBase) =>
+            ({
+              ...eventBase,
+              type: "thread.message-sent",
+              payload: {
+                threadId: command.threadId,
+                messageId: message.messageId,
+                role: message.role,
+                text: message.text,
+                turnId: message.turnId ?? null,
+                streaming: false,
+                createdAt: message.createdAt,
+                updatedAt: message.createdAt,
+              },
+            }) satisfies Omit<OrchestrationEvent, "sequence">,
+        ),
+      );
+    }
+
     case "thread.proposed-plan.upsert": {
       yield* requireThread({
         readModel,
@@ -1272,6 +1309,44 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         },
       };
       return [unsettledEvent, activityAppendedEvent];
+    }
+
+    case "thread.activities.import": {
+      yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      if (command.activities.length === 0) {
+        return ORCHESTRATION_COMMAND_NOOP;
+      }
+      const batches = Array.from(
+        { length: Math.ceil(command.activities.length / THREAD_ACTIVITY_IMPORT_EVENT_BATCH_SIZE) },
+        (_, index) =>
+          command.activities.slice(
+            index * THREAD_ACTIVITY_IMPORT_EVENT_BATCH_SIZE,
+            (index + 1) * THREAD_ACTIVITY_IMPORT_EVENT_BATCH_SIZE,
+          ),
+      );
+      return yield* Effect.forEach(batches, (activities) =>
+        Effect.map(
+          withEventBase({
+            aggregateKind: "thread",
+            aggregateId: command.threadId,
+            occurredAt: activities.at(-1)?.createdAt ?? command.createdAt,
+            commandId: command.commandId,
+          }),
+          (eventBase) =>
+            ({
+              ...eventBase,
+              type: "thread.activities-imported",
+              payload: {
+                threadId: command.threadId,
+                activities,
+              },
+            }) satisfies Omit<OrchestrationEvent, "sequence">,
+        ),
+      );
     }
 
     default: {

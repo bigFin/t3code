@@ -635,6 +635,62 @@ describe("applyThreadDetailEvent", () => {
     });
   });
 
+  describe("thread.activities-imported", () => {
+    it("merges an imported activity batch into the live thread detail", () => {
+      const existingActivity = {
+        id: EventId.make("activity-existing"),
+        tone: "tool" as const,
+        kind: "command",
+        summary: "Old summary",
+        payload: {},
+        turnId: TurnId.make("turn-1"),
+        sequence: 1,
+        createdAt: "2026-04-01T11:00:00.000Z",
+      };
+      const result = applyThreadDetailEvent(
+        { ...baseThread, activities: [existingActivity] },
+        {
+          ...baseEventFields,
+          sequence: 14,
+          occurredAt: "2026-04-01T11:02:00.000Z",
+          aggregateKind: "thread",
+          aggregateId: ThreadId.make("thread-1"),
+          type: "thread.activities-imported",
+          payload: {
+            threadId: ThreadId.make("thread-1"),
+            activities: [
+              {
+                ...existingActivity,
+                summary: "Updated summary",
+              },
+              {
+                id: EventId.make("activity-imported"),
+                tone: "tool",
+                kind: "file_change",
+                summary: "Applied patch",
+                payload: {},
+                turnId: TurnId.make("turn-1"),
+                sequence: 2,
+                createdAt: "2026-04-01T11:01:00.000Z",
+              },
+            ],
+          },
+        },
+      );
+
+      expect(result.kind).toBe("updated");
+      if (result.kind === "updated") {
+        expect(result.thread.activities).toHaveLength(2);
+        expect(result.thread.activities.map((activity) => activity.id)).toEqual([
+          "activity-existing",
+          "activity-imported",
+        ]);
+        expect(result.thread.activities[0]?.summary).toBe("Updated summary");
+        expect(result.thread.updatedAt).toBe("2026-04-01T11:02:00.000Z");
+      }
+    });
+  });
+
   describe("thread.turn-diff-completed", () => {
     it("adds a checkpoint and updates latestTurn", () => {
       const result = applyThreadDetailEvent(baseThread, {

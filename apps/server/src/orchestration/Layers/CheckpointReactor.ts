@@ -456,6 +456,15 @@ const make = Effect.gen(function* () {
       return;
     }
 
+    if (thread.session?.activeTurnId && !sameId(thread.session.activeTurnId, turnId)) {
+      yield* Effect.logInfo("checkpoint capture from placeholder skipped: another turn is active", {
+        threadId,
+        turnId,
+        activeTurnId: thread.session.activeTurnId,
+      });
+      return;
+    }
+
     const projects = yield* resolveThreadProjects(thread.projectId);
     const checkpointCwd = yield* resolveCheckpointCwd({
       threadId,
@@ -464,6 +473,27 @@ const make = Effect.gen(function* () {
       preferSessionRuntime: true,
     });
     if (!checkpointCwd) {
+      return;
+    }
+
+    const baselineCheckpointRef = checkpointRefForThreadTurn(
+      threadId,
+      Math.max(0, checkpointTurnCount - 1),
+    );
+    const baselineExists = yield* checkpointStore.hasCheckpointRef({
+      cwd: checkpointCwd,
+      checkpointRef: baselineCheckpointRef,
+    });
+    if (!baselineExists) {
+      yield* Effect.logWarning(
+        "checkpoint capture from placeholder skipped: pre-turn baseline is unavailable",
+        {
+          threadId,
+          turnId,
+          checkpointTurnCount,
+          baselineCheckpointRef,
+        },
+      );
       return;
     }
 

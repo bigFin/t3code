@@ -867,6 +867,23 @@ const ThreadMessageImportCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+const ThreadMessagesImportCommand = Schema.Struct({
+  type: Schema.Literal("thread.messages.import"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  messages: Schema.Array(
+    Schema.Struct({
+      messageId: MessageId,
+      role: Schema.Literals(["user", "assistant"]),
+      text: Schema.String,
+      turnId: Schema.optional(TurnId),
+      createdAt: IsoDateTime,
+    }),
+  ),
+  expectedProviderRuntime: Schema.optional(ExpectedProviderRuntime),
+  createdAt: IsoDateTime,
+});
+
 const ThreadProposedPlanUpsertCommand = Schema.Struct({
   type: Schema.Literal("thread.proposed-plan.upsert"),
   commandId: CommandId,
@@ -897,6 +914,14 @@ const ThreadActivityAppendCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+const ThreadActivitiesImportCommand = Schema.Struct({
+  type: Schema.Literal("thread.activities.import"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  activities: Schema.Array(OrchestrationThreadActivity),
+  createdAt: IsoDateTime,
+});
+
 const ThreadRevertCompleteCommand = Schema.Struct({
   type: Schema.Literal("thread.revert.complete"),
   commandId: CommandId,
@@ -918,9 +943,11 @@ const InternalOrchestrationCommand = Schema.Union([
   ThreadMessageAssistantDeltaCommand,
   ThreadMessageAssistantCompleteCommand,
   ThreadMessageImportCommand,
+  ThreadMessagesImportCommand,
   ThreadProposedPlanUpsertCommand,
   ThreadTurnDiffCompleteCommand,
   ThreadActivityAppendCommand,
+  ThreadActivitiesImportCommand,
   ThreadRevertCompleteCommand,
   ThreadTitleRegenerationCompleteCommand,
 ]);
@@ -959,6 +986,7 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.proposed-plan-upserted",
   "thread.turn-diff-completed",
   "thread.activity-appended",
+  "thread.activities-imported",
 ]);
 export type OrchestrationEventType = typeof OrchestrationEventType.Type;
 
@@ -1169,6 +1197,11 @@ export const ThreadActivityAppendedPayload = Schema.Struct({
   activity: OrchestrationThreadActivity,
 });
 
+export const ThreadActivitiesImportedPayload = Schema.Struct({
+  threadId: ThreadId,
+  activities: Schema.Array(OrchestrationThreadActivity),
+});
+
 export const OrchestrationEventMetadata = Schema.Struct({
   providerTurnId: Schema.optional(TrimmedNonEmptyString),
   providerItemId: Schema.optional(ProviderItemId),
@@ -1320,6 +1353,11 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("thread.activity-appended"),
     payload: ThreadActivityAppendedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.activities-imported"),
+    payload: ThreadActivitiesImportedPayload,
   }),
 ]);
 export type OrchestrationEvent = typeof OrchestrationEvent.Type;

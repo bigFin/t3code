@@ -1,6 +1,7 @@
 import { assert, describe, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NetService from "@t3tools/shared/Net";
+import * as NodeCrypto from "node:crypto";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -123,13 +124,14 @@ describe("ssh tunnel scripts", () => {
 
     assert.include(script, "T3_NODE_SCRIPT_PATH=''");
     assert.include(script, "T3_PACKAGE_SPEC='t3@latest'");
+    assert.include(script, "T3_PACKAGE_CACHE_DIR=''");
     assert.include(script, 'exec t3 "$@"');
     assert.include(script, 'exec npx --yes --package="$T3_PACKAGE_SPEC" -- t3 "$@"');
     assert.include(script, 'exec npm exec --yes --package="$T3_PACKAGE_SPEC" -- t3 "$@"');
     assert.include(script, "could not install %s because node/npm/npx are unavailable");
     assert.isBelow(
       script.indexOf('if [ -n "$T3_PACKAGE_SPEC" ] && command -v npx'),
-      script.indexOf("if command -v t3 >/dev/null"),
+      script.indexOf("command -v t3 >/dev/null"),
     );
     assert.include(script, 'prepend_path_if_dir "$HOME/.local/bin"');
     assert.isBelow(
@@ -160,6 +162,19 @@ describe("ssh tunnel scripts", () => {
     assert.notInclude(script, TEST_NODE_ENGINE_RANGE);
   });
 
+  it("does not fall back to a public or ambient CLI for an exact-build runner", () => {
+    const script = buildRemoteT3RunnerScript({
+      nodeEngineRange: TEST_NODE_ENGINE_RANGE,
+      requireExactBuild: true,
+    });
+
+    assert.include(script, "T3_PACKAGE_SPEC=''");
+    assert.include(script, "T3_REQUIRE_EXACT_BUILD=1");
+    assert.include(script, 'if [ "$T3_REQUIRE_EXACT_BUILD" != "1" ] && command -v t3');
+    assert.include(script, "requires its matching server build");
+    assert.notInclude(script, "T3_PACKAGE_SPEC='t3@latest'");
+  });
+
   it("shell-quotes package specs in the remote t3 runner", () => {
     const script = buildRemoteT3RunnerScript({
       packageSpec: "t3@nightly; touch /tmp/t3-owned",
@@ -173,13 +188,44 @@ describe("ssh tunnel scripts", () => {
 
   it("invokes an uploaded package archive through its t3 binary", () => {
     const archivePath = "/home/julius/.t3/ssh-runtime/packages/t3-test.tgz";
-    const script = buildRemoteT3RunnerScript({ packageSpec: archivePath });
+    const cacheDir = "/home/julius/.t3/ssh-runtime/npm-cache/t3-test";
+    const script = buildRemoteT3RunnerScript({
+      packageCacheDir: cacheDir,
+      packageSpec: archivePath,
+    });
 
     assert.include(script, `T3_PACKAGE_SPEC='${archivePath}'`);
+    assert.include(script, `T3_PACKAGE_CACHE_DIR='${cacheDir}'`);
+    assert.include(script, 'export npm_config_cache="$T3_PACKAGE_CACHE_DIR"');
     assert.include(script, 'exec npx --yes --package="$T3_PACKAGE_SPEC" -- t3 "$@"');
     assert.include(script, 'exec npm exec --yes --package="$T3_PACKAGE_SPEC" -- t3 "$@"');
     assert.notInclude(script, 'exec npx --yes "$T3_PACKAGE_SPEC" "$@"');
     assert.notInclude(script, 'exec npm exec --yes "$T3_PACKAGE_SPEC" -- "$@"');
+  });
+
+  it("isolates same-version package upgrades in digest-specific npm caches", () => {
+    const oldScript = buildRemoteT3RunnerScript({
+      packageCacheDir: "/home/julius/.t3/ssh-runtime/npm-cache/t3-old",
+      packageSpec: "/home/julius/.t3/ssh-runtime/packages/t3-old.tgz",
+      version: "0.0.31",
+    });
+    const newScript = buildRemoteT3RunnerScript({
+      packageCacheDir: "/home/julius/.t3/ssh-runtime/npm-cache/t3-new",
+      packageSpec: "/home/julius/.t3/ssh-runtime/packages/t3-new.tgz",
+      version: "0.0.31",
+    });
+
+    assert.notEqual(oldScript, newScript);
+    assert.include(
+      oldScript,
+      "T3_PACKAGE_CACHE_DIR='/home/julius/.t3/ssh-runtime/npm-cache/t3-old'",
+    );
+    assert.include(
+      newScript,
+      "T3_PACKAGE_CACHE_DIR='/home/julius/.t3/ssh-runtime/npm-cache/t3-new'",
+    );
+    assert.notInclude(oldScript, 'npm_config_cache="$HOME/.npm"');
+    assert.notInclude(newScript, 'npm_config_cache="$HOME/.npm"');
   });
 
   it("builds the remote t3 runner with a node script override", () => {
@@ -217,6 +263,31 @@ describe("ssh tunnel scripts", () => {
     assert.include(buildRemoteLaunchScript(), 'comparison >= 0 ? "upgrade" : "reuse"');
     assert.include(buildRemoteLaunchScript(), "RUNNER_CHANGED=0");
     assert.include(buildRemoteLaunchScript(), 'rm -f "$RUNNER_NEXT"');
+    const archivePath = "/home/julius/.t3/ssh-runtime/packages/t3-test.tgz";
+    const cacheDir = "/home/julius/.t3/ssh-runtime/npm-cache/t3-test";
+    const archiveLaunchScript = buildRemoteLaunchScript({
+      localPackageArchivePath: "/tmp/t3-server.tgz",
+      packageCacheDir: cacheDir,
+      packageSpec: archivePath,
+    });
+    assert.include(archiveLaunchScript, `PACKAGE_ARCHIVE_PATH='${archivePath}'`);
+    assert.include(archiveLaunchScript, `PACKAGE_CACHE_DIR='${cacheDir}'`);
+    assert.include(archiveLaunchScript, "prune_inactive_package_archives()");
+    assert.include(archiveLaunchScript, 'if [ "$ACTIVE_RUNTIME_RUNNER_ID" != "$RUNNER_ID" ]; then');
+    assert.include(
+      archiveLaunchScript,
+      'for PACKAGE_CANDIDATE in "$PACKAGE_ARCHIVE_DIR"/t3-*.tgz; do',
+    );
+    assert.include(archiveLaunchScript, '[ "$PACKAGE_CANDIDATE" != "$PACKAGE_ARCHIVE_PATH" ]');
+    assert.include(
+      archiveLaunchScript,
+      'for PACKAGE_CACHE_CANDIDATE in "$PACKAGE_CACHE_ROOT"/t3-*; do',
+    );
+    assert.include(archiveLaunchScript, '[ "$PACKAGE_CACHE_CANDIDATE" != "$PACKAGE_CACHE_DIR" ]');
+    assert.isBelow(
+      archiveLaunchScript.lastIndexOf("prune_inactive_package_archives"),
+      archiveLaunchScript.lastIndexOf('printf \'{"remotePort"'),
+    );
     assert.isBelow(
       buildRemoteLaunchScript().indexOf('if [ "$VERSION_DECISION" != "reuse" ]; then'),
       buildRemoteLaunchScript().indexOf(
@@ -299,10 +370,7 @@ describe("ssh tunnel scripts", () => {
     assert.include(buildRemoteLaunchScript(), "is_legacy_managed_runtime()");
     assert.include(buildRemoteLaunchScript(), "fs.realpathSync(`/proc/${pid}/fd/${fd}`)");
     assert.include(buildRemoteLaunchScript(), 'elif [ "$LEGACY_MANAGED" -eq 1 ]; then');
-    assert.include(
-      buildRemoteLaunchScript(),
-      'if [ "$DEFAULT_RUNTIME_STATE_KEY" = "$STATE_KEY" ]; then',
-    );
+    assert.include(buildRemoteLaunchScript(), 'if [ -n "$DEFAULT_RUNTIME_STATE_KEY" ]; then');
     assert.include(
       buildRemoteLaunchScript(),
       'if [ "$DEFAULT_RUNTIME_RUNNER_ID" != "$RUNNER_ID" ]; then',
@@ -312,7 +380,7 @@ describe("ssh tunnel scripts", () => {
     assert.include(buildRemoteLaunchScript(), "printf 'external\\n' >\"$MANAGED_FILE\"");
     assert.include(buildRemoteLaunchScript(), 'if [ -z "$REMOTE_PORT" ]; then');
     assert.isBelow(
-      buildRemoteLaunchScript().indexOf('if [ "$DEFAULT_RUNTIME_STATE_KEY" = "$STATE_KEY" ]; then'),
+      buildRemoteLaunchScript().indexOf('if [ -n "$DEFAULT_RUNTIME_STATE_KEY" ]; then'),
       buildRemoteLaunchScript().indexOf("printf 'external\\n' >\"$MANAGED_FILE\""),
     );
     assert.isBelow(
@@ -360,8 +428,10 @@ describe("ssh tunnel scripts", () => {
       username: "julius",
       port: 2222,
     } as const;
-    const remoteArchivePath = "/home/julius/.t3/ssh-runtime/packages/t3-test.tgz";
     const archiveBytes = Uint8Array.from([0, 255, 1, 128, 10, 13]);
+    const digest = NodeCrypto.createHash("sha256").update(archiveBytes).digest("hex");
+    const remoteArchivePath = `/home/julius/.t3/ssh-runtime/packages/t3-${digest}.tgz`;
+    const remoteCacheDir = `/home/julius/.t3/ssh-runtime/npm-cache/t3-${digest}`;
     const uploadedBytes: number[] = [];
     const runnerScripts: string[] = [];
     let packageAvailable = false;
@@ -409,6 +479,7 @@ describe("ssh tunnel scripts", () => {
         localPackageArchivePath: archivePath,
         packageSpec: "t3@stale",
         nodeEngineRange: TEST_NODE_ENGINE_RANGE,
+        requireExactBuild: true,
       } as const;
 
       const first = yield* launchOrReuseRemoteServer(target, undefined, runner);
@@ -423,6 +494,8 @@ describe("ssh tunnel scripts", () => {
       assert.lengthOf(runnerScripts, 3);
       for (const script of runnerScripts.slice(0, 2)) {
         assert.include(script, `T3_PACKAGE_SPEC='${remoteArchivePath}'`);
+        assert.include(script, `T3_PACKAGE_CACHE_DIR='${remoteCacheDir}'`);
+        assert.include(script, "T3_REQUIRE_EXACT_BUILD=1");
         assert.notInclude(script, "T3_PACKAGE_SPEC='t3@stale'");
       }
       assert.include(runnerScripts[0] ?? "", 'wait_ready "120000"');

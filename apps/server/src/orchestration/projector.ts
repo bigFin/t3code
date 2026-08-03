@@ -15,6 +15,7 @@ import {
   ProjectDeletedPayload,
   ProjectMetaUpdatedPayload,
   ThreadActivityAppendedPayload,
+  ThreadActivitiesImportedPayload,
   ThreadArchivedPayload,
   ThreadCreatedPayload,
   ThreadDeletedPayload,
@@ -491,11 +492,33 @@ export function projectEvent(
             )
           : [...thread.messages, message];
         const cappedMessages = messages.slice(-MAX_THREAD_MESSAGES);
+        const assistantTurnId =
+          message.role === "assistant" && message.turnId !== null ? message.turnId : null;
+        const checkpoints =
+          assistantTurnId === null
+            ? thread.checkpoints
+            : thread.checkpoints.map((checkpoint) =>
+                checkpoint.turnId === assistantTurnId
+                  ? {
+                      ...checkpoint,
+                      assistantMessageId: message.id,
+                    }
+                  : checkpoint,
+              );
+        const latestTurn =
+          assistantTurnId !== null && thread.latestTurn?.turnId === assistantTurnId
+            ? {
+                ...thread.latestTurn,
+                assistantMessageId: message.id,
+              }
+            : thread.latestTurn;
 
         return {
           ...nextBase,
           threads: updateThread(nextBase.threads, payload.threadId, {
             messages: cappedMessages,
+            checkpoints,
+            latestTurn,
             updatedAt: event.occurredAt,
           }),
         };
@@ -739,6 +762,39 @@ export function projectEvent(
             ...thread.activities.filter((entry) => entry.id !== payload.activity.id),
             payload.activity,
           ]
+            .toSorted(compareThreadActivities)
+            .slice(-500);
+
+          return {
+            ...nextBase,
+            threads: updateThread(nextBase.threads, payload.threadId, {
+              activities,
+              updatedAt: event.occurredAt,
+            }),
+          };
+        }),
+      );
+
+    case "thread.activities-imported":
+      return decodeForEvent(
+        ThreadActivitiesImportedPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) => {
+          const thread = nextBase.threads.find((entry) => entry.id === payload.threadId);
+          if (!thread) {
+            return nextBase;
+          }
+
+          const activitiesById = new Map(
+            thread.activities.map((activity) => [activity.id, activity]),
+          );
+          for (const activity of payload.activities) {
+            activitiesById.set(activity.id, activity);
+          }
+          const activities = [...activitiesById.values()]
             .toSorted(compareThreadActivities)
             .slice(-500);
 

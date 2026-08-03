@@ -1,9 +1,11 @@
 import {
+  CheckpointRef,
   CodexSettings,
   CommandId,
   DEFAULT_MODEL,
   DEFAULT_PROVIDER_INTERACTION_MODE,
   defaultInstanceIdForDriver,
+  EventId,
   MessageId,
   ProjectId,
   ProviderDriverKind,
@@ -14,7 +16,9 @@ import {
   ModelSelection,
   type OrchestrationSession,
   type OrchestrationThread,
+  type OrchestrationThreadActivity,
   type OrchestrationThreadShell,
+  type ToolLifecycleItemType,
 } from "@t3tools/contracts";
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
@@ -36,7 +40,11 @@ import type * as CodexSchema from "effect-codex-app-server/schema";
 
 import { ServerConfig } from "../../config.ts";
 import { OrchestrationEngineService } from "../../orchestration/Services/OrchestrationEngine.ts";
-import { ProjectionSnapshotQuery } from "../../orchestration/Services/ProjectionSnapshotQuery.ts";
+import {
+  ProjectionSnapshotQuery,
+  type ProjectionThreadCheckpointContext,
+  type ProjectionThreadTranscript,
+} from "../../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { forkParked } from "../../serverActivation.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { mergeProviderInstanceEnvironment } from "../ProviderInstanceEnvironment.ts";
@@ -62,9 +70,15 @@ const CODEX_APP_SERVER_FORCE_KILL_AFTER = "2 seconds" as const;
 const THREAD_LIST_PAGE_SIZE = 100;
 const MAX_INTERACTIVE_THREADS_PER_SCAN = 100;
 const ROLLOUT_TERMINAL_EVENT_TAIL_BYTES = 4 * 1024 * 1024;
+const ROLLOUT_ACTIVITY_TAIL_BYTES = 8 * 1024 * 1024;
 const ROLLOUT_MESSAGE_READ_CHUNK_BYTES = 1024 * 1024;
 const CODEX_CLI_LIVE_INACTIVITY_GRACE_MS = 15 * 60_000;
 const CODEX_CLI_IMPORT_VERSION = 2;
+const CODEX_CLI_IMPORT_FAILURE_BACKOFF_INITIAL_MS = 60_000;
+const CODEX_CLI_IMPORT_FAILURE_BACKOFF_MAX_MS = 60 * 60_000;
+const CODEX_CLI_MESSAGE_IMPORT_BATCH_SIZE = 100;
+const CODEX_CLI_ACTIVITY_IMPORT_BATCH_SIZE = 500;
+const CODEX_CLI_COLD_ACTIVITY_LIMIT = 500;
 export const CODEX_INTERACTIVE_SOURCE_KINDS = ["cli", "vscode"] as const;
 
 const decodeCodexSettings = Schema.decodeUnknownEffect(CodexSettings);
@@ -106,6 +120,15 @@ export interface CodexCliImportedMessage {
 }
 
 type UnknownRecord = Record<string, unknown>;
+
+interface CodexCliRolloutToolCall {
+  readonly callId: string;
+  readonly itemType: ToolLifecycleItemType;
+  readonly title: string;
+  readonly turnId: TurnId;
+  readonly command: string | undefined;
+  readonly files: ReadonlyArray<string>;
+}
 
 function isUnknownRecord(value: unknown): value is UnknownRecord {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -272,6 +295,10 @@ function rolloutMessageText(content: unknown): string {
     .join("\n");
 }
 
+function stripTrailingMemoryCitation(text: string): string {
+  return text.replace(/\n*<oai-mem-citation>[\s\S]*?<\/oai-mem-citation>\s*$/u, "").trimEnd();
+}
+
 function isSyntheticRolloutUserMessage(text: string): boolean {
   const trimmed = text.trimStart();
   return (
@@ -284,7 +311,8 @@ function isSyntheticRolloutUserMessage(text: string): boolean {
     trimmed.startsWith("<plugins_instructions>") ||
     trimmed.startsWith("<recommended_plugins>") ||
     trimmed.startsWith("<model_switch>") ||
-    trimmed.startsWith("<turn_aborted>")
+    trimmed.startsWith("<turn_aborted>") ||
+    trimmed.startsWith("<subagent_notification>")
   );
 }
 
@@ -340,29 +368,28 @@ function rolloutTimestampMillis(
   return Math.max(lastCreatedAtMillis + 1, Number.isFinite(parsed) ? parsed : fallbackMillis);
 }
 
+function parseCodexRolloutRecords(contents: string): ReadonlyArray<UnknownRecord> {
+  return contents.split(/\r?\n/).flatMap((line) => {
+    if (line.trim().length === 0) {
+      return [];
+    }
+    const value = parseUnknownJsonRecord(line);
+    return value === undefined ? [] : [value];
+  });
+}
+
 /**
  * Recover renderable messages directly from a Codex rollout when app-server's
  * history reader is empty or partial. Raw response items preserve Codex item
  * and turn ids; matching user events remain a legacy fallback. Injected AGENTS,
  * environment, and harness context is filtered from either representation.
  */
-export function collectCodexCliRolloutMessages(input: {
+function collectCodexCliRolloutMessagesFromRecords(input: {
   readonly threadId: string;
-  readonly contents: string;
+  readonly records: ReadonlyArray<UnknownRecord>;
   readonly createdAt: number;
 }): ReadonlyArray<CodexCliImportedMessage> {
-  const records = input.contents.split(/\r?\n/).flatMap((line) => {
-    if (line.trim().length === 0) {
-      return [];
-    }
-    try {
-      const value: unknown = JSON.parse(line);
-      return isUnknownRecord(value) ? [value] : [];
-    } catch {
-      return [];
-    }
-  });
-  const rawUserMessages = records.flatMap((value) => {
+  const rawUserMessages = input.records.flatMap((value) => {
     const payload = value.payload;
     if (
       value.type !== "response_item" ||
@@ -387,7 +414,7 @@ export function collectCodexCliRolloutMessages(input: {
   const fallbackMillis = unixSecondsToMillis(input.createdAt, 0);
   let lastCreatedAtMillis = fallbackMillis - 1;
 
-  for (const value of records) {
+  for (const value of input.records) {
     const payload = value.payload;
     if (!isUnknownRecord(payload)) {
       continue;
@@ -422,7 +449,7 @@ export function collectCodexCliRolloutMessages(input: {
       payload.role === "assistant"
     ) {
       role = "assistant";
-      text = rolloutMessageText(payload.content);
+      text = stripTrailingMemoryCitation(rolloutMessageText(payload.content));
     } else if (
       value.type === "response_item" &&
       payload.type === "message" &&
@@ -451,6 +478,358 @@ export function collectCodexCliRolloutMessages(input: {
   }
 
   return messages;
+}
+
+export function collectCodexCliRolloutMessages(input: {
+  readonly threadId: string;
+  readonly contents: string;
+  readonly createdAt: number;
+}): ReadonlyArray<CodexCliImportedMessage> {
+  return collectCodexCliRolloutMessagesFromRecords({
+    threadId: input.threadId,
+    records: parseCodexRolloutRecords(input.contents),
+    createdAt: input.createdAt,
+  });
+}
+
+function rolloutRecordTurnId(payload: UnknownRecord): TurnId | undefined {
+  const metadata = payload.internal_chat_message_metadata_passthrough;
+  if (isUnknownRecord(metadata) && typeof metadata.turn_id === "string") {
+    return TurnId.make(metadata.turn_id);
+  }
+  return typeof payload.turn_id === "string" ? TurnId.make(payload.turn_id) : undefined;
+}
+
+function parseToolArguments(value: unknown): UnknownRecord | undefined {
+  if (isUnknownRecord(value)) {
+    return value;
+  }
+  return typeof value === "string" ? parseUnknownJsonRecord(value) : undefined;
+}
+
+function rolloutToolItemType(name: string): ToolLifecycleItemType {
+  const normalized = name.toLowerCase();
+  if (normalized.endsWith("exec_command") || normalized.endsWith("write_stdin")) {
+    return "command_execution";
+  }
+  if (normalized.endsWith("apply_patch")) {
+    return "file_change";
+  }
+  if (normalized.endsWith("view_image")) {
+    return "image_view";
+  }
+  if (normalized.includes("web_search")) {
+    return "web_search";
+  }
+  return "dynamic_tool_call";
+}
+
+function humanizeRolloutToolName(name: string): string {
+  const leaf = name.split(/[./]/u).at(-1) ?? name;
+  const words = leaf.replace(/[_-]+/gu, " ").trim();
+  return words.length === 0 ? "Tool call" : `${words[0]!.toUpperCase()}${words.slice(1)}`;
+}
+
+function rolloutToolTitle(name: string, itemType: ToolLifecycleItemType): string {
+  if (name.toLowerCase().endsWith("write_stdin")) {
+    return "Continued command";
+  }
+  switch (itemType) {
+    case "command_execution":
+      return "Ran command";
+    case "file_change":
+      return "Applied patch";
+    case "image_view":
+      return "Viewed image";
+    case "web_search":
+      return "Web search";
+    default:
+      return humanizeRolloutToolName(name);
+  }
+}
+
+function rolloutToolCommand(name: string, payload: UnknownRecord): string | undefined {
+  if (!name.toLowerCase().endsWith("exec_command")) {
+    return undefined;
+  }
+  const args = parseToolArguments(payload.arguments);
+  return typeof args?.cmd === "string" && args.cmd.trim().length > 0 ? args.cmd : undefined;
+}
+
+function collectRolloutPatchFiles(payload: UnknownRecord): ReadonlyArray<string> {
+  const candidates = [
+    typeof payload.input === "string" ? payload.input : "",
+    typeof payload.output === "string" ? payload.output : "",
+  ];
+  const files: string[] = [];
+  const seen = new Set<string>();
+  const append = (value: string | undefined) => {
+    const normalized = value?.trim();
+    if (!normalized || seen.has(normalized) || files.length >= 12) {
+      return;
+    }
+    seen.add(normalized);
+    files.push(normalized);
+  };
+  for (const candidate of candidates) {
+    for (const line of candidate.split(/\r?\n/u)) {
+      append(
+        /^\*\*\* (?:Add|Delete|Update) File:\s*(.+)$/u.exec(line)?.[1] ??
+          /^\*\*\* Move to:\s*(.+)$/u.exec(line)?.[1] ??
+          /^[MAD]\s+(.+)$/u.exec(line)?.[1],
+      );
+      if (files.length >= 12) {
+        return files;
+      }
+    }
+  }
+  return files;
+}
+
+function summarizeRolloutToolOutput(value: unknown): string | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const lines = value.split(/\r?\n/u);
+  const outputMarker = lines.findLastIndex((line) => line.trim() === "Output:");
+  const candidates = outputMarker >= 0 ? lines.slice(outputMarker + 1) : lines;
+  const first = candidates.map((line) => line.replace(/\s+/gu, " ").trim()).find(Boolean);
+  if (!first) {
+    return undefined;
+  }
+  return first.length <= 180 ? first : `${first.slice(0, 177).trimEnd()}...`;
+}
+
+function rolloutToolCompletionStatus(output: unknown): "completed" | "failed" {
+  if (typeof output !== "string") {
+    return "completed";
+  }
+  const exitCode = /(?:Process exited with code|Exit code:)\s*(-?\d+)/iu.exec(output)?.[1];
+  return exitCode !== undefined && Number.parseInt(exitCode, 10) !== 0 ? "failed" : "completed";
+}
+
+function rolloutToolActivityId(
+  threadId: string,
+  callId: string,
+  phase: "started" | "completed",
+): EventId {
+  return EventId.make(`codex-cli:${threadId}:tool:${callId}:${phase}`);
+}
+
+function rolloutToolActivityData(call: CodexCliRolloutToolCall, output: unknown): UnknownRecord {
+  const outputSummary = summarizeRolloutToolOutput(output);
+  return {
+    toolCallId: call.callId,
+    kind: call.itemType === "command_execution" ? "execute" : call.itemType,
+    item: {
+      name: call.title,
+      ...(call.command !== undefined ? { command: call.command } : {}),
+    },
+    ...(call.command !== undefined ? { command: call.command } : {}),
+    ...(call.files.length > 0
+      ? {
+          files: call.files.map((path) => ({ path })),
+          locations: call.files.map((path) => ({ path })),
+        }
+      : {}),
+    ...(outputSummary !== undefined ? { rawOutput: { content: outputSummary } } : {}),
+  };
+}
+
+function rolloutToolActivity(input: {
+  readonly threadId: string;
+  readonly call: CodexCliRolloutToolCall;
+  readonly phase: "started" | "completed";
+  readonly timestamp: unknown;
+  readonly fallbackMillis: number;
+  readonly output?: unknown;
+}): OrchestrationThreadActivity {
+  const parsedTimestamp =
+    typeof input.timestamp === "string" ? Date.parse(input.timestamp) : Number.NaN;
+  const createdAt = DateTime.formatIso(
+    DateTime.makeUnsafe(Number.isFinite(parsedTimestamp) ? parsedTimestamp : input.fallbackMillis),
+  );
+  const outputSummary = summarizeRolloutToolOutput(input.output);
+  const status =
+    input.phase === "started" ? "inProgress" : rolloutToolCompletionStatus(input.output);
+  return {
+    id: rolloutToolActivityId(input.threadId, input.call.callId, input.phase),
+    tone: status === "failed" ? "error" : "tool",
+    kind: input.phase === "started" ? "tool.started" : "tool.completed",
+    summary: input.phase === "started" ? `${input.call.title} started` : input.call.title,
+    payload: {
+      itemType: input.call.itemType,
+      title: input.call.title,
+      status,
+      ...(outputSummary !== undefined ? { detail: outputSummary } : {}),
+      data: rolloutToolActivityData(input.call, input.output),
+    },
+    turnId: input.call.turnId,
+    createdAt,
+  };
+}
+
+function collectCodexCliRolloutActivitiesFromRecords(input: {
+  readonly threadId: string;
+  readonly records: ReadonlyArray<UnknownRecord>;
+  readonly createdAt: number;
+  readonly turnId: string | null;
+  readonly toolCalls: ReadonlyMap<string, CodexCliRolloutToolCall>;
+}): {
+  readonly activities: ReadonlyArray<OrchestrationThreadActivity>;
+  readonly toolCalls: ReadonlyMap<string, CodexCliRolloutToolCall>;
+} {
+  if (input.turnId === null) {
+    return {
+      activities: [],
+      toolCalls: new Map(),
+    };
+  }
+  const expectedTurnId = TurnId.make(input.turnId);
+  const fallbackMillis = unixSecondsToMillis(input.createdAt, 0);
+  const toolCalls = new Map(input.toolCalls);
+  const activities: OrchestrationThreadActivity[] = [];
+
+  for (const value of input.records) {
+    if (value.type !== "response_item" || !isUnknownRecord(value.payload)) {
+      continue;
+    }
+    const payload = value.payload;
+    const turnId = rolloutRecordTurnId(payload);
+    if (turnId !== expectedTurnId) {
+      continue;
+    }
+    const payloadType = typeof payload.type === "string" ? payload.type : "";
+    const callId =
+      typeof payload.call_id === "string"
+        ? payload.call_id
+        : typeof payload.id === "string"
+          ? payload.id
+          : undefined;
+    if (callId === undefined) {
+      continue;
+    }
+
+    if (
+      payloadType === "function_call" ||
+      payloadType === "custom_tool_call" ||
+      payloadType === "tool_search_call"
+    ) {
+      const name =
+        typeof payload.name === "string"
+          ? payload.name
+          : payloadType === "tool_search_call"
+            ? "tool_search"
+            : "tool";
+      const itemType = rolloutToolItemType(name);
+      const call = {
+        callId,
+        itemType,
+        title: rolloutToolTitle(name, itemType),
+        turnId,
+        command: rolloutToolCommand(name, payload),
+        files: itemType === "file_change" ? collectRolloutPatchFiles(payload) : [],
+      } satisfies CodexCliRolloutToolCall;
+      toolCalls.set(callId, call);
+      activities.push(
+        rolloutToolActivity({
+          threadId: input.threadId,
+          call,
+          phase: "started",
+          timestamp: value.timestamp,
+          fallbackMillis,
+        }),
+      );
+      continue;
+    }
+
+    if (
+      payloadType === "function_call_output" ||
+      payloadType === "custom_tool_call_output" ||
+      payloadType === "tool_search_output"
+    ) {
+      const call =
+        toolCalls.get(callId) ??
+        ({
+          callId,
+          itemType: "dynamic_tool_call",
+          title: "Tool call",
+          turnId,
+          command: undefined,
+          files: [],
+        } satisfies CodexCliRolloutToolCall);
+      const files =
+        call.itemType === "file_change"
+          ? [...new Set([...call.files, ...collectRolloutPatchFiles(payload)])]
+          : call.files;
+      activities.push(
+        rolloutToolActivity({
+          threadId: input.threadId,
+          call: {
+            ...call,
+            files,
+          },
+          phase: "completed",
+          timestamp: value.timestamp,
+          fallbackMillis,
+          output: payload.output,
+        }),
+      );
+      toolCalls.delete(callId);
+      continue;
+    }
+
+    if (payloadType === "web_search_call") {
+      const call = {
+        callId,
+        itemType: "web_search",
+        title: "Web search",
+        turnId,
+        command: undefined,
+        files: [],
+      } satisfies CodexCliRolloutToolCall;
+      activities.push(
+        rolloutToolActivity({
+          threadId: input.threadId,
+          call,
+          phase: payload.status === "completed" ? "completed" : "started",
+          timestamp: value.timestamp,
+          fallbackMillis,
+        }),
+      );
+    }
+  }
+
+  return {
+    activities,
+    toolCalls,
+  };
+}
+
+export function collectCodexCliRolloutActivities(input: {
+  readonly threadId: string;
+  readonly contents: string;
+  readonly createdAt: number;
+  readonly turnId: string;
+}): ReadonlyArray<OrchestrationThreadActivity> {
+  return collectCodexCliRolloutActivitiesFromRecords({
+    threadId: input.threadId,
+    records: parseCodexRolloutRecords(input.contents),
+    createdAt: input.createdAt,
+    turnId: input.turnId,
+    toolCalls: new Map(),
+  }).activities;
+}
+
+function mergeCodexCliRolloutActivities(
+  existing: ReadonlyArray<OrchestrationThreadActivity>,
+  appended: ReadonlyArray<OrchestrationThreadActivity>,
+): ReadonlyArray<OrchestrationThreadActivity> {
+  const merged = new Map(existing.map((activity) => [activity.id, activity]));
+  for (const activity of appended) {
+    merged.set(activity.id, activity);
+  }
+  return [...merged.values()];
 }
 
 function isRolloutFallbackMessageId(messageId: MessageId): boolean {
@@ -567,32 +946,89 @@ export function isCodexRolloutPathWithinSessionsRoot(
   return relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
 }
 
-export function codexCliMessageImportCommand(input: {
+export function codexCliMessagesImportCommand(input: {
   readonly threadId: ThreadId;
-  readonly message: CodexCliImportedMessage;
+  readonly messages: ReadonlyArray<CodexCliImportedMessage>;
   readonly expectedProviderRuntime?: CodexCliProviderRuntimeExpectation | null;
 }) {
+  const createdAt = input.messages.at(-1)?.createdAt;
+  if (createdAt === undefined) {
+    throw new Error("Cannot create an empty Codex CLI message import command.");
+  }
   return {
-    type: "thread.message.import" as const,
+    type: "thread.messages.import" as const,
     commandId: stableCommandId(
-      "message",
+      "messages",
       input.threadId,
-      input.message.messageId,
-      stableTextHash(`${input.message.role}\0${input.message.text}\0${input.message.createdAt}`),
+      stableTextHash(
+        JSON.stringify(
+          input.messages.map((message) => [
+            message.messageId,
+            message.role,
+            message.text,
+            message.turnId,
+            message.createdAt,
+          ]),
+        ),
+      ),
       ...providerRuntimeExpectationCommandParts(input.expectedProviderRuntime ?? null),
     ),
     threadId: input.threadId,
-    messageId: input.message.messageId,
-    role: input.message.role,
-    text: input.message.text,
-    turnId: input.message.turnId,
+    messages: input.messages,
     expectedProviderRuntime: input.expectedProviderRuntime,
-    createdAt: input.message.createdAt,
+    createdAt,
   };
 }
 
 function normalizedMessageText(text: string): string {
   return text.replace(/\r\n?/gu, "\n").trim();
+}
+
+function nativeCodexMessageId(messageId: MessageId): string | undefined {
+  return /(?:^|:)(msg_[^:]+)$/u.exec(messageId)?.[1];
+}
+
+function codexCliTranscriptMessagesMatch(
+  projected: OrchestrationThread["messages"][number],
+  imported: CodexCliImportedMessage,
+): boolean {
+  return (
+    projected.role === imported.role &&
+    normalizedMessageText(projected.text) === normalizedMessageText(imported.text) &&
+    (projected.turnId ?? null) === imported.turnId
+  );
+}
+
+function indexCodexCliProjectedMessagesById(
+  projectedThread: Pick<OrchestrationThread, "messages">,
+): ReadonlyMap<MessageId, ReadonlyArray<OrchestrationThread["messages"][number]>> {
+  const messagesById = new Map<MessageId, Array<OrchestrationThread["messages"][number]>>();
+  for (const message of projectedThread.messages) {
+    const matches = messagesById.get(message.id);
+    if (matches === undefined) {
+      messagesById.set(message.id, [message]);
+    } else {
+      matches.push(message);
+    }
+  }
+  return messagesById;
+}
+
+export function selectUnsynchronizedCodexCliMessages(
+  projectedThread: Pick<OrchestrationThread, "messages"> | undefined,
+  importedMessages: ReadonlyArray<CodexCliImportedMessage>,
+): ReadonlyArray<CodexCliImportedMessage> {
+  if (projectedThread === undefined) {
+    return importedMessages;
+  }
+  const projectedMessagesById = indexCodexCliProjectedMessagesById(projectedThread);
+  return importedMessages.filter((imported) => {
+    const projectedMatches = projectedMessagesById.get(imported.messageId);
+    return (
+      projectedMatches === undefined ||
+      !projectedMatches.some((projected) => codexCliTranscriptMessagesMatch(projected, imported))
+    );
+  });
 }
 
 const T3_PENDING_MESSAGE_MATCH_WINDOW_MS = 30_000;
@@ -611,7 +1047,41 @@ export function reconcileCodexCliImportedMessages(
   if (projectedThread === undefined) {
     return messages;
   }
-  const unmatchedProjectedMessages = [...projectedThread.messages];
+  const projectedMessages = projectedThread.messages.map((message) => ({
+    message,
+    normalizedText: normalizedMessageText(message.text),
+    createdAtMillis: Date.parse(message.createdAt),
+  }));
+  const consumedProjectedMessages = new Set<number>();
+  const exactIndexes = new Map<MessageId, Array<number>>();
+  const nativeMessageIndexes = new Map<string, Array<number>>();
+  const sameTurnIndexes = new Map<string, Array<number>>();
+  const pendingIndexes = new Map<string, Array<number>>();
+  const addIndex = (indexMap: Map<string, Array<number>>, key: string, index: number) => {
+    const indexes = indexMap.get(key);
+    if (indexes === undefined) {
+      indexMap.set(key, [index]);
+    } else {
+      indexes.push(index);
+    }
+  };
+  const matchKey = (role: string, turnId: TurnId | null, normalizedText: string) =>
+    JSON.stringify([role, turnId, normalizedText]);
+  for (const [index, projected] of projectedMessages.entries()) {
+    addIndex(exactIndexes, projected.message.id, index);
+    const nativeMessageId = nativeCodexMessageId(projected.message.id);
+    if (nativeMessageId !== undefined) {
+      addIndex(nativeMessageIndexes, nativeMessageId, index);
+    }
+    addIndex(
+      sameTurnIndexes,
+      matchKey(projected.message.role, projected.message.turnId, projected.normalizedText),
+      index,
+    );
+    if (projected.message.role === "user" && projected.message.turnId === null) {
+      addIndex(pendingIndexes, projected.normalizedText, index);
+    }
+  }
   const latestTurn = projectedThread.latestTurn;
   const requestedAtMillis =
     latestTurn === undefined || latestTurn === null
@@ -619,22 +1089,26 @@ export function reconcileCodexCliImportedMessages(
       : Date.parse(latestTurn.requestedAt);
 
   return messages.map((message) => {
-    const exactIndex = unmatchedProjectedMessages.findIndex(
-      (candidate) => candidate.id === message.messageId,
-    );
+    const exactIndex =
+      exactIndexes.get(message.messageId)?.find((index) => !consumedProjectedMessages.has(index)) ??
+      -1;
+    const nativeMessageId = nativeCodexMessageId(message.messageId);
+    const nativeMessageIndex =
+      exactIndex >= 0 || nativeMessageId === undefined
+        ? -1
+        : (nativeMessageIndexes
+            .get(nativeMessageId)
+            ?.find((index) => !consumedProjectedMessages.has(index)) ?? -1);
+    const normalizedText = normalizedMessageText(message.text);
+    const messageCreatedAtMillis = Date.parse(message.createdAt);
     const sameTurnIndex =
       exactIndex >= 0
         ? exactIndex
-        : unmatchedProjectedMessages.findIndex(
-            (candidate) =>
-              candidate.role === message.role &&
-              candidate.turnId === message.turnId &&
-              normalizedMessageText(candidate.text) === normalizedMessageText(message.text) &&
-              Number.isFinite(Date.parse(candidate.createdAt)) &&
-              Number.isFinite(Date.parse(message.createdAt)) &&
-              Math.abs(Date.parse(candidate.createdAt) - Date.parse(message.createdAt)) <=
-                T3_PENDING_MESSAGE_MATCH_WINDOW_MS,
-          );
+        : nativeMessageIndex >= 0
+          ? nativeMessageIndex
+          : (sameTurnIndexes
+              .get(matchKey(message.role, message.turnId, normalizedText))
+              ?.find((index) => !consumedProjectedMessages.has(index)) ?? -1);
     const pendingIndex =
       sameTurnIndex >= 0 ||
       message.role !== "user" ||
@@ -643,36 +1117,35 @@ export function reconcileCodexCliImportedMessages(
       message.turnId !== latestTurn.turnId ||
       !Number.isFinite(requestedAtMillis)
         ? -1
-        : Math.abs(Date.parse(message.createdAt) - requestedAtMillis) >
-            T3_PENDING_MESSAGE_MATCH_WINDOW_MS
+        : Math.abs(messageCreatedAtMillis - requestedAtMillis) > T3_PENDING_MESSAGE_MATCH_WINDOW_MS
           ? -1
-          : (unmatchedProjectedMessages
-              .map((candidate, index) => ({
-                candidate,
-                index,
-                distance: Math.abs(Date.parse(candidate.createdAt) - requestedAtMillis),
-              }))
-              .filter(
-                ({ candidate, distance }) =>
-                  candidate.role === "user" &&
-                  candidate.turnId === null &&
-                  normalizedMessageText(candidate.text) === normalizedMessageText(message.text) &&
-                  Number.isFinite(distance) &&
-                  distance <= T3_PENDING_MESSAGE_MATCH_WINDOW_MS,
-              )
-              .sort((left, right) => left.distance - right.distance)[0]?.index ?? -1);
+          : (pendingIndexes.get(normalizedText) ?? []).reduce(
+              (closest, index) => {
+                if (consumedProjectedMessages.has(index)) {
+                  return closest;
+                }
+                const distance = Math.abs(
+                  projectedMessages[index]!.createdAtMillis - requestedAtMillis,
+                );
+                return Number.isFinite(distance) &&
+                  distance <= T3_PENDING_MESSAGE_MATCH_WINDOW_MS &&
+                  (closest.index < 0 || distance < closest.distance)
+                  ? { index, distance }
+                  : closest;
+              },
+              { index: -1, distance: Number.POSITIVE_INFINITY },
+            ).index;
     const matchIndex = sameTurnIndex >= 0 ? sameTurnIndex : pendingIndex;
     if (matchIndex < 0) {
       return message;
     }
-    const [match] = unmatchedProjectedMessages.splice(matchIndex, 1);
-    return match === undefined
-      ? message
-      : {
-          ...message,
-          messageId: match.id,
-          createdAt: match.createdAt,
-        };
+    consumedProjectedMessages.add(matchIndex);
+    const match = projectedMessages[matchIndex]!.message;
+    return {
+      ...message,
+      messageId: match.id,
+      createdAt: match.createdAt,
+    };
   });
 }
 
@@ -746,6 +1219,19 @@ function readCodexCliImportVersion(runtimePayload: unknown): number | undefined 
     Number.isFinite(runtimePayload.codexCliImportVersion)
     ? runtimePayload.codexCliImportVersion
     : undefined;
+}
+
+function isCodexCliImportedBinding(
+  binding: ProviderRuntimeBinding | undefined,
+): binding is ProviderRuntimeBinding {
+  const runtimePayload = binding?.runtimePayload;
+  return (
+    runtimePayload !== null &&
+    typeof runtimePayload === "object" &&
+    !Array.isArray(runtimePayload) &&
+    "importedFrom" in runtimePayload &&
+    runtimePayload.importedFrom === "codex-cli"
+  );
 }
 
 function hasDetachedSessionPersistence(runtimePayload: unknown): boolean {
@@ -978,6 +1464,9 @@ interface CodexCliRolloutMessageCursor {
   readonly modifiedAtMillis: number | undefined;
   readonly pendingLine: string;
   readonly messages: ReadonlyArray<CodexCliImportedMessage>;
+  readonly activityTurnId: string | null;
+  readonly activities: ReadonlyArray<OrchestrationThreadActivity>;
+  readonly toolCalls: ReadonlyMap<string, CodexCliRolloutToolCall>;
 }
 
 interface CodexCliRolloutMessageRead {
@@ -985,25 +1474,30 @@ interface CodexCliRolloutMessageRead {
   readonly complete: boolean;
 }
 
+interface CodexCliRolloutMessageCursorRead extends CodexCliRolloutMessageRead {
+  readonly changed: boolean;
+  readonly activities: ReadonlyArray<OrchestrationThreadActivity>;
+  readonly activityChanged: boolean;
+}
+
 export function resolveCodexCliTranscriptMessages(input: {
   readonly thread: CodexReadThread;
   readonly rollout: CodexCliRolloutMessageRead | undefined;
 }): CodexCliRolloutMessageRead {
   const appServerMessages = collectCodexCliImportedMessages(input.thread);
-  if (isCodexCliThreadTranscriptComplete(input.thread)) {
-    return {
-      messages: appServerMessages,
-      complete: true,
-    };
-  }
   if (input.rollout === undefined) {
     return {
       messages: appServerMessages,
-      complete: false,
+      complete: isCodexCliThreadTranscriptComplete(input.thread),
     };
   }
+  const appServerTurnIds = new Set(input.thread.turns.map((turn) => TurnId.make(turn.id)));
+  const rolloutMessages =
+    appServerTurnIds.size === 0
+      ? input.rollout.messages
+      : input.rollout.messages.filter((message) => appServerTurnIds.has(message.turnId));
   return {
-    messages: mergeCodexCliRolloutMessages(appServerMessages, input.rollout.messages),
+    messages: mergeCodexCliRolloutMessages(appServerMessages, rolloutMessages),
     complete: input.rollout.complete,
   };
 }
@@ -1031,13 +1525,62 @@ interface CodexCliThreadImportCandidate {
   readonly refreshesDetachedCliTranscript: boolean;
 }
 
+export interface CodexCliRecoveredCheckpointRequest {
+  readonly turnId: TurnId;
+  readonly assistantMessageId: MessageId;
+  readonly completedAt: string;
+  readonly checkpointTurnCount: number;
+  readonly checkpointRef: CheckpointRef;
+}
+
+export function resolveCodexCliRecoveredCheckpointRequest(input: {
+  readonly threadId: ThreadId;
+  readonly activeTurnId: string | null;
+  readonly resolutionStatus: SettledCodexCliStaleSessionResolution["status"];
+  readonly messages: ReadonlyArray<CodexCliImportedMessage>;
+  readonly checkpointContext: ProjectionThreadCheckpointContext | undefined;
+  readonly completedAt: string;
+}): CodexCliRecoveredCheckpointRequest | undefined {
+  if (
+    input.activeTurnId === null ||
+    input.resolutionStatus !== "ready" ||
+    input.checkpointContext === undefined
+  ) {
+    return undefined;
+  }
+  const turnId = TurnId.make(input.activeTurnId);
+  if (input.checkpointContext.checkpoints.some((checkpoint) => checkpoint.turnId === turnId)) {
+    return undefined;
+  }
+  const assistantMessage = input.messages
+    .toReversed()
+    .find((message) => message.role === "assistant" && message.turnId === turnId);
+  if (assistantMessage === undefined) {
+    return undefined;
+  }
+  const checkpointTurnCount =
+    input.checkpointContext.checkpoints.reduce(
+      (maxTurnCount, checkpoint) => Math.max(maxTurnCount, checkpoint.checkpointTurnCount),
+      0,
+    ) + 1;
+  return {
+    turnId,
+    assistantMessageId: assistantMessage.messageId,
+    completedAt: input.completedAt,
+    checkpointTurnCount,
+    checkpointRef: CheckpointRef.make(
+      `codex-cli-recovery:${input.threadId}:${turnId}:${checkpointTurnCount}`,
+    ),
+  };
+}
+
 interface PreparedCodexCliThreadImport {
   readonly listedThread: CodexListedThread;
   readonly threadId: ThreadId;
   readonly existingBinding: ProviderRuntimeBindingWithMetadata | undefined;
   readonly existingThread: Option.Option<OrchestrationThreadShell>;
   readonly projectedThread: OrchestrationThreadShell | undefined;
-  readonly projectedThreadDetail: OrchestrationThread | undefined;
+  readonly projectedThreadTranscript: ProjectionThreadTranscript | undefined;
   readonly staleSession: NonNullable<OrchestrationThreadShell["session"]> | undefined;
   readonly detachedMirrorSession: NonNullable<OrchestrationThreadShell["session"]> | undefined;
   readonly observesDetachedCliSession: boolean;
@@ -1052,6 +1595,13 @@ interface CodexCliImportScanMetrics {
   threadReadCount: number;
   rolloutTailReadCount: number;
   skippedCurrentCount: number;
+  failureBackoffCount: number;
+}
+
+export interface CodexCliImportFailureBackoff {
+  readonly providerUpdatedAt: number;
+  readonly failureCount: number;
+  readonly retryAfterMillis: number;
 }
 
 export interface CodexCliProviderRuntimeExpectation {
@@ -1259,11 +1809,24 @@ function parseCodexRolloutTaskTransitions(contents: string): {
   };
   let terminalTransitionObserved = false;
   for (const line of lines) {
-    if (!line?.includes('"type":"event_msg"')) {
+    if (!line?.includes('"type":"event_msg"') && !line?.includes('"type":"response_item"')) {
       continue;
     }
     const value = parseUnknownJsonRecord(line);
-    if (value === undefined || value.type !== "event_msg" || !isUnknownRecord(value.payload)) {
+    if (value === undefined || !isUnknownRecord(value.payload)) {
+      continue;
+    }
+    if (value.type === "response_item") {
+      const responseTurnId = rolloutRecordTurnId(value.payload);
+      if (responseTurnId !== undefined && responseTurnId !== lifecycle.turnId) {
+        lifecycle = {
+          state: null,
+          turnId: responseTurnId,
+        };
+      }
+      continue;
+    }
+    if (value.type !== "event_msg") {
       continue;
     }
     switch (value.payload.type) {
@@ -1332,12 +1895,20 @@ export function advanceCodexRolloutTaskCursor(
   const combined = `${cursor?.pendingLine ?? ""}${contents}`;
   const { completeContents, pendingLine } = splitCodexRolloutContents(combined);
   const observed = parseCodexRolloutTaskTransitions(completeContents);
+  const observedTurnChanged =
+    observed.lifecycle.turnId !== null &&
+    cursor?.lifecycle.turnId !== null &&
+    cursor?.lifecycle.turnId !== undefined &&
+    observed.lifecycle.turnId !== cursor.lifecycle.turnId;
   return {
     offset,
     pendingLine,
     lifecycle:
       observed.lifecycle.state === null
-        ? (cursor?.lifecycle ?? observed.lifecycle)
+        ? {
+            state: observedTurnChanged ? null : (cursor?.lifecycle.state ?? null),
+            turnId: observed.lifecycle.turnId ?? cursor?.lifecycle.turnId ?? null,
+          }
         : observed.lifecycle,
     terminalTransitionObserved: observed.terminalTransitionObserved,
   };
@@ -1350,6 +1921,7 @@ export function advanceCodexRolloutMessageCursor(input: {
   readonly modifiedAtMillis: number | undefined;
   readonly threadId: string;
   readonly createdAt: number;
+  readonly activityTurnId?: string | null;
   readonly isFinalChunk?: boolean;
 }): CodexCliRolloutMessageCursor {
   const combined = `${input.cursor?.pendingLine ?? ""}${input.contents}`;
@@ -1357,19 +1929,41 @@ export function advanceCodexRolloutMessageCursor(input: {
     combined,
     input.isFinalChunk ?? true,
   );
+  const records = completeContents.length === 0 ? [] : parseCodexRolloutRecords(completeContents);
   const appendedMessages =
-    completeContents.length === 0
+    records.length === 0
       ? []
-      : collectCodexCliRolloutMessages({
+      : collectCodexCliRolloutMessagesFromRecords({
           threadId: input.threadId,
-          contents: completeContents,
+          records,
           createdAt: input.createdAt,
+        });
+  const activityTurnId = input.activityTurnId ?? null;
+  const parsedActivities =
+    records.length === 0
+      ? {
+          activities: [] as ReadonlyArray<OrchestrationThreadActivity>,
+          toolCalls:
+            input.cursor?.activityTurnId === activityTurnId
+              ? input.cursor.toolCalls
+              : new Map<string, CodexCliRolloutToolCall>(),
+        }
+      : collectCodexCliRolloutActivitiesFromRecords({
+          threadId: input.threadId,
+          records,
+          createdAt: input.createdAt,
+          turnId: activityTurnId,
+          toolCalls:
+            input.cursor?.activityTurnId === activityTurnId ? input.cursor.toolCalls : new Map(),
         });
   return {
     offset: input.offset,
     modifiedAtMillis: input.modifiedAtMillis,
     pendingLine,
     messages: mergeCodexCliRolloutMessages(input.cursor?.messages ?? [], appendedMessages),
+    activityTurnId,
+    activities: parsedActivities.activities,
+    toolCalls: parsedActivities.toolCalls,
   };
 }
 
@@ -1521,6 +2115,39 @@ function codexCliSessionMatchesObservedState(
   );
 }
 
+export function resolveObservedCodexCliSessionSyncAction(input: {
+  readonly currentThread:
+    | Pick<OrchestrationThreadShell, "latestUserMessageAt" | "session" | "updatedAt">
+    | undefined;
+  readonly preparedThread:
+    | Pick<OrchestrationThreadShell, "latestUserMessageAt" | "session" | "updatedAt">
+    | undefined;
+  readonly observedState: {
+    readonly status: "ready" | "running" | "interrupted" | "error";
+    readonly activeTurnId: TurnId | null;
+    readonly lastError: string | null;
+  };
+}): "apply" | "skip" | "synchronized" {
+  if (input.currentThread === undefined) {
+    return "skip";
+  }
+  if (codexCliSessionMatchesObservedState(input.currentThread.session, input.observedState)) {
+    return "synchronized";
+  }
+  return shouldApplyObservedCodexCliSessionState({
+    currentThread: input.currentThread,
+    preparedThread: input.preparedThread,
+  })
+    ? "apply"
+    : "skip";
+}
+
+export function shouldSynchronizeObservedCodexCliSessionBeforeHydration(state: {
+  readonly status: "ready" | "running" | "interrupted" | "error";
+}): boolean {
+  return state.status === "running";
+}
+
 export function resolveCodexCliExpectedUserMessageIds(
   projectedThread: Pick<OrchestrationThread, "messages"> | undefined,
   importedMessages: ReadonlyArray<CodexCliImportedMessage>,
@@ -1531,8 +2158,14 @@ export function resolveCodexCliExpectedUserMessageIds(
       role: message.role,
       createdAt: message.createdAt,
     })) ?? [];
+  const messageIndexes = new Map<MessageId, number>();
+  for (const [index, message] of messages.entries()) {
+    if (!messageIndexes.has(message.id)) {
+      messageIndexes.set(message.id, index);
+    }
+  }
   for (const imported of importedMessages) {
-    const existingIndex = messages.findIndex((message) => message.id === imported.messageId);
+    const existingIndex = messageIndexes.get(imported.messageId) ?? -1;
     const nextMessage = {
       id: imported.messageId,
       role: imported.role,
@@ -1545,6 +2178,7 @@ export function resolveCodexCliExpectedUserMessageIds(
       };
     } else {
       messages.push(nextMessage);
+      messageIndexes.set(imported.messageId, messages.length - 1);
     }
   }
   return messages
@@ -1564,14 +2198,11 @@ export function hasSynchronizedCodexCliTranscript(
   if (projectedThread === undefined) {
     return importedMessages.length === 0;
   }
+  const projectedMessagesById = indexCodexCliProjectedMessagesById(projectedThread);
   return importedMessages.every((imported) =>
-    projectedThread.messages.some(
-      (message) =>
-        message.id === imported.messageId &&
-        message.role === imported.role &&
-        normalizedMessageText(message.text) === normalizedMessageText(imported.text) &&
-        (message.turnId ?? null) === imported.turnId,
-    ),
+    projectedMessagesById
+      .get(imported.messageId)
+      ?.some((projected) => codexCliTranscriptMessagesMatch(projected, imported)),
   );
 }
 
@@ -1595,12 +2226,6 @@ function orchestrationSessionsEqual(
   );
 }
 
-function messageIdsEqual(left: ReadonlyArray<MessageId>, right: ReadonlyArray<MessageId>): boolean {
-  return (
-    left.length === right.length && left.every((messageId, index) => messageId === right[index])
-  );
-}
-
 export function pruneCodexCliImportCache<K, V>(
   cache: Map<K, V>,
   retainedKeys: ReadonlySet<K>,
@@ -1612,16 +2237,49 @@ export function pruneCodexCliImportCache<K, V>(
   }
 }
 
+export function shouldBackoffCodexCliImportFailure(input: {
+  readonly failure: CodexCliImportFailureBackoff | undefined;
+  readonly providerUpdatedAt: number;
+  readonly nowMillis: number;
+}): boolean {
+  return (
+    input.failure !== undefined &&
+    input.failure.providerUpdatedAt === input.providerUpdatedAt &&
+    input.nowMillis < input.failure.retryAfterMillis
+  );
+}
+
+export function advanceCodexCliImportFailureBackoff(input: {
+  readonly previous: CodexCliImportFailureBackoff | undefined;
+  readonly providerUpdatedAt: number;
+  readonly failedAtMillis: number;
+}): CodexCliImportFailureBackoff {
+  const failureCount =
+    input.previous?.providerUpdatedAt === input.providerUpdatedAt
+      ? input.previous.failureCount + 1
+      : 1;
+  const delayMillis = Math.min(
+    CODEX_CLI_IMPORT_FAILURE_BACKOFF_INITIAL_MS * 2 ** Math.min(failureCount - 1, 16),
+    CODEX_CLI_IMPORT_FAILURE_BACKOFF_MAX_MS,
+  );
+  return {
+    providerUpdatedAt: input.providerUpdatedAt,
+    failureCount,
+    retryAfterMillis: input.failedAtMillis + delayMillis,
+  };
+}
+
 const readCodexRolloutTail = Effect.fn("CodexCliSessionImporter.readRolloutTail")(function* (
   fileSystem: FileSystem.FileSystem,
   rolloutPath: string,
+  maxBytes = ROLLOUT_TERMINAL_EVENT_TAIL_BYTES,
 ) {
   return yield* Effect.scoped(
     Effect.gen(function* () {
       const file = yield* fileSystem.open(rolloutPath, { flag: "r" });
       const stat = yield* file.stat;
       const size = Number(stat.size);
-      const length = Math.min(size, ROLLOUT_TERMINAL_EVENT_TAIL_BYTES);
+      const length = Math.min(size, maxBytes);
       if (length <= 0) {
         return "";
       }
@@ -1634,6 +2292,28 @@ const readCodexRolloutTail = Effect.fn("CodexCliSessionImporter.readRolloutTail"
     }),
   ).pipe(Effect.orElseSucceed(() => ""));
 });
+
+const readCodexRolloutActivityTail = Effect.fn("CodexCliSessionImporter.readRolloutActivityTail")(
+  function* (
+    fileSystem: FileSystem.FileSystem,
+    rolloutPath: string,
+    threadId: string,
+    createdAt: number,
+    turnId: string,
+  ) {
+    const contents = yield* readCodexRolloutTail(
+      fileSystem,
+      rolloutPath,
+      ROLLOUT_ACTIVITY_TAIL_BYTES,
+    );
+    return collectCodexCliRolloutActivities({
+      threadId,
+      contents,
+      createdAt,
+      turnId,
+    }).slice(-CODEX_CLI_COLD_ACTIVITY_LIMIT);
+  },
+);
 
 const readCodexRolloutTerminalEvidence = Effect.fn(
   "CodexCliSessionImporter.readRolloutTerminalEvidence",
@@ -1688,6 +2368,26 @@ export function shouldImportCodexCliMessages(input: {
   );
 }
 
+export function shouldReadCodexRolloutActivities(input: {
+  readonly rolloutPathAvailable: boolean;
+  readonly activityTurnId: string | null;
+  readonly listedThreadIsRecent: boolean;
+  readonly importIsCurrent: boolean;
+  readonly binding: ProviderRuntimeBinding | undefined;
+  readonly observesDetachedCliSession: boolean;
+  readonly refreshesDetachedCliTranscript?: boolean;
+}): boolean {
+  return (
+    input.rolloutPathAvailable &&
+    input.activityTurnId !== null &&
+    (input.observesDetachedCliSession ||
+      input.refreshesDetachedCliTranscript === true ||
+      (input.listedThreadIsRecent &&
+        !input.importIsCurrent &&
+        (input.binding === undefined || isCodexCliImportedBinding(input.binding))))
+  );
+}
+
 export function shouldPersistCodexCliImportMetadata(input: {
   readonly observesDetachedCliSession: boolean;
   readonly observerSessionSynchronized: boolean;
@@ -1698,6 +2398,39 @@ export function shouldPersistCodexCliImportMetadata(input: {
     input.transcriptHydrationComplete !== false &&
     input.transcriptSynchronized !== false &&
     (!input.observesDetachedCliSession || input.observerSessionSynchronized)
+  );
+}
+
+export function shouldHydrateObservedCodexCliTranscript(input: {
+  readonly observesDetachedCliSession: boolean;
+  readonly importIsCurrent: boolean;
+  readonly rolloutTranscriptInspected: boolean;
+  readonly rolloutTranscriptChanged: boolean;
+  readonly rolloutTranscriptComplete: boolean;
+  readonly rolloutTranscriptSynchronized: boolean;
+  readonly terminalTransitionObserved: boolean;
+}): boolean {
+  return (
+    input.observesDetachedCliSession &&
+    (input.terminalTransitionObserved ||
+      (input.rolloutTranscriptInspected
+        ? (input.rolloutTranscriptChanged || !input.importIsCurrent) &&
+          (!input.rolloutTranscriptComplete || !input.rolloutTranscriptSynchronized)
+        : !input.importIsCurrent))
+  );
+}
+
+export function shouldUseCodexRolloutTranscriptWithoutThreadRead(input: {
+  readonly observesDetachedCliSession: boolean;
+  readonly observedSessionStatus: "ready" | "running" | "interrupted" | "error";
+  readonly rolloutTranscriptComplete: boolean;
+  readonly terminalTransitionObserved: boolean;
+}): boolean {
+  return (
+    input.observesDetachedCliSession &&
+    input.observedSessionStatus === "running" &&
+    input.rolloutTranscriptComplete &&
+    !input.terminalTransitionObserved
   );
 }
 
@@ -2003,9 +2736,15 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
     const rolloutTaskCursors = new Map<string, CodexCliRolloutTaskCursor>();
     const rolloutMessageCursors = new Map<string, CodexCliRolloutMessageCursor>();
     const observedImportedUpdatedAt = new Map<ThreadId, number>();
+    const importFailureBackoffs = new Map<string, CodexCliImportFailureBackoff>();
 
     const readCodexRolloutMessages = Effect.fn("CodexCliSessionImporter.readRolloutMessages")(
-      function* (rolloutPath: string, threadId: string, createdAt: number) {
+      function* (
+        rolloutPath: string,
+        threadId: string,
+        createdAt: number,
+        activityTurnId: string | null,
+      ) {
         return yield* Effect.scoped(
           Effect.gen(function* () {
             const file = yield* fileSystem.open(rolloutPath, { flag: "r" });
@@ -2021,7 +2760,10 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
               return {
                 messages: cached.messages,
                 complete: isCompleteCodexRolloutMessageRead(cached, size),
-              } satisfies CodexCliRolloutMessageRead;
+                changed: false,
+                activities: cached.activities,
+                activityChanged: false,
+              } satisfies CodexCliRolloutMessageCursorRead;
             }
             const canContinue =
               cached !== undefined &&
@@ -2032,27 +2774,36 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
             const start = canContinue ? cached.offset : 0;
             const length = size - start;
             if (length <= 0) {
+              const resetCachedHistory = cached !== undefined && !canContinue;
               const cursor = {
                 offset: size,
                 modifiedAtMillis,
                 pendingLine: "",
                 messages: [],
+                activityTurnId,
+                activities: resetCachedHistory ? [] : (cached?.activities ?? []),
+                toolCalls: new Map(),
               } satisfies CodexCliRolloutMessageCursor;
               rolloutMessageCursors.set(rolloutPath, cursor);
               return {
                 messages: cursor.messages,
                 complete: isCompleteCodexRolloutMessageRead(cursor, size),
-              } satisfies CodexCliRolloutMessageRead;
+                changed: cached !== undefined && cached.messages.length > 0,
+                activities: cursor.activities,
+                activityChanged: resetCachedHistory && cached.activities.length > 0,
+              } satisfies CodexCliRolloutMessageCursorRead;
             }
             yield* file.seek(start, "start");
             const existingMessages = canContinue ? cached.messages : [];
             const appendedMessages: CodexCliImportedMessage[] = [];
+            const appendedActivities: OrchestrationThreadActivity[] = [];
             const decoder = new TextDecoder();
             let parserCursor =
               canContinue && cached !== undefined
                 ? {
                     ...cached,
                     messages: [],
+                    activities: [],
                   }
                 : undefined;
             let pendingUtf8Bytes = new Uint8Array();
@@ -2084,12 +2835,15 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
                   modifiedAtMillis,
                   threadId,
                   createdAt,
+                  activityTurnId,
                   isFinalChunk: readOffset === size && pendingUtf8Bytes.length === 0,
                 });
                 appendedMessages.push(...parsedCursor.messages);
+                appendedActivities.push(...parsedCursor.activities);
                 parserCursor = {
                   ...parsedCursor,
                   messages: [],
+                  activities: [],
                 };
               }
               if (readOffset < size) {
@@ -2103,12 +2857,32 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
                 parserCursor?.pendingLine ??
                 (canContinue && cached !== undefined ? cached.pendingLine : ""),
               messages: mergeCodexCliRolloutMessages(existingMessages, appendedMessages),
+              activityTurnId,
+              activities: mergeCodexCliRolloutActivities(
+                canContinue ? (cached?.activities ?? []) : [],
+                appendedActivities,
+              ),
+              toolCalls:
+                parserCursor?.activityTurnId === activityTurnId
+                  ? parserCursor.toolCalls
+                  : new Map(),
             } satisfies CodexCliRolloutMessageCursor;
             rolloutMessageCursors.set(rolloutPath, cursor);
             return {
               messages: cursor.messages,
               complete: isCompleteCodexRolloutMessageRead(cursor, size),
-            } satisfies CodexCliRolloutMessageRead;
+              changed:
+                appendedMessages.length > 0 ||
+                (cached !== undefined &&
+                  !canContinue &&
+                  (cached.offset !== cursor.offset ||
+                    cached.messages.length > 0 ||
+                    cached.pendingLine.length > 0)),
+              activities: cursor.activities,
+              activityChanged:
+                appendedActivities.length > 0 ||
+                (cached !== undefined && !canContinue && cached.activities.length > 0),
+            } satisfies CodexCliRolloutMessageCursorRead;
           }),
         ).pipe(
           Effect.catchCause((cause) =>
@@ -2120,12 +2894,30 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
               Effect.as({
                 messages: [],
                 complete: false,
-              } satisfies CodexCliRolloutMessageRead),
+                changed: false,
+                activities: [],
+                activityChanged: false,
+              } satisfies CodexCliRolloutMessageCursorRead),
             ),
           ),
         );
       },
     );
+
+    const acknowledgeCodexRolloutActivities = (
+      rolloutPath: string,
+      activities: ReadonlyArray<OrchestrationThreadActivity>,
+    ) => {
+      const cursor = rolloutMessageCursors.get(rolloutPath);
+      if (cursor === undefined || activities.length === 0) {
+        return;
+      }
+      const acknowledgedIds = new Set(activities.map((activity) => activity.id));
+      rolloutMessageCursors.set(rolloutPath, {
+        ...cursor,
+        activities: cursor.activities.filter((activity) => !acknowledgedIds.has(activity.id)),
+      });
+    };
 
     const observeCodexRolloutTaskState = Effect.fn(
       "CodexCliSessionImporter.observeRolloutTaskState",
@@ -2388,10 +3180,10 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
         metrics.skippedCurrentCount += 1;
         return undefined;
       }
-      const projectedThreadDetail =
+      const projectedThreadTranscript =
         projectedThread !== undefined &&
         (staleSession !== undefined || detachedMirrorSession !== undefined)
-          ? Option.getOrUndefined(yield* projectionSnapshotQuery.getThreadDetailById(threadId))
+          ? Option.getOrUndefined(yield* projectionSnapshotQuery.getThreadTranscriptById(threadId))
           : undefined;
 
       return {
@@ -2400,7 +3192,7 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
         existingBinding,
         existingThread,
         projectedThread,
-        projectedThreadDetail,
+        projectedThreadTranscript,
         staleSession,
         detachedMirrorSession,
         observesDetachedCliSession,
@@ -2451,6 +3243,16 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
         },
         createdAt: settledAt,
       });
+      const settledThread = (yield* projectionSnapshotQuery.getThreadShellsByIds([threadId])).get(
+        threadId,
+      );
+      if (
+        settledThread?.session?.updatedAt !== settledAt ||
+        settledThread.session.status !== resolution.status ||
+        settledThread.session.activeTurnId !== null
+      ) {
+        return undefined;
+      }
       yield* Effect.logInfo("codex.cli-import.reconciled-stale-session", {
         threadId,
         previousStatus: staleSession.status,
@@ -2458,7 +3260,57 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
         reconciledStatus: resolution.status,
         rolloutTerminalState,
       });
+      return settledAt;
     });
+
+    const recoverCodexCliCheckpoint = Effect.fn("CodexCliSessionImporter.recoverCheckpoint")(
+      function* (
+        threadId: ThreadId,
+        activeTurnId: string | null,
+        resolutionStatus: SettledCodexCliStaleSessionResolution["status"],
+        messages: ReadonlyArray<CodexCliImportedMessage>,
+        completedAt: string,
+      ) {
+        const checkpointContext = Option.getOrUndefined(
+          yield* projectionSnapshotQuery.getThreadCheckpointContext(threadId),
+        );
+        const request = resolveCodexCliRecoveredCheckpointRequest({
+          threadId,
+          activeTurnId,
+          resolutionStatus,
+          messages,
+          checkpointContext,
+          completedAt,
+        });
+        if (request === undefined) {
+          return;
+        }
+        yield* orchestrationEngine.dispatch({
+          type: "thread.turn.diff.complete",
+          commandId: stableCommandId(
+            "checkpoint-recovery",
+            threadId,
+            request.turnId,
+            request.assistantMessageId,
+            String(request.checkpointTurnCount),
+          ),
+          threadId,
+          turnId: request.turnId,
+          completedAt: request.completedAt,
+          checkpointRef: request.checkpointRef,
+          status: "missing",
+          files: [],
+          assistantMessageId: request.assistantMessageId,
+          checkpointTurnCount: request.checkpointTurnCount,
+          createdAt: request.completedAt,
+        });
+        yield* Effect.logInfo("codex.cli-import.checkpoint-recovery-requested", {
+          threadId,
+          turnId: request.turnId,
+          checkpointTurnCount: request.checkpointTurnCount,
+        });
+      },
+    );
 
     const setMirroredSessionRunning = Effect.fn(
       "CodexCliSessionImporter.setMirroredSessionRunning",
@@ -2512,7 +3364,7 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
         readonly activeTurnId: TurnId | null;
         readonly lastError: string | null;
       },
-      expectedUserMessageIds: ReadonlyArray<MessageId>,
+      expectedUserMessageIds?: ReadonlyArray<MessageId>,
     ) {
       const currentThread = (yield* projectionSnapshotQuery.getThreadShellsByIds([
         prepared.threadId,
@@ -2520,12 +3372,6 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
       if (currentThread === undefined) {
         return false;
       }
-      const session = currentThread.session;
-      const preparedSession = prepared.projectedThread?.session ?? null;
-      if (!orchestrationSessionsEqual(session, preparedSession)) {
-        return false;
-      }
-
       const currentBinding = Option.getOrUndefined(yield* directory.getBinding(prepared.threadId));
       if (
         !isDetachedCodexCliObserverBinding(currentBinding) ||
@@ -2534,16 +3380,35 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
       ) {
         return false;
       }
-      if (codexCliSessionMatchesObservedState(session, state)) {
-        const currentThreadDetail = Option.getOrUndefined(
-          yield* projectionSnapshotQuery.getThreadDetailById(prepared.threadId),
-        );
-        return messageIdsEqual(
-          resolveCodexCliExpectedUserMessageIds(currentThreadDetail, []),
-          expectedUserMessageIds,
-        );
+      const session = currentThread.session;
+      const preparedThread = prepared.projectedThread;
+      const syncAction =
+        expectedUserMessageIds === undefined
+          ? resolveObservedCodexCliSessionSyncAction({
+              currentThread,
+              preparedThread,
+              observedState: state,
+            })
+          : codexCliSessionMatchesObservedState(session, state)
+            ? "synchronized"
+            : orchestrationSessionsEqual(session, preparedThread?.session ?? null)
+              ? "apply"
+              : "skip";
+      if (syncAction === "synchronized") {
+        return true;
+      }
+      if (syncAction === "skip") {
+        return false;
       }
 
+      const resolvedExpectedUserMessageIds =
+        expectedUserMessageIds ??
+        resolveCodexCliExpectedUserMessageIds(
+          Option.getOrUndefined(
+            yield* projectionSnapshotQuery.getThreadTranscriptById(prepared.threadId),
+          ),
+          [],
+        );
       const observedAt = DateTime.formatIso(yield* DateTime.now);
       const expectedProviderRuntime = resolveCodexCliProviderRuntimeExpectation(
         currentBinding,
@@ -2557,13 +3422,13 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
           state.status,
           state.activeTurnId ?? "no-active-turn",
           session?.updatedAt ?? String(prepared.listedThread.updatedAt),
-          stableTextHash(expectedUserMessageIds.join("\0")),
+          stableTextHash(resolvedExpectedUserMessageIds.join("\0")),
           ...providerRuntimeExpectationCommandParts(expectedProviderRuntime),
           observedAt,
         ),
         threadId: prepared.threadId,
         expectedSession: session ?? null,
-        expectedUserMessageIds,
+        expectedUserMessageIds: resolvedExpectedUserMessageIds,
         expectedProviderRuntime,
         session: {
           threadId: prepared.threadId,
@@ -2594,6 +3459,95 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
       return true;
     });
 
+    const bindingAllowsCodexCliActivityImport = (
+      prepared: PreparedCodexCliThreadImport,
+      binding: ProviderRuntimeBindingWithMetadata | undefined,
+    ): boolean => {
+      if (prepared.existingBinding === undefined) {
+        return prepared.projectedThread === undefined && binding === undefined;
+      }
+      if (prepared.observesDetachedCliSession) {
+        return (
+          binding !== undefined &&
+          isDetachedCodexCliObserverBinding(binding) &&
+          isSameCodexCliProviderRuntimeOwner(binding, prepared.existingBinding)
+        );
+      }
+      return (
+        binding !== undefined &&
+        isCodexCliImportedBinding(prepared.existingBinding) &&
+        isCodexCliImportedBinding(binding) &&
+        !isLiveCodexBinding(binding) &&
+        isSameCodexCliProviderRuntimeOwner(binding, prepared.existingBinding)
+      );
+    };
+
+    const importCodexCliActivities = Effect.fn("CodexCliSessionImporter.importActivities")(
+      function* (
+        prepared: PreparedCodexCliThreadImport,
+        activities: ReadonlyArray<OrchestrationThreadActivity>,
+      ) {
+        if (activities.length === 0) {
+          return activities.length === 0;
+        }
+        const currentBinding = Option.getOrUndefined(
+          yield* directory.getBinding(prepared.threadId),
+        );
+        if (!bindingAllowsCodexCliActivityImport(prepared, currentBinding)) {
+          return false;
+        }
+        for (
+          let start = 0;
+          start < activities.length;
+          start += CODEX_CLI_ACTIVITY_IMPORT_BATCH_SIZE
+        ) {
+          const batch = activities.slice(start, start + CODEX_CLI_ACTIVITY_IMPORT_BATCH_SIZE);
+          const existingActivityIds = yield* projectionSnapshotQuery.getExistingThreadActivityIds({
+            threadId: prepared.threadId,
+            activityIds: batch.map((activity) => activity.id),
+          });
+          const missingActivities = batch.filter(
+            (activity) => !existingActivityIds.has(activity.id),
+          );
+          if (missingActivities.length === 0) {
+            continue;
+          }
+          const latestBinding = Option.getOrUndefined(
+            yield* directory.getBinding(prepared.threadId),
+          );
+          if (!bindingAllowsCodexCliActivityImport(prepared, latestBinding)) {
+            return false;
+          }
+          yield* orchestrationEngine.dispatch({
+            type: "thread.activities.import",
+            commandId: stableCommandId(
+              "activities",
+              prepared.threadId,
+              stableTextHash(missingActivities.map((activity) => activity.id).join("\0")),
+            ),
+            threadId: prepared.threadId,
+            activities: missingActivities,
+            createdAt: missingActivities.at(-1)!.createdAt,
+          });
+        }
+        return true;
+      },
+    );
+
+    const synchronizeCodexCliActivities = Effect.fn(
+      "CodexCliSessionImporter.synchronizeObservedActivities",
+    )(function* (
+      prepared: PreparedCodexCliThreadImport,
+      rolloutPath: string | undefined,
+      activities: ReadonlyArray<OrchestrationThreadActivity>,
+    ) {
+      const synchronized = yield* importCodexCliActivities(prepared, activities);
+      if (synchronized && rolloutPath !== undefined) {
+        acknowledgeCodexRolloutActivities(rolloutPath, activities);
+      }
+      return synchronized;
+    });
+
     const importThread = Effect.fn("CodexCliSessionImporter.importThread")(function* (
       target: CodexDiscoveryTarget,
       client: CodexClient.CodexAppServerClient["Service"],
@@ -2608,7 +3562,7 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
         existingBinding,
         existingThread,
         projectedThread,
-        projectedThreadDetail: preparedThreadDetail,
+        projectedThreadTranscript: preparedThreadTranscript,
         staleSession,
         detachedMirrorSession,
         observesDetachedCliSession,
@@ -2618,6 +3572,13 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
         importedAtMillis,
         rolloutPath,
       } = prepared;
+      const phaseTimings = {
+        messageImportMs: 0,
+        postImportTranscriptReadMs: 0,
+        sessionSyncMs: 0,
+        activitySyncMs: 0,
+        metadataWriteMs: 0,
+      };
       const staleActiveTurnId = staleSession?.activeTurnId ?? null;
       const rolloutTerminalEvidence =
         rolloutPath === undefined || staleActiveTurnId === null
@@ -2686,15 +3647,58 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
                   : null,
               observedTurnId: TurnId.make(observedRolloutTask.lifecycle.turnId),
             };
+      let observerSessionSynchronized = !observesDetachedCliSession;
+      if (
+        observesDetachedCliSession &&
+        shouldSynchronizeObservedCodexCliSessionBeforeHydration(observedSessionStateWithTurn)
+      ) {
+        observerSessionSynchronized = yield* syncObservedDetachedCliSession(
+          target,
+          prepared,
+          observedSessionStateWithTurn,
+        );
+      }
       const observerImportIsCurrent =
         observedRolloutTask.rolloutUpdatedAtMillis === undefined
           ? importIsCurrent
           : observedRolloutTask.importIsFresh;
-      const observerNeedsHydration =
-        observesDetachedCliSession &&
-        (!observerImportIsCurrent ||
-          observedRolloutTask.changed ||
-          observedRolloutTask.terminalTransitionObserved);
+      const observedActivityTurnId = observedRolloutTask.lifecycle.turnId ?? staleActiveTurnId;
+      const observedRolloutMessages =
+        rolloutPath === undefined ||
+        (!observesDetachedCliSession && !refreshesDetachedCliTranscript) ||
+        (!observedRolloutTask.changed && observerImportIsCurrent)
+          ? undefined
+          : yield* Effect.gen(function* () {
+              metrics.rolloutTailReadCount += 1;
+              return yield* readCodexRolloutMessages(
+                rolloutPath,
+                listedThread.id,
+                listedThread.createdAt,
+                observedActivityTurnId,
+              );
+            });
+      const observedRolloutTranscriptSynchronized =
+        observedRolloutMessages !== undefined &&
+        observedRolloutMessages.complete &&
+        (!observedRolloutMessages.changed && observerImportIsCurrent
+          ? true
+          : preparedThreadTranscript !== undefined &&
+            hasSynchronizedCodexCliTranscript(
+              preparedThreadTranscript,
+              reconcileCodexCliImportedMessages(
+                observedRolloutMessages.messages,
+                preparedThreadTranscript,
+              ),
+            ));
+      const observerNeedsHydration = shouldHydrateObservedCodexCliTranscript({
+        observesDetachedCliSession,
+        importIsCurrent: observerImportIsCurrent,
+        rolloutTranscriptInspected: observedRolloutMessages !== undefined,
+        rolloutTranscriptChanged: observedRolloutMessages?.changed ?? false,
+        rolloutTranscriptComplete: observedRolloutMessages?.complete ?? false,
+        rolloutTranscriptSynchronized: observedRolloutTranscriptSynchronized,
+        terminalTransitionObserved: observedRolloutTask.terminalTransitionObserved,
+      });
       if (
         shouldSkipUnchangedDetachedCodexCliObserver({
           observesDetachedCliSession,
@@ -2705,59 +3709,122 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
       ) {
         return "skipped" satisfies CodexCliThreadImportResult;
       }
-      const projectedThreadDetailBeforeImport =
-        preparedThreadDetail ??
-        (projectedThread === undefined
-          ? undefined
-          : Option.getOrUndefined(yield* projectionSnapshotQuery.getThreadDetailById(threadId)));
-      const expectedUserMessageIdsBeforeImport = resolveCodexCliExpectedUserMessageIds(
-        projectedThreadDetailBeforeImport,
-        [],
-      );
       if (
         observesDetachedCliSession &&
         observedSessionState.status === "running" &&
         !observerNeedsHydration
       ) {
-        const synchronized = yield* syncObservedDetachedCliSession(
-          target,
-          prepared,
-          observedSessionStateWithTurn,
-          expectedUserMessageIdsBeforeImport,
-        );
-        return synchronized
+        if (!observerSessionSynchronized) {
+          observerSessionSynchronized = yield* syncObservedDetachedCliSession(
+            target,
+            prepared,
+            observedSessionStateWithTurn,
+          );
+        }
+        if (observerSessionSynchronized) {
+          yield* synchronizeCodexCliActivities(
+            prepared,
+            rolloutPath,
+            observedRolloutMessages?.activities ?? [],
+          );
+        }
+        return observerSessionSynchronized
           ? ("recovering-live" satisfies CodexCliThreadImportResult)
           : ("skipped" satisfies CodexCliThreadImportResult);
       }
       if (observesDetachedCliSession && !observerNeedsHydration) {
-        const synchronized = yield* syncObservedDetachedCliSession(
-          target,
-          prepared,
-          observedSessionStateWithTurn,
-          expectedUserMessageIdsBeforeImport,
-        );
-        return synchronized
+        if (!observerSessionSynchronized) {
+          observerSessionSynchronized = yield* syncObservedDetachedCliSession(
+            target,
+            prepared,
+            observedSessionStateWithTurn,
+          );
+        }
+        if (observerSessionSynchronized) {
+          yield* synchronizeCodexCliActivities(
+            prepared,
+            rolloutPath,
+            observedRolloutMessages?.activities ?? [],
+          );
+        }
+        return observerSessionSynchronized
           ? ("imported" satisfies CodexCliThreadImportResult)
           : ("skipped" satisfies CodexCliThreadImportResult);
       }
-      metrics.threadReadCount += 1;
-      const response = yield* client.request("thread/read", {
-        threadId: listedThread.id,
-        includeTurns: true,
+      const useRolloutTranscriptWithoutThreadRead =
+        observedRolloutMessages !== undefined &&
+        shouldUseCodexRolloutTranscriptWithoutThreadRead({
+          observesDetachedCliSession,
+          observedSessionStatus: observedSessionState.status,
+          rolloutTranscriptComplete: observedRolloutMessages.complete,
+          terminalTransitionObserved: observedRolloutTask.terminalTransitionObserved,
+        });
+      const projectedThreadTranscriptBeforeImport =
+        preparedThreadTranscript ??
+        (projectedThread === undefined
+          ? undefined
+          : Option.getOrUndefined(
+              yield* projectionSnapshotQuery.getThreadTranscriptById(threadId),
+            ));
+      const thread = useRolloutTranscriptWithoutThreadRead
+        ? listedThread
+        : yield* Effect.gen(function* () {
+            metrics.threadReadCount += 1;
+            const response = yield* client.request("thread/read", {
+              threadId: listedThread.id,
+              includeTurns: true,
+            });
+            return response.thread;
+          });
+      const rolloutActivityTurnId = observedActivityTurnId ?? thread.turns.at(-1)?.id ?? null;
+      const appServerTranscriptComplete =
+        !useRolloutTranscriptWithoutThreadRead && isCodexCliThreadTranscriptComplete(thread);
+      const readRolloutActivities = shouldReadCodexRolloutActivities({
+        rolloutPathAvailable: rolloutPath !== undefined,
+        activityTurnId: rolloutActivityTurnId,
+        listedThreadIsRecent,
+        importIsCurrent,
+        binding: existingBinding,
+        observesDetachedCliSession,
+        refreshesDetachedCliTranscript,
       });
-      const thread = response.thread;
-      const appServerTranscriptComplete = isCodexCliThreadTranscriptComplete(thread);
       const rolloutMessages =
-        appServerTranscriptComplete || rolloutPath === undefined
+        observedRolloutMessages ??
+        (appServerTranscriptComplete || rolloutPath === undefined
           ? undefined
           : yield* Effect.gen(function* () {
               metrics.rolloutTailReadCount += 1;
-              return yield* readCodexRolloutMessages(rolloutPath, thread.id, thread.createdAt);
-            });
-      const transcript = resolveCodexCliTranscriptMessages({
-        thread,
-        rollout: rolloutMessages,
-      });
+              return yield* readCodexRolloutMessages(
+                rolloutPath,
+                thread.id,
+                thread.createdAt,
+                rolloutActivityTurnId,
+              );
+            }));
+      const rolloutActivities =
+        observedRolloutMessages?.activities ??
+        rolloutMessages?.activities ??
+        (readRolloutActivities && rolloutPath !== undefined && rolloutActivityTurnId !== null
+          ? yield* Effect.gen(function* () {
+              metrics.rolloutTailReadCount += 1;
+              return yield* readCodexRolloutActivityTail(
+                fileSystem,
+                rolloutPath,
+                thread.id,
+                thread.createdAt,
+                rolloutActivityTurnId,
+              );
+            })
+          : []);
+      const transcript = useRolloutTranscriptWithoutThreadRead
+        ? {
+            messages: observedRolloutMessages.messages,
+            complete: observedRolloutMessages.complete,
+          }
+        : resolveCodexCliTranscriptMessages({
+            thread,
+            rollout: rolloutMessages,
+          });
       if (!appServerTranscriptComplete && rolloutMessages !== undefined) {
         yield* Effect.logInfo("codex.cli-import.rollout-fallback-used", {
           instanceId: target.instanceId,
@@ -2797,10 +3864,10 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
         )
           ? recoveredMessages
           : [...recoveredMessages, recoveredTerminalMessage];
-      const projectedThreadDetail = projectedThreadDetailBeforeImport;
-      const messages = reconcileCodexCliImportedMessages(rawMessages, projectedThreadDetail);
+      const projectedThreadTranscript = projectedThreadTranscriptBeforeImport;
+      const messages = reconcileCodexCliImportedMessages(rawMessages, projectedThreadTranscript);
       const expectedUserMessageIds = resolveCodexCliExpectedUserMessageIds(
-        projectedThreadDetail,
+        projectedThreadTranscript,
         messages,
       );
       if (messages.length === 0 && projectedThread === undefined) {
@@ -2864,26 +3931,48 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
           refreshesDetachedCliTranscript,
         })
       ) {
-        for (const message of messages) {
+        const messageImportStartedAt = yield* Clock.currentTimeMillis;
+        const unsynchronizedMessages = selectUnsynchronizedCodexCliMessages(
+          projectedThreadTranscript,
+          messages,
+        );
+        for (
+          let start = 0;
+          start < unsynchronizedMessages.length;
+          start += CODEX_CLI_MESSAGE_IMPORT_BATCH_SIZE
+        ) {
+          const batch = unsynchronizedMessages.slice(
+            start,
+            start + CODEX_CLI_MESSAGE_IMPORT_BATCH_SIZE,
+          );
           yield* orchestrationEngine.dispatch(
-            codexCliMessageImportCommand({
+            codexCliMessagesImportCommand({
               threadId,
-              message,
+              messages: batch,
               expectedProviderRuntime: messageImportExpectedProviderRuntime,
             }),
           );
         }
+        phaseTimings.messageImportMs = Math.max(
+          0,
+          (yield* Clock.currentTimeMillis) - messageImportStartedAt,
+        );
       }
-      const projectedThreadDetailAfterImport = Option.getOrUndefined(
-        yield* projectionSnapshotQuery.getThreadDetailById(threadId),
+      const postImportTranscriptReadStartedAt = yield* Clock.currentTimeMillis;
+      const projectedThreadTranscriptAfterImport = Option.getOrUndefined(
+        yield* projectionSnapshotQuery.getThreadTranscriptById(threadId),
+      );
+      phaseTimings.postImportTranscriptReadMs = Math.max(
+        0,
+        (yield* Clock.currentTimeMillis) - postImportTranscriptReadStartedAt,
       );
       const transcriptSynchronized = hasSynchronizedCodexCliTranscript(
-        projectedThreadDetailAfterImport,
+        projectedThreadTranscriptAfterImport,
         messages,
       );
       const transcriptHydrationSucceeded = transcript.complete && transcriptSynchronized;
 
-      let observerSessionSynchronized = !observesDetachedCliSession;
+      const sessionSyncStartedAt = yield* Clock.currentTimeMillis;
       if (observesDetachedCliSession && transcriptHydrationSucceeded) {
         const latestTurn = thread.turns.at(-1);
         if (observedRolloutTask.lifecycle.state !== null) {
@@ -2927,6 +4016,10 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
           );
         }
       }
+      phaseTimings.sessionSyncMs = Math.max(
+        0,
+        (yield* Clock.currentTimeMillis) - sessionSyncStartedAt,
+      );
 
       let recoveringLive = false;
       if (staleSession !== undefined && transcriptHydrationSucceeded) {
@@ -2950,7 +4043,7 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
             providerThreadId: thread.id,
           });
         } else {
-          yield* settleStaleSession(
+          const settledAt = yield* settleStaleSession(
             threadId,
             staleSession,
             expectedUserMessageIds,
@@ -2958,6 +4051,15 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
             resolution,
             rolloutTerminalEvidence.state,
           );
+          if (settledAt !== undefined) {
+            yield* recoverCodexCliCheckpoint(
+              threadId,
+              staleActiveTurnId,
+              resolution.status,
+              messages,
+              settledAt,
+            );
+          }
         }
       } else if (detachedMirrorSession !== undefined && transcriptHydrationSucceeded) {
         const upstreamTurn = thread.turns.at(-1);
@@ -3006,6 +4108,20 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
         }
       }
 
+      const shouldSynchronizeActivities =
+        observesDetachedCliSession ||
+        (existingBinding === undefined && projectedThread === undefined) ||
+        isCodexCliImportedBinding(existingBinding);
+      const activitySyncStartedAt = yield* Clock.currentTimeMillis;
+      const activitiesSynchronized =
+        !shouldSynchronizeActivities ||
+        (observerSessionSynchronized &&
+          (yield* synchronizeCodexCliActivities(prepared, rolloutPath, rolloutActivities)));
+      phaseTimings.activitySyncMs = Math.max(
+        0,
+        (yield* Clock.currentTimeMillis) - activitySyncStartedAt,
+      );
+
       // A periodic scan must never downgrade a T3-owned session that is
       // currently starting or running. Its adapter owns the live binding and
       // will persist the latest resume cursor when the session stops.
@@ -3019,6 +4135,7 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
         codexCliUpdatedAt: thread.updatedAt,
         ...(refreshesDetachedCliTranscript ? { codexCliTranscriptRefreshRequired: false } : {}),
       };
+      const metadataWriteStartedAt = yield* Clock.currentTimeMillis;
       const importMetadataPersisted =
         shouldPersistCodexCliImportMetadata({
           observesDetachedCliSession,
@@ -3026,6 +4143,7 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
           transcriptHydrationComplete: transcript.complete,
           transcriptSynchronized,
         }) &&
+        activitiesSynchronized &&
         (existingBinding !== undefined
           ? yield* directory.mergeRuntimePayloadIfCurrent(threadId, existingBinding, importMetadata)
           : yield* directory.insertIfAbsent({
@@ -3042,6 +4160,10 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
                 ...importMetadata,
               },
             }));
+      phaseTimings.metadataWriteMs = Math.max(
+        0,
+        (yield* Clock.currentTimeMillis) - metadataWriteStartedAt,
+      );
       if (importMetadataPersisted) {
         observedImportedUpdatedAt.set(threadId, thread.updatedAt);
       } else {
@@ -3050,6 +4172,12 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
           providerThreadId: thread.id,
         });
       }
+      yield* Effect.logDebug("codex.cli-import.thread-phase-timings", {
+        threadId,
+        providerThreadId: thread.id,
+        importedMessageCount: messages.length,
+        ...phaseTimings,
+      });
       return recoveringLive ||
         (observesDetachedCliSession &&
           observerSessionSynchronized &&
@@ -3062,6 +4190,7 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
       target: CodexDiscoveryTarget,
       retainedRolloutPaths: Set<string>,
       retainedThreadIds: Set<ThreadId>,
+      retainedImportFailureKeys: Set<string>,
     ) {
       const scanStartedAt = yield* Clock.currentTimeMillis;
       const result = yield* withCodexClient(clientPool, target, (client, appServerMetrics) =>
@@ -3070,6 +4199,7 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
             threadReadCount: 0,
             rolloutTailReadCount: 0,
             skippedCurrentCount: 0,
+            failureBackoffCount: 0,
           };
           const threadListStartedAt = yield* Clock.currentTimeMillis;
           const threads = yield* listInteractiveThreads(client);
@@ -3094,6 +4224,7 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
             if (candidate !== undefined) {
               candidates.push(candidate);
               retainedThreadIds.add(candidate.threadId);
+              retainedImportFailureKeys.add(`${target.instanceId}\0${candidate.listedThread.id}`);
             }
           }
           const preProjectionPrepareMs = Math.max(
@@ -3171,6 +4302,17 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
           let importedCount = 0;
           let recoveringLiveCount = 0;
           for (const prepared of preparedImports) {
+            const importFailureKey = `${target.instanceId}\0${prepared.listedThread.id}`;
+            if (
+              shouldBackoffCodexCliImportFailure({
+                failure: importFailureBackoffs.get(importFailureKey),
+                providerUpdatedAt: prepared.listedThread.updatedAt,
+                nowMillis,
+              })
+            ) {
+              metrics.failureBackoffCount += 1;
+              continue;
+            }
             const importResult = yield* importThread(
               target,
               client,
@@ -3179,17 +4321,32 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
               nowMillis,
               metrics,
             ).pipe(
+              Effect.tap(() =>
+                Effect.sync(() => {
+                  importFailureBackoffs.delete(importFailureKey);
+                }),
+              ),
               Effect.catchCause((cause) => {
                 const restartableError = findRestartableCodexAppServerError(cause);
                 if (restartableError !== undefined) {
                   return Effect.fail(restartableError);
                 }
-                return Effect.logWarning("codex.cli-import.thread-failed", {
-                  instanceId: target.instanceId,
-                  codexHome: target.homeLayout.sharedHomePath,
-                  providerThreadId: prepared.listedThread.id,
-                  cause,
-                }).pipe(Effect.as("skipped" satisfies CodexCliThreadImportResult));
+                return Effect.gen(function* () {
+                  const failure = advanceCodexCliImportFailureBackoff({
+                    previous: importFailureBackoffs.get(importFailureKey),
+                    providerUpdatedAt: prepared.listedThread.updatedAt,
+                    failedAtMillis: nowMillis,
+                  });
+                  importFailureBackoffs.set(importFailureKey, failure);
+                  yield* Effect.logWarning("codex.cli-import.thread-failed", {
+                    instanceId: target.instanceId,
+                    codexHome: target.homeLayout.sharedHomePath,
+                    providerThreadId: prepared.listedThread.id,
+                    retryAfterMillis: failure.retryAfterMillis,
+                    cause,
+                  });
+                  return "skipped" satisfies CodexCliThreadImportResult;
+                });
               }),
             );
             if (importResult !== "skipped") {
@@ -3225,9 +4382,15 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
       yield* clientPool.reconcile(targets);
       const retainedRolloutPaths = new Set<string>();
       const retainedThreadIds = new Set<ThreadId>();
+      const retainedImportFailureKeys = new Set<string>();
       let recoveringLiveCount = 0;
       for (const target of targets) {
-        const result = yield* scanTarget(target, retainedRolloutPaths, retainedThreadIds).pipe(
+        const result = yield* scanTarget(
+          target,
+          retainedRolloutPaths,
+          retainedThreadIds,
+          retainedImportFailureKeys,
+        ).pipe(
           Effect.catchCause((cause) =>
             Effect.logWarning("codex.cli-import.scan-failed", {
               instanceId: target.instanceId,
@@ -3250,6 +4413,7 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
                 threadReadCount: 0,
                 rolloutTailReadCount: 0,
                 skippedCurrentCount: 0,
+                failureBackoffCount: 0,
               }),
             ),
           ),
@@ -3266,6 +4430,7 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
       pruneCodexCliImportCache(rolloutTaskCursors, retainedRolloutPaths);
       pruneCodexCliImportCache(rolloutMessageCursors, retainedRolloutPaths);
       pruneCodexCliImportCache(observedImportedUpdatedAt, retainedThreadIds);
+      pruneCodexCliImportCache(importFailureBackoffs, retainedImportFailureKeys);
       return recoveringLiveCount > 0;
     });
 

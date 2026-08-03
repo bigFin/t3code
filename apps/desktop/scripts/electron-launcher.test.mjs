@@ -3,6 +3,7 @@ import { assert, describe, it } from "vite-plus/test";
 import {
   makeDevelopmentLauncherScript,
   resolveElectronBinaryPath,
+  resolveLinuxPasswordStoreArgs,
   resolveMacLauncherPaths,
 } from "./electron-launcher.mjs";
 
@@ -48,6 +49,12 @@ describe("electron development launcher", () => {
       "/repo/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron",
     );
     assert.deepEqual(calls, ["ensure", "require:electron"]);
+  });
+
+  it("uses the packaged desktop secure-storage backend on Linux", () => {
+    assert.deepEqual(resolveLinuxPasswordStoreArgs("linux"), ["--password-store=gnome-libsecret"]);
+    assert.deepEqual(resolveLinuxPasswordStoreArgs("darwin"), []);
+    assert.deepEqual(resolveLinuxPasswordStoreArgs("win32"), []);
   });
 
   it("keeps the native Electron executable name inside the branded macOS bundle", () => {

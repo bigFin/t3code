@@ -8,7 +8,10 @@
  */
 import type {
   CheckpointRef,
+  EventId,
   OrchestrationCheckpointSummary,
+  OrchestrationLatestTurn,
+  OrchestrationMessage,
   OrchestrationProject,
   OrchestrationProjectShell,
   OrchestrationReadModel,
@@ -51,6 +54,11 @@ export interface ProjectionFullThreadDiffContext {
   readonly worktreePath: string | null;
   readonly latestCheckpointTurnCount: number;
   readonly toCheckpointRef: CheckpointRef | null;
+}
+
+export interface ProjectionThreadTranscript {
+  readonly messages: ReadonlyArray<OrchestrationMessage>;
+  readonly latestTurn: OrchestrationLatestTurn | null;
 }
 
 /**
@@ -168,6 +176,24 @@ export interface ProjectionSnapshotQueryShape {
   readonly getThreadShellsByIds: (
     threadIds: ReadonlyArray<ThreadId>,
   ) => Effect.Effect<ReadonlyMap<ThreadId, OrchestrationThreadShell>, ProjectionRepositoryError>;
+
+  /**
+   * Read only the projected messages and latest turn needed for transcript
+   * reconciliation, without hydrating activities, plans, checkpoints, or
+   * session detail.
+   */
+  readonly getThreadTranscriptById: (
+    threadId: ThreadId,
+  ) => Effect.Effect<Option.Option<ProjectionThreadTranscript>, ProjectionRepositoryError>;
+
+  /**
+   * Read which IDs from a bounded activity candidate set already exist for a
+   * thread, without hydrating activity payloads or unrelated thread detail.
+   */
+  readonly getExistingThreadActivityIds: (input: {
+    readonly threadId: ThreadId;
+    readonly activityIds: ReadonlyArray<EventId>;
+  }) => Effect.Effect<ReadonlySet<EventId>, ProjectionRepositoryError>;
 
   /**
    * Read a single active thread detail snapshot by id.

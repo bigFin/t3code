@@ -524,6 +524,67 @@ describe("CheckpointReactor", () => {
     ).toBe("v2\n");
   });
 
+  it("replaces a recovered placeholder with a real checkpoint and preserves its assistant", async () => {
+    const harness = await createHarness();
+    const threadId = ThreadId.make("thread-1");
+    const turnId = TurnId.make("turn-recovered-3");
+    const assistantMessageId = MessageId.make("assistant-recovered-3");
+    const completedAt = "2026-01-01T00:03:00.000Z";
+    const checkpointRef = checkpointRefForThreadTurn(threadId, 3);
+
+    NodeFS.writeFileSync(NodePath.join(harness.cwd, "README.md"), "v4\n", "utf8");
+    await runtime!.runPromise(
+      harness.engine.dispatch({
+        type: "thread.message.import",
+        commandId: CommandId.make("cmd-import-recovered-assistant"),
+        threadId,
+        messageId: assistantMessageId,
+        role: "assistant",
+        text: "Recovered final response",
+        turnId,
+        createdAt: completedAt,
+      }),
+    );
+    await runtime!.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.diff.complete",
+        commandId: CommandId.make("cmd-recovered-placeholder"),
+        threadId,
+        turnId,
+        completedAt,
+        checkpointRef,
+        status: "missing",
+        files: [],
+        assistantMessageId,
+        checkpointTurnCount: 3,
+        createdAt: completedAt,
+      }),
+    );
+
+    await harness.drain();
+    await waitForGitRefExists(harness.cwd, checkpointRef);
+
+    const snapshot = await harness.readModel();
+    const thread = snapshot.threads.find((entry) => entry.id === threadId);
+    const checkpoint = thread?.checkpoints.find((entry) => entry.turnId === turnId);
+    expect(checkpoint).toMatchObject({
+      turnId,
+      checkpointTurnCount: 3,
+      checkpointRef,
+      status: "ready",
+      assistantMessageId,
+      files: [
+        {
+          path: "README.md",
+          kind: "modified",
+          additions: 1,
+          deletions: 1,
+        },
+      ],
+    });
+    expect(gitShowFileAtRef(harness.cwd, checkpointRef, "README.md")).toBe("v4\n");
+  });
+
   it("refreshes local git status state on turn completion using the session cwd", async () => {
     const gitStatusRefreshCalls: string[] = [];
     const harness = await createHarness({
