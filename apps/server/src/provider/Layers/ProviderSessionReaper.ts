@@ -103,6 +103,21 @@ function readPersistedSessionPersistence(
     : undefined;
 }
 
+function isCodexCliDetachedObserver(binding: ProviderRuntimeBindingWithMetadata): boolean {
+  const runtimePayload = binding.runtimePayload;
+  return (
+    binding.provider === "codex" &&
+    readPersistedSessionPersistence(binding) === "detached" &&
+    runtimePayload !== null &&
+    typeof runtimePayload === "object" &&
+    !Array.isArray(runtimePayload) &&
+    "importedFrom" in runtimePayload &&
+    runtimePayload.importedFrom === "codex-cli" &&
+    "activeTurnId" in runtimePayload &&
+    runtimePayload.activeTurnId === null
+  );
+}
+
 function startupStatusCommandId(
   transition: "startup-detached-missing" | "startup-reattach-retrying",
   binding: ProviderRuntimeBindingWithMetadata,
@@ -159,6 +174,9 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
         const bindings = yield* directory.listBindings();
         const orphanedCandidates = bindings.filter((binding) => {
           if (binding.providerInstanceId === undefined) {
+            return false;
+          }
+          if (isCodexCliDetachedObserver(binding)) {
             return false;
           }
           if (liveThreadIdsByInstance.get(binding.providerInstanceId)?.has(binding.threadId)) {
