@@ -37,7 +37,7 @@ import {
   type OrchestrationDispatchError,
   type OrchestrationProjectorDecodeError,
 } from "../Errors.ts";
-import { decideOrchestrationCommand } from "../decider.ts";
+import { decideOrchestrationCommand, isOrchestrationCommandNoop } from "../decider.ts";
 import { createEmptyReadModel, projectEvent } from "../projector.ts";
 import { OrchestrationProjectionPipeline } from "../Services/ProjectionPipeline.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
@@ -49,6 +49,7 @@ const isOrchestrationCommandPreviouslyRejectedError = Schema.is(
   OrchestrationCommandPreviouslyRejectedError,
 );
 const isOrchestrationCommandInvariantError = Schema.is(OrchestrationCommandInvariantError);
+const encodeUnknownJsonString = Schema.encodeUnknownSync(Schema.UnknownFromJsonString);
 
 interface CommandEnvelope {
   command: OrchestrationCommand;
@@ -165,10 +166,90 @@ const makeOrchestrationEngine = Effect.gen(function* () {
                 }),
           ),
         );
-        const eventBases = Array.isArray(eventBase) ? eventBase : [eventBase];
+        const decidedCommandIsNoop = isOrchestrationCommandNoop(eventBase);
+        const plannedEventBases = decidedCommandIsNoop
+          ? []
+          : Array.isArray(eventBase)
+            ? eventBase
+            : [eventBase];
         const committedCommand = yield* sql
           .withTransaction(
             Effect.gen(function* () {
+              const providerRuntimeGuardedCommand =
+                envelope.command.type === "thread.session.set" ||
+                envelope.command.type === "thread.message.import"
+                  ? envelope.command
+                  : undefined;
+              const expectedProviderRuntime =
+                providerRuntimeGuardedCommand?.expectedProviderRuntime;
+              const expectedUserMessageIds =
+                envelope.command.type === "thread.session.set"
+                  ? envelope.command.expectedUserMessageIds
+                  : undefined;
+              const guardedThreadId =
+                envelope.command.type === "thread.session.set"
+                  ? envelope.command.threadId
+                  : undefined;
+              const expectedResumeCursorJson =
+                expectedProviderRuntime === undefined || expectedProviderRuntime === null
+                  ? null
+                  : expectedProviderRuntime.resumeCursor === null
+                    ? null
+                    : encodeUnknownJsonString(expectedProviderRuntime.resumeCursor);
+              const providerRuntimeMatches =
+                providerRuntimeGuardedCommand === undefined || expectedProviderRuntime === undefined
+                  ? true
+                  : expectedProviderRuntime === null
+                    ? (yield* sql<{ readonly matches: number }>`
+                          SELECT 1 AS matches
+                          FROM provider_session_runtime
+                          WHERE thread_id = ${providerRuntimeGuardedCommand.threadId}
+                          LIMIT 1
+                        `).length === 0
+                    : (yield* sql<{ readonly matches: number }>`
+                        SELECT 1 AS matches
+                        FROM provider_session_runtime
+                        WHERE thread_id = ${providerRuntimeGuardedCommand.threadId}
+                          AND provider_name = ${expectedProviderRuntime.providerName}
+                          AND COALESCE(provider_instance_id, provider_name) =
+                            ${expectedProviderRuntime.providerInstanceId}
+                          AND status = ${expectedProviderRuntime.status}
+                          AND last_seen_at = ${expectedProviderRuntime.lastSeenAt}
+                          AND resume_cursor_json IS ${expectedResumeCursorJson}
+                          AND (
+                            ${expectedProviderRuntime.requiresDetachedIdle ? 1 : 0} = 0
+                            OR (
+                              json_extract(
+                                runtime_payload_json,
+                                '$.sessionPersistence'
+                              ) = 'detached'
+                              AND json_type(
+                                runtime_payload_json,
+                                '$.activeTurnId'
+                              ) = 'null'
+                            )
+                          )
+                        LIMIT 1
+                      `).length > 0;
+              const projectedUserMessageIds =
+                expectedUserMessageIds === undefined || guardedThreadId === undefined
+                  ? []
+                  : (yield* sql<{ readonly messageId: string }>`
+                        SELECT message_id AS "messageId"
+                        FROM projection_thread_messages
+                        WHERE thread_id = ${guardedThreadId}
+                          AND role = 'user'
+                        ORDER BY created_at ASC, message_id ASC
+                      `).map((row) => row.messageId);
+              const projectedUserMessagesMatch =
+                expectedUserMessageIds === undefined ||
+                (expectedUserMessageIds.length === projectedUserMessageIds.length &&
+                  expectedUserMessageIds.every(
+                    (messageId, index) => messageId === projectedUserMessageIds[index],
+                  ));
+              const commandIsNoop =
+                decidedCommandIsNoop || !providerRuntimeMatches || !projectedUserMessagesMatch;
+              const eventBases = commandIsNoop ? [] : plannedEventBases;
               const committedEvents: OrchestrationEvent[] = [];
               let nextCommandReadModel = commandReadModel;
 
@@ -181,10 +262,27 @@ const makeOrchestrationEngine = Effect.gen(function* () {
 
               const lastSavedEvent = committedEvents.at(-1) ?? null;
               if (lastSavedEvent === null) {
-                return yield* new OrchestrationCommandInvariantError({
-                  commandType: envelope.command.type,
-                  detail: "Command produced no events.",
+                if (!commandIsNoop) {
+                  return yield* new OrchestrationCommandInvariantError({
+                    commandType: envelope.command.type,
+                    detail: "Command produced no events.",
+                  });
+                }
+                const acceptedAt = yield* nowIso;
+                yield* commandReceiptRepository.upsert({
+                  commandId: envelope.command.commandId,
+                  aggregateKind: aggregateRef.aggregateKind,
+                  aggregateId: aggregateRef.aggregateId,
+                  acceptedAt,
+                  resultSequence: commandReadModel.snapshotSequence,
+                  status: "accepted",
+                  error: null,
                 });
+                return {
+                  committedEvents,
+                  lastSequence: commandReadModel.snapshotSequence,
+                  nextCommandReadModel,
+                } as const;
               }
 
               yield* commandReceiptRepository.upsert({

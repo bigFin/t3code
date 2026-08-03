@@ -2218,6 +2218,58 @@ fanout.layer("ProviderServiceLive fanout", (it) => {
     }),
   );
 
+  it.effect("marks Codex transcript refresh before publishing replay truncation warnings", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const directory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
+      const threadId = asThreadId("thread-replay-truncated");
+      yield* provider.startSession(threadId, {
+        provider: CODEX_DRIVER,
+        providerInstanceId: codexInstanceId,
+        threadId,
+        cwd: "/tmp/replay-truncated",
+        runtimeMode: "full-access",
+      });
+
+      const publishedBindingRef = yield* Ref.make<
+        Option.Option<ProviderSessionDirectory.ProviderRuntimeBindingWithMetadata>
+      >(Option.none());
+      const consumer = yield* Stream.take(provider.streamEvents, 1).pipe(
+        Stream.runForEach((event) =>
+          directory
+            .getBinding(event.threadId)
+            .pipe(Effect.flatMap((binding) => Ref.set(publishedBindingRef, binding))),
+        ),
+        Effect.forkChild,
+      );
+      yield* advanceTestClock(50);
+
+      fanout.codex.emit({
+        type: "runtime.warning",
+        eventId: asEventId("evt-replay-truncated"),
+        provider: CODEX_DRIVER,
+        createdAt: "2026-01-01T00:00:00.000Z",
+        threadId,
+        payload: {
+          message: "Provider-host replay was truncated.",
+          detail: {
+            source: "provider-host-replay",
+          },
+        },
+      });
+
+      yield* Fiber.join(consumer);
+      const publishedBinding = yield* Ref.get(publishedBindingRef);
+      assert.equal(Option.isSome(publishedBinding), true);
+      if (Option.isSome(publishedBinding)) {
+        expect(publishedBinding.value.runtimePayload).toMatchObject({
+          codexCliTranscriptRefreshRequired: true,
+          cwd: "/tmp/replay-truncated",
+        });
+      }
+    }),
+  );
+
   it.effect("fans out canonical runtime events in emission order", () =>
     Effect.gen(function* () {
       const provider = yield* ProviderService.ProviderService;

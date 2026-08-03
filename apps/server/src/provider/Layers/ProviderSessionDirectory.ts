@@ -91,7 +91,7 @@ const makeProviderSessionDirectory = Effect.gen(function* () {
       Effect.mapError(toPersistenceError("ProviderSessionDirectory.getBinding:getByThreadId")),
       Effect.flatMap((runtime) =>
         Option.match(runtime, {
-          onNone: () => Effect.succeed(Option.none<ProviderRuntimeBinding>()),
+          onNone: () => Effect.succeed(Option.none<ProviderRuntimeBindingWithMetadata>()),
           onSome: (value) =>
             toRuntimeBinding(value, "ProviderSessionDirectory.getBinding").pipe(
               Effect.map((binding) => Option.some(binding)),
@@ -148,6 +148,65 @@ const makeProviderSessionDirectory = Effect.gen(function* () {
       .pipe(Effect.mapError(toPersistenceError("ProviderSessionDirectory.upsert:upsert")));
   });
 
+  const insertIfAbsent: ProviderSessionDirectoryShape["insertIfAbsent"] = Effect.fn(
+    function* (binding) {
+      const providerInstanceId =
+        binding.providerInstanceId ?? defaultInstanceIdForDriver(binding.provider);
+      const now = DateTime.formatIso(yield* DateTime.now);
+      return yield* repository
+        .insertIfAbsent({
+          threadId: binding.threadId,
+          providerName: binding.provider,
+          providerInstanceId,
+          adapterKey: binding.adapterKey ?? binding.provider,
+          runtimeMode: binding.runtimeMode ?? "full-access",
+          status: binding.status ?? "running",
+          lastSeenAt: now,
+          resumeCursor: binding.resumeCursor ?? null,
+          runtimePayload: binding.runtimePayload ?? null,
+        })
+        .pipe(
+          Effect.mapError(
+            toPersistenceError("ProviderSessionDirectory.insertIfAbsent:insertIfAbsent"),
+          ),
+        );
+    },
+  );
+
+  const mergeRuntimePayloadPatch: ProviderSessionDirectoryShape["mergeRuntimePayload"] = (
+    threadId,
+    patch,
+  ) =>
+    repository
+      .mergeRuntimePayload({ threadId, patch })
+      .pipe(
+        Effect.mapError(
+          toPersistenceError("ProviderSessionDirectory.mergeRuntimePayload:mergeRuntimePayload"),
+        ),
+      );
+
+  const mergeRuntimePayloadIfCurrent: ProviderSessionDirectoryShape["mergeRuntimePayloadIfCurrent"] =
+    (threadId, expected, patch) =>
+      repository
+        .mergeRuntimePayloadIfCurrent({
+          threadId,
+          expectedProviderName: expected.provider,
+          expectedProviderInstanceId:
+            expected.providerInstanceId ?? defaultInstanceIdForDriver(expected.provider),
+          expectedStatus: expected.status ?? "running",
+          expectedLastSeenAt: expected.lastSeenAt,
+          expectedResumeCursor: expected.resumeCursor ?? null,
+          expectedRuntimePayload: expected.runtimePayload ?? null,
+          patch,
+        })
+        .pipe(
+          Effect.mapError(
+            toPersistenceError(
+              "ProviderSessionDirectory.mergeRuntimePayloadIfCurrent:mergeRuntimePayloadIfCurrent",
+            ),
+          ),
+        );
+
   const getProvider: ProviderSessionDirectoryShape["getProvider"] = (threadId) =>
     getBinding(threadId).pipe(
       Effect.flatMap((binding) =>
@@ -184,6 +243,9 @@ const makeProviderSessionDirectory = Effect.gen(function* () {
 
   return {
     upsert,
+    insertIfAbsent,
+    mergeRuntimePayload: mergeRuntimePayloadPatch,
+    mergeRuntimePayloadIfCurrent,
     getProvider,
     getBinding,
     listThreadIds,

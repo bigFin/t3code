@@ -12,7 +12,7 @@ import * as Effect from "effect/Effect";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 
-import { decideOrchestrationCommand } from "./decider.ts";
+import { decideOrchestrationCommand, isOrchestrationCommandNoop } from "./decider.ts";
 import { createEmptyReadModel, projectEvent } from "./projector.ts";
 
 const asCommandId = (value: string): CommandId => CommandId.make(value);
@@ -168,6 +168,10 @@ it.layer(NodeServices.layer)("decider deletion flows", (it) => {
         command: projectDeleteCommand,
         readModel,
       });
+      expect(isOrchestrationCommandNoop(forcedResult)).toBe(false);
+      if (isOrchestrationCommandNoop(forcedResult)) {
+        return;
+      }
       const forcedEvents = Array.isArray(forcedResult) ? forcedResult : [forcedResult];
 
       expect(forcedEvents.map((event) => event.type)).toEqual([
@@ -200,6 +204,10 @@ it.layer(NodeServices.layer)("decider deletion flows", (it) => {
           command: nextCommand,
           readModel: sequentialReadModel,
         });
+        expect(isOrchestrationCommandNoop(decided)).toBe(false);
+        if (isOrchestrationCommandNoop(decided)) {
+          continue;
+        }
         const nextEvents = Array.isArray(decided) ? decided : [decided];
         sequentialEvents.push(...nextEvents);
         for (const nextEvent of nextEvents) {

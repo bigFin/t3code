@@ -45,13 +45,31 @@ export interface ProviderSessionDirectoryShape {
     binding: ProviderRuntimeBinding,
   ) => Effect.Effect<void, ProviderSessionDirectoryWriteError>;
 
+  readonly insertIfAbsent: (
+    binding: ProviderRuntimeBinding,
+  ) => Effect.Effect<boolean, ProviderSessionDirectoryWriteError>;
+
+  readonly mergeRuntimePayload: (
+    threadId: ThreadId,
+    patch: Readonly<Record<string, unknown>>,
+  ) => Effect.Effect<void, ProviderSessionDirectoryWriteError>;
+
+  readonly mergeRuntimePayloadIfCurrent: (
+    threadId: ThreadId,
+    expected: ProviderRuntimeBindingWithMetadata,
+    patch: Readonly<Record<string, unknown>>,
+  ) => Effect.Effect<boolean, ProviderSessionDirectoryWriteError>;
+
   readonly getProvider: (
     threadId: ThreadId,
   ) => Effect.Effect<ProviderDriverKind, ProviderSessionDirectoryReadError>;
 
   readonly getBinding: (
     threadId: ThreadId,
-  ) => Effect.Effect<Option.Option<ProviderRuntimeBinding>, ProviderSessionDirectoryReadError>;
+  ) => Effect.Effect<
+    Option.Option<ProviderRuntimeBindingWithMetadata>,
+    ProviderSessionDirectoryReadError
+  >;
 
   readonly listThreadIds: () => Effect.Effect<
     ReadonlyArray<ThreadId>,

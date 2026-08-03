@@ -4,9 +4,8 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { ProviderDriverKind, ThreadId } from "@t3tools/contracts";
+import { ProviderDriverKind, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
 import { it, assert } from "@effect/vitest";
-import { assertSome } from "@effect/vitest/utils";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -45,12 +44,10 @@ it.layer(makeDirectoryLayer(SqlitePersistenceMemory))("ProviderSessionDirectoryL
       const provider = yield* directory.getProvider(initialThreadId);
       assert.equal(provider, "codex");
       const resolvedBinding = yield* directory.getBinding(initialThreadId);
-      assertSome(resolvedBinding, {
-        threadId: initialThreadId,
-        provider: ProviderDriverKind.make("codex"),
-      });
+      assert.equal(Option.isSome(resolvedBinding), true);
       if (Option.isSome(resolvedBinding)) {
         assert.equal(resolvedBinding.value.threadId, initialThreadId);
+        assert.equal(resolvedBinding.value.provider, ProviderDriverKind.make("codex"));
       }
 
       const nextThreadId = ThreadId.make("thread-2");
@@ -118,6 +115,125 @@ it.layer(makeDirectoryLayer(SqlitePersistenceMemory))("ProviderSessionDirectoryL
           cwd: "/tmp/project",
           model: "gpt-5-codex",
           activeTurnId: "turn-1",
+        });
+      }
+    }));
+
+  it("inserts bindings conditionally and patches payload metadata without lifecycle rewrites", () =>
+    Effect.gen(function* () {
+      const directory = yield* ProviderSessionDirectory;
+      const threadId = ThreadId.make("thread-conditional-runtime");
+
+      const inserted = yield* directory.insertIfAbsent({
+        provider: ProviderDriverKind.make("codex"),
+        threadId,
+        status: "running",
+        runtimePayload: {
+          activeTurnId: "turn-live",
+          sessionPersistence: "detached",
+        },
+      });
+      const duplicate = yield* directory.insertIfAbsent({
+        provider: ProviderDriverKind.make("codex"),
+        threadId,
+        status: "stopped",
+        runtimePayload: {
+          activeTurnId: null,
+        },
+      });
+      yield* directory.mergeRuntimePayload(threadId, {
+        importedAt: "2026-08-02T12:00:00.000Z",
+        codexCliUpdatedAt: 1_785_691_200,
+      });
+
+      assert.equal(inserted, true);
+      assert.equal(duplicate, false);
+      const binding = yield* directory.getBinding(threadId);
+      assert.equal(Option.isSome(binding), true);
+      if (Option.isSome(binding)) {
+        assert.equal(binding.value.status, "running");
+        assert.deepEqual(binding.value.runtimePayload, {
+          activeTurnId: "turn-live",
+          sessionPersistence: "detached",
+          importedAt: "2026-08-02T12:00:00.000Z",
+          codexCliUpdatedAt: 1_785_691_200,
+        });
+      }
+    }));
+
+  it("patches import metadata only while the observed runtime binding is current", () =>
+    Effect.gen(function* () {
+      const directory = yield* ProviderSessionDirectory;
+      const threadId = ThreadId.make("thread-runtime-payload-cas");
+
+      yield* directory.upsert({
+        provider: ProviderDriverKind.make("codex"),
+        providerInstanceId: ProviderInstanceId.make("codex"),
+        threadId,
+        status: "stopped",
+        resumeCursor: { threadId: "provider-thread-a" },
+        runtimePayload: { importedFrom: "codex-cli" },
+      });
+      const observed = yield* directory.getBinding(threadId);
+      assert.equal(Option.isSome(observed), true);
+      if (Option.isNone(observed)) {
+        return;
+      }
+
+      const merged = yield* directory.mergeRuntimePayloadIfCurrent(threadId, observed.value, {
+        importedAt: "2026-08-03T00:00:00.000Z",
+      });
+      assert.equal(merged, true);
+
+      const stalePayloadMerge = yield* directory.mergeRuntimePayloadIfCurrent(
+        threadId,
+        observed.value,
+        {
+          codexCliTranscriptRefreshRequired: false,
+        },
+      );
+      assert.equal(stalePayloadMerge, false);
+      const refreshed = yield* directory.getBinding(threadId);
+      assert.equal(Option.isSome(refreshed), true);
+      if (Option.isNone(refreshed)) {
+        return;
+      }
+      yield* directory.mergeRuntimePayload(threadId, {
+        codexCliTranscriptRefreshRequired: true,
+      });
+      const staleRefreshClear = yield* directory.mergeRuntimePayloadIfCurrent(
+        threadId,
+        refreshed.value,
+        {
+          codexCliTranscriptRefreshRequired: false,
+        },
+      );
+      assert.equal(staleRefreshClear, false);
+
+      yield* directory.upsert({
+        provider: ProviderDriverKind.make("codex"),
+        providerInstanceId: ProviderInstanceId.make("codex"),
+        threadId,
+        status: "running",
+        resumeCursor: { threadId: "provider-thread-b" },
+        runtimePayload: {
+          activeTurnId: "turn-live",
+          sessionPersistence: "detached",
+        },
+      });
+      const staleMerge = yield* directory.mergeRuntimePayloadIfCurrent(threadId, observed.value, {
+        staleImportMetadata: true,
+      });
+      assert.equal(staleMerge, false);
+
+      const current = yield* directory.getBinding(threadId);
+      assert.equal(Option.isSome(current), true);
+      if (Option.isSome(current)) {
+        assert.equal(current.value.status, "running");
+        assert.deepEqual(current.value.resumeCursor, { threadId: "provider-thread-b" });
+        assert.deepEqual(current.value.runtimePayload, {
+          activeTurnId: "turn-live",
+          sessionPersistence: "detached",
         });
       }
     }));
@@ -250,12 +366,10 @@ it.layer(makeDirectoryLayer(SqlitePersistenceMemory))("ProviderSessionDirectoryL
         assert.equal(provider, "codex");
 
         const resolvedBinding = yield* directory.getBinding(threadId);
-        assertSome(resolvedBinding, {
-          threadId,
-          provider: ProviderDriverKind.make("codex"),
-        });
+        assert.equal(Option.isSome(resolvedBinding), true);
         if (Option.isSome(resolvedBinding)) {
           assert.equal(resolvedBinding.value.threadId, threadId);
+          assert.equal(resolvedBinding.value.provider, ProviderDriverKind.make("codex"));
         }
 
         const legacyTableRows = yield* sql<{ readonly name: string }>`

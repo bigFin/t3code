@@ -135,8 +135,18 @@ runtime are synchronized into that replay before the snapshot. When a runtime is
 existing attachments receive a new authoritative snapshot after replacement startup output so every
 reader adopts the same resume cursor and state. If the requested cursor predates the retained window,
 the host reports truncation and T3 projects a runtime warning instead of silently claiming complete
-replay. The control-protocol handshake has a short deadline, while the first snapshot has a separate,
-longer bounded deadline so resuming a large Codex thread is not mistaken for an unreachable host.
+replay. That warning marks the detached binding for passive transcript hydration. The CLI importer
+then reconciles app-server history with the durable rollout without changing the provider session's
+owner, status, active turn, or resume cursor. Partial app-server turns (`summary` or `notLoaded`) use
+the rollout as the historical fallback. The control-protocol handshake has a short deadline, while
+the first snapshot has a separate, longer bounded deadline so resuming a large Codex thread is not
+mistaken for an unreachable host.
+
+Detached idle bindings are also observed for independent Codex CLI activity. Rollout modification
+time and open-file ownership are the direct liveness signals; state-database `active` status is only
+used when direct rollout evidence is unavailable. Transcript imports and final session projection
+use runtime compare-and-swap guards so a concurrent T3 or CLI writer wins instead of receiving stale
+observer output.
 
 Provider event command ids are stable across replay, so reconnecting T3 does not duplicate already
 persisted orchestration changes. Transport commands reuse their id while retrying against the same

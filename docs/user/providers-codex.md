@@ -101,7 +101,10 @@ Use display names and accent colors to make accounts easy to tell apart in the m
 
 On Linux and macOS, T3 runs Codex through an independent provider host. Restarting or updating the
 T3 server briefly disconnects the app, but it does not stop an active Codex turn. T3 reattaches and
-restores the provider's current status when the server returns.
+restores the provider's current status when the server returns. If you continue the same conversation
+from Codex CLI while T3 is disconnected, T3 discovers the newer transcript and mirrors it after
+reconnecting. This synchronization is passive: it does not submit a prompt or take ownership of the
+CLI session.
 
 T3 does not submit a message or automatically resume work when the Codex execution is actually
 gone. A machine restart, spot-instance eviction, or explicit **Stop** can end that execution; after

@@ -5,6 +5,7 @@ import {
   ProjectId,
   ProviderInstanceId,
   ThreadId,
+  TurnId,
   type OrchestrationReadModel,
   type OrchestrationSession,
   type OrchestrationThread,
@@ -13,7 +14,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 
-import { decideOrchestrationCommand } from "./decider.ts";
+import { decideOrchestrationCommand, ORCHESTRATION_COMMAND_NOOP } from "./decider.ts";
 
 const NOW = "2026-01-01T00:00:00.000Z";
 const SETTLED_AT = "2025-12-30T00:00:00.000Z";
@@ -467,6 +468,47 @@ it.layer(NodeServices.layer)("settled thread decider", (it) => {
         const events = Array.isArray(result) ? result : [result];
         expect(events.map((event) => event.type)).toEqual(["thread.session-set"]);
       }
+    }),
+  );
+
+  it.effect("drops a session update when its expected version is stale", () =>
+    Effect.gen(function* () {
+      const currentSession = {
+        ...makeSession("running"),
+        activeTurnId: TurnId.make("turn-current"),
+        updatedAt: "2026-01-01T00:00:02.000Z",
+      } satisfies OrchestrationSession;
+      const result = yield* decideOrchestrationCommand({
+        command: {
+          type: "thread.session.set",
+          commandId: CommandId.make("cmd-session-stale-version"),
+          threadId: ThreadId.make("thread-1"),
+          session: {
+            ...makeSession("ready"),
+            updatedAt: "2026-01-01T00:00:03.000Z",
+          },
+          expectedSession: {
+            ...makeSession("ready"),
+            updatedAt: "2026-01-01T00:00:01.000Z",
+          },
+          createdAt: "2026-01-01T00:00:03.000Z",
+        },
+        readModel: makeReadModel("active", null, currentSession),
+      });
+      expect(result).toBe(ORCHESTRATION_COMMAND_NOOP);
+
+      const expectedAbsent = yield* decideOrchestrationCommand({
+        command: {
+          type: "thread.session.set",
+          commandId: CommandId.make("cmd-session-expected-absent"),
+          threadId: ThreadId.make("thread-1"),
+          session: makeSession("ready"),
+          expectedSession: null,
+          createdAt: "2026-01-01T00:00:03.000Z",
+        },
+        readModel: makeReadModel(null, null, currentSession),
+      });
+      expect(expectedAbsent).toBe(ORCHESTRATION_COMMAND_NOOP);
     }),
   );
 

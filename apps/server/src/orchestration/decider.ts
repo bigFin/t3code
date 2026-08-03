@@ -142,6 +142,26 @@ function threadHasQueuedTurnStart(
   );
 }
 
+function orchestrationSessionsEqual(
+  left: OrchestrationReadModel["threads"][number]["session"],
+  right: OrchestrationReadModel["threads"][number]["session"],
+): boolean {
+  if (left === null || right === null) {
+    return left === right;
+  }
+  return (
+    left.threadId === right.threadId &&
+    left.status === right.status &&
+    left.providerName === right.providerName &&
+    left.providerInstanceId === right.providerInstanceId &&
+    left.runtimeMode === right.runtimeMode &&
+    left.activeTurnId === right.activeTurnId &&
+    left.lastError === right.lastError &&
+    (left.retrying ?? false) === (right.retrying ?? false) &&
+    left.updatedAt === right.updatedAt
+  );
+}
+
 function withEventBase(
   input: Pick<OrchestrationCommand, "commandId"> & {
     readonly aggregateKind: OrchestrationEvent["aggregateKind"];
@@ -174,9 +194,21 @@ function withEventBase(
 
 type PlannedOrchestrationEvent = Omit<OrchestrationEvent, "sequence">;
 
+export const ORCHESTRATION_COMMAND_NOOP = {
+  _tag: "OrchestrationCommandNoop",
+} as const;
+export type OrchestrationCommandNoop = typeof ORCHESTRATION_COMMAND_NOOP;
+
+export function isOrchestrationCommandNoop(
+  value: DecideOrchestrationCommandResult,
+): value is OrchestrationCommandNoop {
+  return !Array.isArray(value) && "_tag" in value && value._tag === "OrchestrationCommandNoop";
+}
+
 type DecideOrchestrationCommandResult =
   | PlannedOrchestrationEvent
-  | ReadonlyArray<PlannedOrchestrationEvent>;
+  | ReadonlyArray<PlannedOrchestrationEvent>
+  | OrchestrationCommandNoop;
 
 const decideCommandSequence = Effect.fn("decideCommandSequence")(function* ({
   commands,
@@ -198,6 +230,9 @@ const decideCommandSequence = Effect.fn("decideCommandSequence")(function* ({
       command: nextCommand,
       readModel: nextReadModel,
     });
+    if (isOrchestrationCommandNoop(decided)) {
+      continue;
+    }
     const nextEvents = Array.isArray(decided) ? decided : [decided];
     for (const nextEvent of nextEvents) {
       plannedEvents.push(nextEvent);
@@ -984,6 +1019,13 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         threadId: command.threadId,
       });
+      if (
+        command.expectedSession !== undefined &&
+        !orchestrationSessionsEqual(thread.session, command.expectedSession)
+      ) {
+        return ORCHESTRATION_COMMAND_NOOP;
+      }
+      const session = command.session;
       const sessionSetEvent: Omit<OrchestrationEvent, "sequence"> = {
         ...(yield* withEventBase({
           aggregateKind: "thread",
@@ -995,7 +1037,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         type: "thread.session-set",
         payload: {
           threadId: command.threadId,
-          session: command.session,
+          session,
         },
       };
       // Only a session coming alive is activity worth waking a settled thread
@@ -1006,8 +1048,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       // surfaces immediately — effectiveSnoozed refuses to classify a thread
       // with a raised hand (approval / input / failure / fresh completion)
       // as snoozed, without spending the return ticket.
-      const isSessionActivity =
-        command.session.status === "starting" || command.session.status === "running";
+      const isSessionActivity = session.status === "starting" || session.status === "running";
       // Real activity resets ANY override (settled wakes, active unpins).
       if (thread.settledOverride === null || !isSessionActivity) {
         return sessionSetEvent;

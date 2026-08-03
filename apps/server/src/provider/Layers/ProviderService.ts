@@ -60,6 +60,20 @@ import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import * as McpSessionRegistry from "../../mcp/McpSessionRegistry.ts";
 const isModelSelection = Schema.is(ModelSelection);
 
+function isCodexReplayTruncationWarning(event: ProviderRuntimeEvent): boolean {
+  if (event.provider !== "codex" || event.type !== "runtime.warning") {
+    return false;
+  }
+  const detail = event.payload.detail;
+  return (
+    detail !== null &&
+    typeof detail === "object" &&
+    !Array.isArray(detail) &&
+    "source" in detail &&
+    detail.source === "provider-host-replay"
+  );
+}
+
 function hasDetachedSessionPersistence(
   adapter: ProviderAdapterShape<ProviderAdapterError> | undefined,
 ): boolean {
@@ -331,14 +345,33 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     },
     event: ProviderRuntimeEvent,
   ): Effect.Effect<void> =>
-    Effect.sync(() => correlateRuntimeEventWithInstance(source, event)).pipe(
-      Effect.flatMap((canonicalEvent) =>
-        increment(providerRuntimeEventsTotal, {
-          provider: canonicalEvent.provider,
-          eventType: canonicalEvent.type,
-        }).pipe(Effect.andThen(publishRuntimeEvent(canonicalEvent))),
-      ),
-    );
+    Effect.gen(function* () {
+      const canonicalEvent = correlateRuntimeEventWithInstance(source, event);
+      yield* increment(providerRuntimeEventsTotal, {
+        provider: canonicalEvent.provider,
+        eventType: canonicalEvent.type,
+      });
+      if (isCodexReplayTruncationWarning(canonicalEvent)) {
+        yield* directory
+          .mergeRuntimePayload(canonicalEvent.threadId, {
+            codexCliTranscriptRefreshRequired: true,
+          })
+          .pipe(
+            Effect.catch((cause) =>
+              Effect.logWarning(
+                "failed to mark Codex transcript refresh after provider-host replay truncation",
+              ).pipe(
+                Effect.annotateLogs({
+                  threadId: canonicalEvent.threadId,
+                  providerInstanceId: canonicalEvent.providerInstanceId,
+                  cause,
+                }),
+              ),
+            ),
+          );
+      }
+      yield* publishRuntimeEvent(canonicalEvent);
+    });
 
   // `subscribedAdapters` is our source-of-truth for "which instance adapters
   // are currently wired into the runtime event bus". It both tracks the set

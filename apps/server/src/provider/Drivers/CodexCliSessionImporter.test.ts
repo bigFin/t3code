@@ -4,6 +4,7 @@ import {
   ProviderInstanceId,
   ThreadId,
   TurnId,
+  type OrchestrationThread,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Path from "effect/Path";
@@ -12,27 +13,47 @@ import { describe, expect, it } from "vite-plus/test";
 import type * as CodexSchema from "effect-codex-app-server/schema";
 
 import {
+  advanceCodexRolloutTaskCursor,
+  advanceCodexRolloutMessageCursor,
   CODEX_INTERACTIVE_SOURCE_KINDS,
+  codexRolloutCompleteUtf8PrefixLength,
   codexCliMessageImportCommand,
   collectCodexCliImportedMessages,
   collectCodexCliRolloutMessages,
+  hasSynchronizedCodexCliTranscript,
   isCodexRolloutPathWithinSessionsRoot,
+  isCodexCliImportFreshForRollout,
+  isCompleteCodexRolloutMessageRead,
   isCurrentCodexCliImport,
+  isDetachedCodexCliObserverBinding,
+  isDetachedCodexCliTranscriptRefreshBinding,
   isDetachedCodexCliMirrorSession,
   isDifferentlyKeyedCodexCliOwnerBinding,
   isImportableCodexInteractiveThread,
   isLiveCodexBinding,
   isRecentCodexCliActivity,
+  isRecentCodexCliRolloutActivity,
+  mergeCodexCliRolloutMessages,
   parseCodexRolloutTerminalEvidence,
+  parseLatestCodexRolloutTaskState,
+  pruneCodexCliImportCache,
   reconcileCodexCliImportedMessages,
   resolveCodexCliImportBinding,
+  resolveCodexCliExpectedUserMessageIds,
+  resolveCodexCliProviderRuntimeExpectation,
+  resolveCodexCliTranscriptMessages,
+  readCodexCliImportedAt,
+  resolveObservedCodexCliSessionState,
   resolveStaleCodexCliSession,
   shouldInspectInterruptedCodexCliMirror,
+  shouldInspectDetachedCodexCliObserver,
+  shouldApplyObservedCodexCliSessionState,
+  shouldImportCodexCliMessages,
   shouldInterruptStaleCodexCliSession,
-  shouldPreserveCurrentOpenCodexCliImport,
+  shouldPersistCodexCliImportMetadata,
   shouldProbeCodexCliRolloutOwner,
-  shouldReconcileCurrentCodexCliSessionWithoutRead,
   shouldSkipCurrentCodexCliImport,
+  shouldSkipUnchangedDetachedCodexCliObserver,
 } from "./CodexCliSessionImporter.ts";
 
 function makeThread(): CodexSchema.V2ThreadReadResponse["thread"] {
@@ -198,14 +219,14 @@ describe("CodexCliSessionImporter transcript conversion", () => {
       }),
     ).toEqual([
       {
-        messageId: MessageId.make("codex-cli:019legacy-thread:rollout:2"),
+        messageId: MessageId.make("codex-cli:019legacy-thread:rollout:55c625b84fed838b"),
         role: "user",
         text: "Inspect the legacy session.",
         turnId: TurnId.make("turn-legacy"),
         createdAt: "2026-07-16T15:29:37.589Z",
       },
       {
-        messageId: MessageId.make("codex-cli:019legacy-thread:rollout:4"),
+        messageId: MessageId.make("codex-cli:019legacy-thread:assistant-legacy"),
         role: "assistant",
         text: "Recovered it.",
         turnId: TurnId.make("turn-legacy"),
@@ -244,11 +265,54 @@ describe("CodexCliSessionImporter transcript conversion", () => {
       }),
     ).toEqual([
       {
-        messageId: MessageId.make("codex-cli:019legacy-thread:rollout:0"),
+        messageId: MessageId.make("codex-cli:019legacy-thread:rollout:a1255403be90f725"),
         role: "user",
         text: "Legacy user prompt.",
-        turnId: TurnId.make("codex-cli:019legacy-thread:rollout-turn:0"),
+        turnId: TurnId.make("codex-cli:019legacy-thread:rollout-turn:a1255403be90f725"),
         createdAt: "2026-07-16T15:29:37.589Z",
+      },
+    ]);
+  });
+
+  it("prefers raw user items over near-simultaneous legacy user events", () => {
+    const contents = [
+      JSON.stringify({
+        timestamp: "2026-07-16T15:29:37.500Z",
+        type: "response_item",
+        payload: {
+          id: "user-1",
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "Proceed." }],
+          internal_chat_message_metadata_passthrough: {
+            turn_id: "turn-1",
+          },
+        },
+      }),
+      JSON.stringify({
+        timestamp: "2026-07-16T15:29:37.589Z",
+        type: "event_msg",
+        payload: {
+          type: "user_message",
+          message: "Proceed.",
+          turn_id: "turn-1",
+        },
+      }),
+    ].join("\n");
+
+    expect(
+      collectCodexCliRolloutMessages({
+        threadId: "019legacy-thread",
+        contents,
+        createdAt: 1_784_215_777,
+      }),
+    ).toEqual([
+      {
+        messageId: MessageId.make("codex-cli:019legacy-thread:user-1"),
+        role: "user",
+        text: "Proceed.",
+        turnId: TurnId.make("turn-1"),
+        createdAt: "2026-07-16T15:29:37.500Z",
       },
     ]);
   });
@@ -281,6 +345,126 @@ describe("CodexCliSessionImporter transcript conversion", () => {
     expect(repeated).toEqual(first);
     expect(otherThread[0]?.messageId).not.toBe(first[0]?.messageId);
     expect(otherThread[0]?.turnId).not.toBe(first[0]?.turnId);
+  });
+
+  it("merges canonical rollout messages without duplicate fallback scans", () => {
+    const fallback = collectCodexCliRolloutMessages({
+      threadId: "019legacy-thread",
+      contents: JSON.stringify({
+        timestamp: "2026-07-16T15:29:37.500Z",
+        type: "event_msg",
+        payload: {
+          type: "user_message",
+          message: "Recovered.",
+        },
+      }),
+      createdAt: 1_784_215_777,
+    })[0]!;
+    const canonical = {
+      ...fallback,
+      messageId: MessageId.make("codex-cli:019legacy-thread:assistant-1"),
+    };
+    const longerCanonical = {
+      ...canonical,
+      text: "Recovered with the complete final response.",
+    };
+
+    expect(mergeCodexCliRolloutMessages([fallback], [canonical])).toEqual([canonical]);
+    expect(mergeCodexCliRolloutMessages([canonical], [longerCanonical])).toEqual([longerCanonical]);
+  });
+
+  it("keeps raw Codex message identity stable across app-server and rollout sources", () => {
+    const appServerMessage = collectCodexCliImportedMessages(makeThread())[0];
+    const [rolloutMessage] = collectCodexCliRolloutMessages({
+      threadId: "019codex-thread",
+      contents: JSON.stringify({
+        timestamp: "2023-11-14T22:13:21.000Z",
+        type: "response_item",
+        payload: {
+          id: "message-user-1",
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "Inspect this." }],
+          internal_chat_message_metadata_passthrough: {
+            turn_id: "turn-1",
+          },
+        },
+      }),
+      createdAt: 1_700_000_000,
+    });
+
+    expect(appServerMessage?.messageId).toBe(
+      MessageId.make("codex-cli:019codex-thread:message-user-1"),
+    );
+    expect(rolloutMessage?.messageId).toBe(appServerMessage?.messageId);
+    expect(rolloutMessage?.turnId).toBe(appServerMessage?.turnId);
+  });
+
+  it("uses rollout recovery for non-empty partial app-server transcripts", () => {
+    const thread = {
+      ...makeThread(),
+      turns: makeThread().turns.map((turn, index) =>
+        index === 1
+          ? {
+              ...turn,
+              itemsView: "summary" as const,
+            }
+          : turn,
+      ),
+    };
+    const rollout = {
+      complete: true,
+      messages: collectCodexCliRolloutMessages({
+        threadId: thread.id,
+        contents: JSON.stringify({
+          timestamp: "2023-11-14T22:13:22.000Z",
+          type: "response_item",
+          payload: {
+            id: "message-agent-2",
+            type: "message",
+            role: "assistant",
+            content: [{ type: "output_text", text: "Recovered from rollout." }],
+            internal_chat_message_metadata_passthrough: {
+              turn_id: "turn-2",
+            },
+          },
+        }),
+        createdAt: thread.createdAt,
+      }),
+    };
+
+    const resolved = resolveCodexCliTranscriptMessages({ thread, rollout });
+
+    expect(resolved.complete).toBe(true);
+    expect(resolved.messages).toHaveLength(4);
+    expect(resolved.messages.at(-1)).toMatchObject({
+      messageId: MessageId.make("codex-cli:019codex-thread:message-agent-2"),
+      text: "Recovered from rollout.",
+    });
+  });
+
+  it("does not require rollout fallback for complete app-server transcripts", () => {
+    const thread = makeThread();
+    const resolved = resolveCodexCliTranscriptMessages({
+      thread,
+      rollout: {
+        complete: false,
+        messages: [
+          {
+            messageId: MessageId.make("rollout-only"),
+            role: "assistant",
+            text: "Should not be selected.",
+            turnId: TurnId.make("turn-rollout"),
+            createdAt: "2026-08-03T00:00:00.000Z",
+          },
+        ],
+      },
+    });
+
+    expect(resolved).toEqual({
+      complete: true,
+      messages: collectCodexCliImportedMessages(thread),
+    });
   });
 
   effectIt.effect("rejects rollout paths outside the configured sessions root", () =>
@@ -336,6 +520,22 @@ describe("CodexCliSessionImporter transcript conversion", () => {
     expect(repeated.commandId).toBe(first.commandId);
     expect(changed.commandId).not.toBe(first.commandId);
     expect(first.messageId).toBe(message.messageId);
+
+    const expectedProviderRuntime = {
+      providerName: ProviderDriverKind.make("codex"),
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      status: "running" as const,
+      lastSeenAt: "2026-08-03T00:00:00.000Z",
+      resumeCursor: { threadId: "019codex-thread" },
+      requiresDetachedIdle: true,
+    };
+    const guarded = codexCliMessageImportCommand({
+      threadId: ThreadId.make("019codex-thread"),
+      message,
+      expectedProviderRuntime,
+    });
+    expect(guarded.expectedProviderRuntime).toEqual(expectedProviderRuntime);
+    expect(guarded.commandId).not.toBe(first.commandId);
   });
 
   it("reuses a pending T3 message id for Codex's copy of the same prompt", () => {
@@ -365,6 +565,46 @@ describe("CodexCliSessionImporter transcript conversion", () => {
           streaming: false,
           createdAt: "2026-07-25T19:53:12.490Z",
           updatedAt: "2026-07-25T19:53:12.490Z",
+        },
+      ],
+    } as Parameters<typeof reconcileCodexCliImportedMessages>[1];
+
+    expect(reconcileCodexCliImportedMessages([imported], projectedThread)).toEqual([
+      {
+        ...imported,
+        messageId: MessageId.make("t3-pending-message"),
+        createdAt: "2026-07-25T19:53:12.490Z",
+      },
+    ]);
+  });
+
+  it("reuses the projected message id after the pending prompt gains its turn id", () => {
+    const imported = {
+      messageId: MessageId.make("codex-cli:019codex-thread:item-200"),
+      role: "user" as const,
+      text: "Keep working after I close the window.",
+      turnId: TurnId.make("turn-pending"),
+      createdAt: "2026-07-25T19:53:14.000Z",
+    };
+    const projectedThread = {
+      id: ThreadId.make("019codex-thread"),
+      latestTurn: {
+        turnId: TurnId.make("turn-pending"),
+        state: "running" as const,
+        requestedAt: "2026-07-25T19:53:12.490Z",
+        startedAt: "2026-07-25T19:53:12.490Z",
+        completedAt: null,
+        assistantMessageId: null,
+      },
+      messages: [
+        {
+          id: MessageId.make("t3-pending-message"),
+          role: "user" as const,
+          text: imported.text,
+          turnId: imported.turnId,
+          streaming: false,
+          createdAt: "2026-07-25T19:53:12.490Z",
+          updatedAt: "2026-07-25T19:53:14.000Z",
         },
       ],
     } as Parameters<typeof reconcileCodexCliImportedMessages>[1];
@@ -437,6 +677,511 @@ describe("CodexCliSessionImporter transcript conversion", () => {
     expect(isLiveCodexBinding(undefined)).toBe(false);
   });
 
+  it("observes independently updated CLI threads through idle detached bindings", () => {
+    const binding = {
+      threadId: ThreadId.make("t3-owned-thread"),
+      provider: ProviderDriverKind.make("codex"),
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      status: "running" as const,
+      runtimeMode: "full-access" as const,
+      resumeCursor: { threadId: "019codex-thread" },
+      runtimePayload: {
+        activeTurnId: null,
+        sessionPersistence: "detached",
+        codexCliImportVersion: 2,
+        codexCliUpdatedAt: 1_700_000_002,
+      },
+    };
+    const thread = makeThread();
+
+    expect(isDetachedCodexCliObserverBinding(binding)).toBe(true);
+    expect(
+      shouldInspectDetachedCodexCliObserver({
+        binding,
+        listedThread: thread,
+        projectedSessionStatus: "ready",
+      }),
+    ).toBe(false);
+    expect(
+      shouldInspectDetachedCodexCliObserver({
+        binding,
+        listedThread: thread,
+        projectedSessionStatus: "starting",
+      }),
+    ).toBe(true);
+    expect(
+      shouldInspectDetachedCodexCliObserver({
+        binding,
+        listedThread: { ...thread, status: { type: "active", activeFlags: [] } },
+        projectedSessionStatus: "running",
+      }),
+    ).toBe(true);
+    expect(
+      shouldInspectDetachedCodexCliObserver({
+        binding,
+        listedThread: { ...thread, updatedAt: 1_700_000_003 },
+        projectedSessionStatus: "ready",
+      }),
+    ).toBe(false);
+    expect(
+      shouldInspectDetachedCodexCliObserver({
+        binding,
+        listedThread: thread,
+        projectedSessionStatus: "interrupted",
+      }),
+    ).toBe(false);
+    expect(
+      isDetachedCodexCliObserverBinding({
+        ...binding,
+        runtimePayload: {
+          ...binding.runtimePayload,
+          activeTurnId: "turn-owned-by-t3",
+        },
+      }),
+    ).toBe(false);
+    expect(
+      isDetachedCodexCliObserverBinding({
+        ...binding,
+        runtimePayload: {
+          ...binding.runtimePayload,
+          sessionPersistence: "process-bound",
+        },
+      }),
+    ).toBe(false);
+  });
+
+  it("hydrates replay gaps without taking ownership of an active detached session", () => {
+    const binding = {
+      threadId: ThreadId.make("t3-owned-thread"),
+      provider: ProviderDriverKind.make("codex"),
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      status: "running" as const,
+      runtimeMode: "full-access" as const,
+      resumeCursor: { threadId: "019codex-thread" },
+      runtimePayload: {
+        activeTurnId: "turn-owned-by-provider",
+        sessionPersistence: "detached",
+        codexCliTranscriptRefreshRequired: true,
+      },
+    };
+
+    expect(isDetachedCodexCliObserverBinding(binding)).toBe(false);
+    expect(isDetachedCodexCliTranscriptRefreshBinding(binding)).toBe(true);
+    expect(
+      shouldImportCodexCliMessages({
+        importIsCurrent: true,
+        hasStaleSession: false,
+        observesDetachedCliSession: false,
+        observerNeedsHydration: false,
+        refreshesDetachedCliTranscript: true,
+      }),
+    ).toBe(true);
+    expect(
+      shouldPersistCodexCliImportMetadata({
+        observesDetachedCliSession: false,
+        observerSessionSynchronized: true,
+        transcriptHydrationComplete: false,
+        transcriptSynchronized: true,
+      }),
+    ).toBe(false);
+  });
+
+  it("allows a newer external turn to replace the turn observed at scan start", () => {
+    const makeSession = (activeTurnId: TurnId) => ({
+      threadId: ThreadId.make("t3-owned-thread"),
+      status: "running" as const,
+      providerName: "codex",
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      runtimeMode: "full-access" as const,
+      activeTurnId,
+      lastError: null,
+      retrying: false,
+      updatedAt: "2026-08-02T12:00:00.000Z",
+    });
+    const preparedThread = {
+      latestUserMessageAt: null,
+      session: makeSession(TurnId.make("turn-a")),
+      updatedAt: "2026-08-02T12:00:00.000Z",
+    };
+
+    expect(
+      shouldApplyObservedCodexCliSessionState({
+        currentThread: preparedThread,
+        preparedThread,
+      }),
+    ).toBe(true);
+    expect(
+      shouldApplyObservedCodexCliSessionState({
+        currentThread: {
+          ...preparedThread,
+          session: makeSession(TurnId.make("turn-c")),
+        },
+        preparedThread,
+      }),
+    ).toBe(false);
+    expect(
+      shouldApplyObservedCodexCliSessionState({
+        currentThread: {
+          ...preparedThread,
+          latestUserMessageAt: "2026-08-02T12:00:01.000Z",
+          updatedAt: "2026-08-02T12:00:01.000Z",
+        },
+        preparedThread,
+      }),
+    ).toBe(false);
+    expect(
+      shouldApplyObservedCodexCliSessionState({
+        currentThread: {
+          latestUserMessageAt: null,
+          session: null,
+          updatedAt: "2026-08-02T12:00:00.000Z",
+        },
+        preparedThread: undefined,
+      }),
+    ).toBe(true);
+    expect(
+      shouldApplyObservedCodexCliSessionState({
+        currentThread: {
+          latestUserMessageAt: "2026-08-02T12:00:01.000Z",
+          session: null,
+          updatedAt: "2026-08-02T12:00:01.000Z",
+        },
+        preparedThread: undefined,
+      }),
+    ).toBe(false);
+  });
+
+  it("tracks exact user message identity expected after transcript import", () => {
+    const projectedThread = {
+      messages: [
+        {
+          id: MessageId.make("existing-user-message"),
+          role: "user",
+          text: "Existing",
+          turnId: null,
+          streaming: false,
+          createdAt: "2026-08-03T00:00:00.000Z",
+          updatedAt: "2026-08-03T00:00:00.000Z",
+        },
+      ],
+    } satisfies Pick<OrchestrationThread, "messages">;
+
+    expect(
+      resolveCodexCliExpectedUserMessageIds(projectedThread, [
+        {
+          messageId: MessageId.make("assistant-message"),
+          role: "assistant",
+          text: "Working",
+          turnId: TurnId.make("turn-1"),
+          createdAt: "2026-08-03T00:00:01.000Z",
+        },
+        {
+          messageId: MessageId.make("existing-user-message"),
+          role: "user",
+          text: "Existing",
+          turnId: TurnId.make("turn-1"),
+          createdAt: "2026-08-04T00:00:00.000Z",
+        },
+        {
+          messageId: MessageId.make("a"),
+          role: "user",
+          text: "Lowercase",
+          turnId: TurnId.make("turn-2"),
+          createdAt: "2026-08-03T00:00:01.000Z",
+        },
+        {
+          messageId: MessageId.make("B"),
+          role: "user",
+          text: "Uppercase",
+          turnId: TurnId.make("turn-2"),
+          createdAt: "2026-08-03T00:00:01.000Z",
+        },
+        {
+          messageId: MessageId.make("newer-user-message"),
+          role: "user",
+          text: "Continue",
+          turnId: TurnId.make("turn-2"),
+          createdAt: "2026-08-03T00:00:02.000Z",
+        },
+      ]),
+    ).toEqual([
+      MessageId.make("existing-user-message"),
+      MessageId.make("B"),
+      MessageId.make("a"),
+      MessageId.make("newer-user-message"),
+    ]);
+  });
+
+  it("prunes rollout and import caches to the current discovery window", () => {
+    const cache = new Map([
+      ["active", 1],
+      ["expired", 2],
+    ]);
+
+    pruneCodexCliImportCache(cache, new Set(["active"]));
+
+    expect([...cache.entries()]).toEqual([["active", 1]]);
+  });
+
+  it("incrementally parses rollout messages and recovers cleanly after truncation", () => {
+    const user = JSON.stringify({
+      timestamp: "2026-08-03T00:00:00.000Z",
+      type: "response_item",
+      payload: {
+        id: "user-1",
+        type: "message",
+        role: "user",
+        content: [{ type: "input_text", text: "Proceed." }],
+      },
+    });
+    const assistant = JSON.stringify({
+      timestamp: "2026-08-03T00:00:01.000Z",
+      type: "response_item",
+      payload: {
+        id: "assistant-1",
+        type: "message",
+        role: "assistant",
+        content: [{ type: "output_text", text: "Done." }],
+      },
+    });
+    const splitAt = Math.floor(assistant.length / 2);
+    const deferredTrailingRecord = advanceCodexRolloutMessageCursor({
+      cursor: undefined,
+      contents: user,
+      offset: user.length,
+      modifiedAtMillis: 1,
+      threadId: "019codex-thread",
+      createdAt: 1_700_000_000,
+      isFinalChunk: false,
+    });
+    expect(deferredTrailingRecord.messages).toHaveLength(0);
+    expect(deferredTrailingRecord.pendingLine).toBe(user);
+    const flushedTrailingRecord = advanceCodexRolloutMessageCursor({
+      cursor: deferredTrailingRecord,
+      contents: "",
+      offset: user.length,
+      modifiedAtMillis: 1,
+      threadId: "019codex-thread",
+      createdAt: 1_700_000_000,
+      isFinalChunk: true,
+    });
+    expect(flushedTrailingRecord.messages.map((message) => message.messageId)).toEqual([
+      MessageId.make("codex-cli:019codex-thread:user-1"),
+    ]);
+    expect(flushedTrailingRecord.pendingLine).toBe("");
+
+    const first = advanceCodexRolloutMessageCursor({
+      cursor: undefined,
+      contents: `${user}\n${assistant.slice(0, splitAt)}`,
+      offset: user.length + 1 + splitAt,
+      modifiedAtMillis: 1,
+      threadId: "019codex-thread",
+      createdAt: 1_700_000_000,
+    });
+    expect(first.messages).toHaveLength(1);
+    expect(first.pendingLine).toBe(assistant.slice(0, splitAt));
+    expect(isCompleteCodexRolloutMessageRead(first, first.offset)).toBe(false);
+
+    const completed = advanceCodexRolloutMessageCursor({
+      cursor: first,
+      contents: assistant.slice(splitAt),
+      offset: user.length + 1 + assistant.length,
+      modifiedAtMillis: 2,
+      threadId: "019codex-thread",
+      createdAt: 1_700_000_000,
+    });
+    expect(completed.messages.map((message) => message.messageId)).toEqual([
+      MessageId.make("codex-cli:019codex-thread:user-1"),
+      MessageId.make("codex-cli:019codex-thread:assistant-1"),
+    ]);
+    expect(completed.pendingLine).toBe("");
+    expect(isCompleteCodexRolloutMessageRead(completed, completed.offset)).toBe(true);
+    expect(isCompleteCodexRolloutMessageRead(completed, completed.offset + 1)).toBe(false);
+
+    const replacement = advanceCodexRolloutMessageCursor({
+      cursor: undefined,
+      contents: `${assistant}\n`,
+      offset: assistant.length + 1,
+      modifiedAtMillis: 3,
+      threadId: "019codex-thread",
+      createdAt: 1_700_000_000,
+    });
+    expect(replacement.messages.map((message) => message.messageId)).toEqual([
+      MessageId.make("codex-cli:019codex-thread:assistant-1"),
+    ]);
+  });
+
+  it("does not commit a rollout cursor through an incomplete UTF-8 character", () => {
+    const record = JSON.stringify({
+      timestamp: "2026-08-03T00:00:00.000Z",
+      type: "response_item",
+      payload: {
+        id: "assistant-unicode",
+        type: "message",
+        role: "assistant",
+        content: [{ type: "output_text", text: "Done 🙂" }],
+      },
+    });
+    const bytes = new TextEncoder().encode(record);
+    const emojiStart = bytes.findIndex((byte) => byte === 0xf0);
+    expect(emojiStart).toBeGreaterThan(0);
+    const firstBytes = bytes.slice(0, emojiStart + 2);
+    const firstCompleteLength = codexRolloutCompleteUtf8PrefixLength(firstBytes);
+    expect(firstCompleteLength).toBe(emojiStart);
+    const first = advanceCodexRolloutMessageCursor({
+      cursor: undefined,
+      contents: new TextDecoder().decode(firstBytes.slice(0, firstCompleteLength)),
+      offset: firstCompleteLength,
+      modifiedAtMillis: 1,
+      threadId: "019codex-thread",
+      createdAt: 1_700_000_000,
+      isFinalChunk: false,
+    });
+    expect(first.messages).toHaveLength(0);
+
+    const remainingBytes = new Uint8Array(
+      firstBytes.length - firstCompleteLength + bytes.length - firstBytes.length,
+    );
+    remainingBytes.set(firstBytes.slice(firstCompleteLength));
+    remainingBytes.set(bytes.slice(firstBytes.length), firstBytes.length - firstCompleteLength);
+    expect(codexRolloutCompleteUtf8PrefixLength(remainingBytes)).toBe(remainingBytes.length);
+    const completed = advanceCodexRolloutMessageCursor({
+      cursor: first,
+      contents: new TextDecoder().decode(remainingBytes),
+      offset: bytes.length,
+      modifiedAtMillis: 2,
+      threadId: "019codex-thread",
+      createdAt: 1_700_000_000,
+      isFinalChunk: true,
+    });
+    expect(completed.pendingLine).toBe("");
+    expect(completed.messages).toHaveLength(1);
+    expect(completed.messages[0]?.text).toBe("Done 🙂");
+  });
+
+  it("verifies imported transcript content before advancing observer freshness", () => {
+    const imported = {
+      messageId: MessageId.make("message-1"),
+      role: "assistant" as const,
+      text: "Recovered.",
+      turnId: TurnId.make("turn-1"),
+      createdAt: "2026-08-03T00:00:00.000Z",
+    };
+    const projected = {
+      messages: [
+        {
+          id: imported.messageId,
+          role: imported.role,
+          text: imported.text,
+          turnId: imported.turnId,
+          streaming: false,
+          createdAt: imported.createdAt,
+          updatedAt: imported.createdAt,
+        },
+      ],
+    } satisfies Pick<OrchestrationThread, "messages">;
+
+    expect(hasSynchronizedCodexCliTranscript(projected, [imported])).toBe(true);
+    expect(
+      hasSynchronizedCodexCliTranscript(
+        {
+          messages: projected.messages.map((message) => ({
+            ...message,
+            text: "Stale.",
+          })),
+        },
+        [imported],
+      ),
+    ).toBe(false);
+  });
+
+  it("uses precise rollout mtimes to detect same-second detached CLI updates", () => {
+    const importedAtMillis = readCodexCliImportedAt({
+      importedAt: "2026-08-02T12:00:04.000Z",
+    });
+
+    expect(importedAtMillis).toBe(Date.parse("2026-08-02T12:00:04.000Z"));
+    expect(
+      isCodexCliImportFreshForRollout(importedAtMillis, Date.parse("2026-08-02T12:00:03.999Z")),
+    ).toBe(true);
+    expect(
+      isCodexCliImportFreshForRollout(importedAtMillis, Date.parse("2026-08-02T12:00:04.500Z")),
+    ).toBe(false);
+    expect(
+      isRecentCodexCliRolloutActivity(
+        Date.parse("2026-08-03T00:00:04.500Z"),
+        Date.parse("2026-08-03T00:00:05.000Z"),
+      ),
+    ).toBe(true);
+  });
+
+  it("imports detached observer messages when rollout mtime exposes a same-second update", () => {
+    expect(
+      shouldImportCodexCliMessages({
+        importIsCurrent: true,
+        hasStaleSession: false,
+        observesDetachedCliSession: true,
+        observerNeedsHydration: true,
+      }),
+    ).toBe(true);
+    expect(
+      shouldImportCodexCliMessages({
+        importIsCurrent: true,
+        hasStaleSession: false,
+        observesDetachedCliSession: true,
+        observerNeedsHydration: false,
+      }),
+    ).toBe(false);
+  });
+
+  it("does not mark detached observer imports current until session state is synchronized", () => {
+    expect(
+      shouldPersistCodexCliImportMetadata({
+        observesDetachedCliSession: true,
+        observerSessionSynchronized: false,
+      }),
+    ).toBe(false);
+    expect(
+      shouldPersistCodexCliImportMetadata({
+        observesDetachedCliSession: true,
+        observerSessionSynchronized: true,
+      }),
+    ).toBe(true);
+    expect(
+      shouldPersistCodexCliImportMetadata({
+        observesDetachedCliSession: false,
+        observerSessionSynchronized: false,
+      }),
+    ).toBe(true);
+    expect(
+      shouldPersistCodexCliImportMetadata({
+        observesDetachedCliSession: false,
+        observerSessionSynchronized: true,
+        transcriptHydrationComplete: true,
+        transcriptSynchronized: false,
+      }),
+    ).toBe(false);
+  });
+
+  it("does not infer running state from a fresh rollout cursor initialized at EOF", () => {
+    expect(
+      shouldSkipUnchangedDetachedCodexCliObserver({
+        observesDetachedCliSession: true,
+        observerNeedsHydration: false,
+        rolloutChanged: false,
+        inspectDetachedCliSession: false,
+      }),
+    ).toBe(true);
+    expect(
+      shouldSkipUnchangedDetachedCodexCliObserver({
+        observesDetachedCliSession: true,
+        observerNeedsHydration: false,
+        rolloutChanged: false,
+        inspectDetachedCliSession: true,
+      }),
+    ).toBe(false);
+  });
+
   it("selects a differently keyed T3 binding that owns the provider thread", () => {
     const providerThreadId = "019codex-thread";
     const baseBinding = {
@@ -496,6 +1241,45 @@ describe("CodexCliSessionImporter transcript conversion", () => {
     };
 
     expect(resolveCodexCliImportBinding(providerThreadId, [stopped, running])).toBe(running);
+  });
+
+  it("captures exact provider runtime ownership for session reconciliation", () => {
+    const binding = {
+      threadId: ThreadId.make("t3-owned-thread"),
+      provider: ProviderDriverKind.make("codex"),
+      providerInstanceId: ProviderInstanceId.make("codex-work"),
+      status: "stopped" as const,
+      runtimeMode: "full-access" as const,
+      resumeCursor: { threadId: "019codex-thread" },
+      lastSeenAt: "2026-08-03T00:00:00.000Z",
+    };
+
+    expect(resolveCodexCliProviderRuntimeExpectation(undefined, false)).toBeNull();
+    expect(resolveCodexCliProviderRuntimeExpectation(binding, false)).toEqual({
+      providerName: ProviderDriverKind.make("codex"),
+      providerInstanceId: ProviderInstanceId.make("codex-work"),
+      status: "stopped",
+      lastSeenAt: "2026-08-03T00:00:00.000Z",
+      resumeCursor: { threadId: "019codex-thread" },
+      requiresDetachedIdle: false,
+    });
+    expect(
+      resolveCodexCliProviderRuntimeExpectation(
+        {
+          ...binding,
+          status: "running",
+          lastSeenAt: "2026-08-03T00:00:01.000Z",
+        },
+        true,
+      ),
+    ).toEqual({
+      providerName: ProviderDriverKind.make("codex"),
+      providerInstanceId: ProviderInstanceId.make("codex-work"),
+      status: "running",
+      lastSeenAt: "2026-08-03T00:00:01.000Z",
+      resumeCursor: { threadId: "019codex-thread" },
+      requiresDetachedIdle: true,
+    });
   });
 
   it("interrupts stale projected work once the live provider binding is gone", () => {
@@ -613,11 +1397,265 @@ describe("CodexCliSessionImporter transcript conversion", () => {
     ).toBe(false);
     expect(
       shouldProbeCodexCliRolloutOwner({
+        rolloutPath: "/tmp/rollout.jsonl",
+        staleActiveTurnId: null,
+        hasDetachedMirrorSession: false,
+        observesDetachedCliSession: true,
+      }),
+    ).toBe(true);
+    expect(
+      shouldProbeCodexCliRolloutOwner({
+        rolloutPath: "/tmp/rollout.jsonl",
+        staleActiveTurnId: null,
+        hasDetachedMirrorSession: false,
+        refreshesDetachedCliTranscript: true,
+      }),
+    ).toBe(true);
+    expect(
+      shouldProbeCodexCliRolloutOwner({
         rolloutPath: undefined,
         staleActiveTurnId: null,
         hasDetachedMirrorSession: true,
       }),
     ).toBe(false);
+  });
+
+  it("reads the latest global Codex rollout task lifecycle state", () => {
+    const started = [
+      JSON.stringify({
+        type: "event_msg",
+        payload: { type: "task_started", turn_id: "turn-1" },
+      }),
+    ].join("\n");
+    expect(parseLatestCodexRolloutTaskState(started)).toEqual({
+      state: "active",
+      turnId: "turn-1",
+    });
+
+    const completed = [
+      started,
+      JSON.stringify({
+        type: "event_msg",
+        payload: { type: "task_complete", turn_id: "turn-1" },
+      }),
+    ].join("\n");
+    expect(parseLatestCodexRolloutTaskState(completed)).toEqual({
+      state: "completed",
+      turnId: "turn-1",
+    });
+
+    const interrupted = [
+      completed,
+      JSON.stringify({
+        type: "event_msg",
+        payload: { type: "turn_aborted", turn_id: "turn-2" },
+      }),
+    ].join("\n");
+    expect(parseLatestCodexRolloutTaskState(interrupted)).toEqual({
+      state: "interrupted",
+      turnId: "turn-2",
+    });
+  });
+
+  it("incrementally tracks rollout task state without rereading unchanged history", () => {
+    const started = JSON.stringify({
+      type: "event_msg",
+      payload: { type: "task_started", turn_id: "turn-1" },
+    });
+    const splitAt = Math.floor(started.length / 2);
+    const partial = advanceCodexRolloutTaskCursor(undefined, started.slice(0, splitAt), splitAt);
+    expect(partial.lifecycle.state).toBeNull();
+
+    const active = advanceCodexRolloutTaskCursor(
+      partial,
+      `${started.slice(splitAt)}\n${JSON.stringify({
+        type: "response_item",
+        payload: { type: "function_call", name: "inspect" },
+      })}\n`,
+      started.length + 100,
+    );
+    expect(active.lifecycle).toEqual({
+      state: "active",
+      turnId: "turn-1",
+    });
+
+    const unchanged = advanceCodexRolloutTaskCursor(
+      active,
+      `${JSON.stringify({
+        type: "response_item",
+        payload: { type: "function_call_output", output: "done" },
+      })}\n`,
+      started.length + 200,
+    );
+    expect(unchanged.lifecycle).toEqual({
+      state: "active",
+      turnId: "turn-1",
+    });
+
+    const completed = advanceCodexRolloutTaskCursor(
+      unchanged,
+      `${JSON.stringify({
+        type: "event_msg",
+        payload: { type: "task_complete", turn_id: "turn-1" },
+      })}\n`,
+      started.length + 300,
+    );
+    expect(completed.lifecycle).toEqual({
+      state: "completed",
+      turnId: "turn-1",
+    });
+    expect(completed.terminalTransitionObserved).toBe(true);
+    expect(completed.pendingLine).toBe("");
+
+    const nextTurn = advanceCodexRolloutTaskCursor(
+      completed,
+      [
+        JSON.stringify({
+          type: "event_msg",
+          payload: { type: "task_complete", turn_id: "turn-1" },
+        }),
+        JSON.stringify({
+          type: "event_msg",
+          payload: { type: "task_started", turn_id: "turn-2" },
+        }),
+        "",
+      ].join("\n"),
+      started.length + 500,
+    );
+    expect(nextTurn.lifecycle).toEqual({
+      state: "active",
+      turnId: "turn-2",
+    });
+    expect(nextTurn.terminalTransitionObserved).toBe(true);
+  });
+
+  it("settles detached CLI observation when active rollout evidence goes stale", () => {
+    expect(
+      resolveObservedCodexCliSessionState({
+        taskState: "active",
+        listedThreadIsActive: false,
+        listedThreadHasSystemError: false,
+        rolloutEvidenceAvailable: true,
+        rolloutIsOpen: false,
+        rolloutIsRecent: true,
+      }),
+    ).toEqual({
+      status: "running",
+      activeTurnId: null,
+      lastError: null,
+    });
+    expect(
+      resolveObservedCodexCliSessionState({
+        taskState: "active",
+        listedThreadIsActive: false,
+        listedThreadHasSystemError: false,
+        rolloutEvidenceAvailable: true,
+        rolloutIsOpen: true,
+        rolloutIsRecent: false,
+      }),
+    ).toEqual({
+      status: "running",
+      activeTurnId: null,
+      lastError: null,
+    });
+    expect(
+      resolveObservedCodexCliSessionState({
+        taskState: "active",
+        listedThreadIsActive: false,
+        listedThreadHasSystemError: false,
+        rolloutEvidenceAvailable: true,
+        rolloutIsOpen: false,
+        rolloutIsRecent: false,
+      }),
+    ).toEqual({
+      status: "interrupted",
+      activeTurnId: null,
+      lastError: "The Codex process ended before it produced a final response.",
+    });
+    expect(
+      resolveObservedCodexCliSessionState({
+        taskState: "interrupted",
+        listedThreadIsActive: false,
+        listedThreadHasSystemError: false,
+        rolloutEvidenceAvailable: true,
+        rolloutIsOpen: false,
+        rolloutIsRecent: false,
+      }),
+    ).toEqual({
+      status: "interrupted",
+      activeTurnId: null,
+      lastError: "The Codex turn was interrupted before it produced a final response.",
+    });
+    expect(
+      resolveObservedCodexCliSessionState({
+        taskState: "completed",
+        listedThreadIsActive: true,
+        listedThreadHasSystemError: true,
+        rolloutEvidenceAvailable: true,
+        rolloutIsOpen: true,
+        rolloutIsRecent: true,
+      }),
+    ).toEqual({
+      status: "ready",
+      activeTurnId: null,
+      lastError: null,
+    });
+    expect(
+      resolveObservedCodexCliSessionState({
+        taskState: null,
+        listedThreadIsActive: false,
+        listedThreadHasSystemError: true,
+        rolloutEvidenceAvailable: true,
+        rolloutIsOpen: false,
+        rolloutIsRecent: false,
+      }),
+    ).toEqual({
+      status: "error",
+      activeTurnId: null,
+      lastError: "Codex reported a system error for this thread.",
+    });
+    expect(
+      resolveObservedCodexCliSessionState({
+        taskState: null,
+        listedThreadIsActive: false,
+        listedThreadHasSystemError: true,
+        rolloutEvidenceAvailable: true,
+        rolloutIsOpen: true,
+        rolloutIsRecent: false,
+      }),
+    ).toEqual({
+      status: "running",
+      activeTurnId: null,
+      lastError: null,
+    });
+    expect(
+      resolveObservedCodexCliSessionState({
+        taskState: null,
+        listedThreadIsActive: true,
+        listedThreadHasSystemError: false,
+        rolloutEvidenceAvailable: true,
+        rolloutIsOpen: false,
+        rolloutIsRecent: false,
+      }),
+    ).toEqual({
+      status: "ready",
+      activeTurnId: null,
+      lastError: null,
+    });
+    expect(
+      resolveObservedCodexCliSessionState({
+        taskState: null,
+        listedThreadIsActive: true,
+        listedThreadHasSystemError: false,
+        rolloutEvidenceAvailable: false,
+        rolloutIsOpen: false,
+        rolloutIsRecent: false,
+      }),
+    ).toEqual({
+      status: "running",
+      activeTurnId: null,
+      lastError: null,
+    });
   });
 
   it("reconciles stale projected work against the live rollout and upstream turn", () => {
@@ -919,134 +1957,6 @@ describe("CodexCliSessionImporter transcript conversion", () => {
         makeThread(),
         false,
       ),
-    ).toBe(false);
-  });
-
-  it("preserves active open CLI turns without rereading their transcripts", () => {
-    const binding = {
-      threadId: ThreadId.make("019codex-thread"),
-      provider: ProviderDriverKind.make("codex"),
-      providerInstanceId: ProviderInstanceId.make("codex"),
-      status: "stopped" as const,
-      runtimeMode: "full-access" as const,
-      runtimePayload: {
-        importedFrom: "codex-cli",
-        codexCliImportVersion: 2,
-        codexCliUpdatedAt: 1_700_000_002,
-      },
-    };
-    const input = {
-      binding,
-      listedThread: makeThread(),
-      staleActiveTurnId: "turn-2",
-      rolloutIsOpen: true,
-      rolloutTerminalEvidence: {
-        state: null,
-        finalMessage: null,
-        completedAt: null,
-      },
-      nowMillis: 1_700_000_002_000 + 60_000,
-    } as const;
-
-    expect(shouldPreserveCurrentOpenCodexCliImport(input)).toBe(true);
-    expect(isRecentCodexCliActivity(input.listedThread.updatedAt, input.nowMillis)).toBe(true);
-    expect(
-      shouldPreserveCurrentOpenCodexCliImport({
-        ...input,
-        nowMillis: 1_700_000_002_000 + 20 * 60_000,
-      }),
-    ).toBe(false);
-    expect(
-      shouldReconcileCurrentCodexCliSessionWithoutRead({
-        ...input,
-        nowMillis: 1_700_000_002_000 + 20 * 60_000,
-      }),
-    ).toBe(true);
-    expect(
-      isRecentCodexCliActivity(input.listedThread.updatedAt, 1_700_000_002_000 + 20 * 60_000),
-    ).toBe(false);
-    expect(
-      shouldPreserveCurrentOpenCodexCliImport({
-        ...input,
-        listedThread: { ...input.listedThread, updatedAt: 1_700_000_003 },
-      }),
-    ).toBe(true);
-    expect(
-      shouldReconcileCurrentCodexCliSessionWithoutRead({
-        ...input,
-        listedThread: { ...input.listedThread, updatedAt: 1_700_000_003 },
-        rolloutIsOpen: false,
-      }),
-    ).toBe(false);
-    expect(
-      shouldPreserveCurrentOpenCodexCliImport({
-        ...input,
-        binding: {
-          ...input.binding,
-          runtimePayload: {
-            ...input.binding.runtimePayload,
-            codexCliImportVersion: 1,
-          },
-        },
-      }),
-    ).toBe(false);
-    expect(
-      shouldPreserveCurrentOpenCodexCliImport({
-        ...input,
-        staleActiveTurnId: null,
-      }),
-    ).toBe(false);
-    expect(
-      shouldPreserveCurrentOpenCodexCliImport({
-        ...input,
-        rolloutIsOpen: false,
-      }),
-    ).toBe(false);
-    expect(
-      shouldReconcileCurrentCodexCliSessionWithoutRead({
-        ...input,
-        rolloutIsOpen: false,
-      }),
-    ).toBe(true);
-    expect(
-      shouldPreserveCurrentOpenCodexCliImport({
-        ...input,
-        rolloutTerminalEvidence: {
-          state: "completed",
-          finalMessage: null,
-          completedAt: 1_700_000_003,
-        },
-      }),
-    ).toBe(false);
-    expect(
-      shouldPreserveCurrentOpenCodexCliImport({
-        ...input,
-        rolloutTerminalEvidence: {
-          state: "interrupted",
-          finalMessage: null,
-          completedAt: null,
-        },
-      }),
-    ).toBe(false);
-    expect(
-      shouldPreserveCurrentOpenCodexCliImport({
-        ...input,
-        rolloutTerminalEvidence: {
-          state: null,
-          finalMessage: "Recovered final response.",
-          completedAt: null,
-        },
-      }),
-    ).toBe(false);
-    expect(
-      shouldReconcileCurrentCodexCliSessionWithoutRead({
-        ...input,
-        rolloutTerminalEvidence: {
-          state: null,
-          finalMessage: "Recovered final response.",
-          completedAt: null,
-        },
-      }),
     ).toBe(false);
   });
 

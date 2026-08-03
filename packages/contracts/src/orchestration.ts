@@ -21,7 +21,7 @@ import {
   TrimmedString,
   TurnId,
 } from "./baseSchemas.ts";
-import { ProviderInstanceId } from "./providerInstance.ts";
+import { ProviderDriverKind, ProviderInstanceId } from "./providerInstance.ts";
 
 export const ORCHESTRATION_WS_METHODS = {
   dispatchCommand: "orchestration.dispatchCommand",
@@ -814,11 +814,25 @@ export const ClientOrchestrationCommand = Schema.Union([
 ]);
 export type ClientOrchestrationCommand = typeof ClientOrchestrationCommand.Type;
 
+const ExpectedProviderRuntime = Schema.NullOr(
+  Schema.Struct({
+    providerName: ProviderDriverKind,
+    providerInstanceId: ProviderInstanceId,
+    status: Schema.Literals(["starting", "running", "stopped", "error"]),
+    lastSeenAt: IsoDateTime,
+    resumeCursor: Schema.NullOr(Schema.Unknown),
+    requiresDetachedIdle: Schema.Boolean,
+  }),
+);
+
 const ThreadSessionSetCommand = Schema.Struct({
   type: Schema.Literal("thread.session.set"),
   commandId: CommandId,
   threadId: ThreadId,
   session: OrchestrationSession,
+  expectedSession: Schema.optional(Schema.NullOr(OrchestrationSession)),
+  expectedUserMessageIds: Schema.optional(Schema.Array(MessageId)),
+  expectedProviderRuntime: Schema.optional(ExpectedProviderRuntime),
   createdAt: IsoDateTime,
 });
 
@@ -849,6 +863,7 @@ const ThreadMessageImportCommand = Schema.Struct({
   role: Schema.Literals(["user", "assistant"]),
   text: Schema.String,
   turnId: Schema.optional(TurnId),
+  expectedProviderRuntime: Schema.optional(ExpectedProviderRuntime),
   createdAt: IsoDateTime,
 });
 

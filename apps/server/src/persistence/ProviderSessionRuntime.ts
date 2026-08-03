@@ -58,6 +58,26 @@ export type GetProviderSessionRuntimeInput = typeof GetProviderSessionRuntimeInp
 export const DeleteProviderSessionRuntimeInput = Schema.Struct({ threadId: ThreadId });
 export type DeleteProviderSessionRuntimeInput = typeof DeleteProviderSessionRuntimeInput.Type;
 
+export const MergeProviderSessionRuntimePayloadInput = Schema.Struct({
+  threadId: ThreadId,
+  patch: Schema.Record(Schema.String, Schema.Unknown),
+});
+export type MergeProviderSessionRuntimePayloadInput =
+  typeof MergeProviderSessionRuntimePayloadInput.Type;
+
+export const MergeProviderSessionRuntimePayloadIfCurrentInput = Schema.Struct({
+  threadId: ThreadId,
+  expectedProviderName: Schema.String,
+  expectedProviderInstanceId: ProviderInstanceId,
+  expectedStatus: ProviderSessionRuntimeStatus,
+  expectedLastSeenAt: IsoDateTime,
+  expectedResumeCursor: Schema.NullOr(Schema.Unknown),
+  expectedRuntimePayload: Schema.NullOr(Schema.Unknown),
+  patch: Schema.Record(Schema.String, Schema.Unknown),
+});
+export type MergeProviderSessionRuntimePayloadIfCurrentInput =
+  typeof MergeProviderSessionRuntimePayloadIfCurrentInput.Type;
+
 /**
  * ProviderSessionRuntimeRepository - Service tag for provider runtime persistence.
  */
@@ -72,6 +92,29 @@ export class ProviderSessionRuntimeRepository extends Context.Service<
     readonly upsert: (
       runtime: ProviderSessionRuntime,
     ) => Effect.Effect<void, ProviderSessionRuntimeRepositoryError>;
+
+    /**
+     * Insert runtime state only when the canonical thread id is still unbound.
+     */
+    readonly insertIfAbsent: (
+      runtime: ProviderSessionRuntime,
+    ) => Effect.Effect<boolean, ProviderSessionRuntimeRepositoryError>;
+
+    /**
+     * Atomically merge fields into the current runtime payload without
+     * rewriting lifecycle, routing, cursor, or liveness columns.
+     */
+    readonly mergeRuntimePayload: (
+      input: MergeProviderSessionRuntimePayloadInput,
+    ) => Effect.Effect<void, ProviderSessionRuntimeRepositoryError>;
+
+    /**
+     * Merge payload fields only while the runtime row still matches the
+     * provider session version observed by the caller.
+     */
+    readonly mergeRuntimePayloadIfCurrent: (
+      input: MergeProviderSessionRuntimePayloadIfCurrentInput,
+    ) => Effect.Effect<boolean, ProviderSessionRuntimeRepositoryError>;
 
     /**
      * Read provider runtime state by canonical thread id.
@@ -128,6 +171,19 @@ const GetRuntimeRequestSchema = Schema.Struct({
 });
 
 const DeleteRuntimeRequestSchema = GetRuntimeRequestSchema;
+const MergeRuntimePayloadDbRequestSchema = MergeProviderSessionRuntimePayloadInput.mapFields(
+  Struct.assign({
+    patch: Schema.fromJsonString(Schema.Record(Schema.String, Schema.Unknown)),
+  }),
+);
+const MergeRuntimePayloadIfCurrentDbRequestSchema =
+  MergeProviderSessionRuntimePayloadIfCurrentInput.mapFields(
+    Struct.assign({
+      expectedResumeCursor: Schema.NullOr(Schema.fromJsonString(Schema.Unknown)),
+      expectedRuntimePayload: Schema.NullOr(Schema.fromJsonString(Schema.Unknown)),
+      patch: Schema.fromJsonString(Schema.Record(Schema.String, Schema.Unknown)),
+    }),
+  );
 
 function toPersistenceSqlOrDecodeError(
   sqlOperation: string,
@@ -183,6 +239,82 @@ export const make = Effect.gen(function* () {
           last_seen_at = excluded.last_seen_at,
           resume_cursor_json = excluded.resume_cursor_json,
           runtime_payload_json = excluded.runtime_payload_json
+      `,
+  });
+
+  const insertRuntimeRowIfAbsent = SqlSchema.findOneOption({
+    Request: ProviderSessionRuntimeDbRowSchema,
+    Result: Schema.Struct({ threadId: Schema.String }),
+    execute: (runtime) =>
+      sql`
+        INSERT INTO provider_session_runtime (
+          thread_id,
+          provider_name,
+          provider_instance_id,
+          adapter_key,
+          runtime_mode,
+          status,
+          last_seen_at,
+          resume_cursor_json,
+          runtime_payload_json
+        )
+        VALUES (
+          ${runtime.threadId},
+          ${runtime.providerName},
+          ${runtime.providerInstanceId},
+          ${runtime.adapterKey},
+          ${runtime.runtimeMode},
+          ${runtime.status},
+          ${runtime.lastSeenAt},
+          ${runtime.resumeCursor},
+          ${runtime.runtimePayload}
+        )
+        ON CONFLICT (thread_id) DO NOTHING
+        RETURNING thread_id AS "threadId"
+      `,
+  });
+
+  const mergeRuntimePayloadRow = SqlSchema.void({
+    Request: MergeRuntimePayloadDbRequestSchema,
+    execute: ({ threadId, patch }) =>
+      sql`
+        UPDATE provider_session_runtime
+        SET runtime_payload_json = json_patch(
+          COALESCE(runtime_payload_json, '{}'),
+          ${patch}
+        )
+        WHERE thread_id = ${threadId}
+      `,
+  });
+
+  const mergeRuntimePayloadIfCurrentRow = SqlSchema.findOneOption({
+    Request: MergeRuntimePayloadIfCurrentDbRequestSchema,
+    Result: Schema.Struct({ threadId: Schema.String }),
+    execute: ({
+      threadId,
+      expectedProviderName,
+      expectedProviderInstanceId,
+      expectedStatus,
+      expectedLastSeenAt,
+      expectedResumeCursor,
+      expectedRuntimePayload,
+      patch,
+    }) =>
+      sql`
+        UPDATE provider_session_runtime
+        SET runtime_payload_json = json_patch(
+          COALESCE(runtime_payload_json, '{}'),
+          ${patch}
+        )
+        WHERE thread_id = ${threadId}
+          AND provider_name = ${expectedProviderName}
+          AND COALESCE(provider_instance_id, provider_name) =
+            ${expectedProviderInstanceId}
+          AND status = ${expectedStatus}
+          AND last_seen_at = ${expectedLastSeenAt}
+          AND resume_cursor_json IS ${expectedResumeCursor}
+          AND runtime_payload_json IS ${expectedRuntimePayload}
+        RETURNING thread_id AS "threadId"
       `,
   });
 
@@ -245,6 +377,44 @@ export const make = Effect.gen(function* () {
         ),
       ),
     );
+
+  const insertIfAbsent: ProviderSessionRuntimeRepository["Service"]["insertIfAbsent"] = (runtime) =>
+    insertRuntimeRowIfAbsent(runtime).pipe(
+      Effect.map(Option.isSome),
+      Effect.mapError(
+        toPersistenceSqlOrDecodeError(
+          "ProviderSessionRuntimeRepository.insertIfAbsent:query",
+          "ProviderSessionRuntimeRepository.insertIfAbsent:encodeRequest",
+          { threadId: runtime.threadId },
+        ),
+      ),
+    );
+
+  const mergeRuntimePayload: ProviderSessionRuntimeRepository["Service"]["mergeRuntimePayload"] = (
+    input,
+  ) =>
+    mergeRuntimePayloadRow(input).pipe(
+      Effect.mapError(
+        toPersistenceSqlOrDecodeError(
+          "ProviderSessionRuntimeRepository.mergeRuntimePayload:query",
+          "ProviderSessionRuntimeRepository.mergeRuntimePayload:encodeRequest",
+          { threadId: input.threadId },
+        ),
+      ),
+    );
+
+  const mergeRuntimePayloadIfCurrent: ProviderSessionRuntimeRepository["Service"]["mergeRuntimePayloadIfCurrent"] =
+    (input) =>
+      mergeRuntimePayloadIfCurrentRow(input).pipe(
+        Effect.map(Option.isSome),
+        Effect.mapError(
+          toPersistenceSqlOrDecodeError(
+            "ProviderSessionRuntimeRepository.mergeRuntimePayloadIfCurrent:query",
+            "ProviderSessionRuntimeRepository.mergeRuntimePayloadIfCurrent:encodeRequest",
+            { threadId: input.threadId },
+          ),
+        ),
+      );
 
   const getByThreadId: ProviderSessionRuntimeRepository["Service"]["getByThreadId"] = (input) =>
     getRuntimeRowByThreadId(input).pipe(
@@ -324,6 +494,9 @@ export const make = Effect.gen(function* () {
 
   return {
     upsert,
+    insertIfAbsent,
+    mergeRuntimePayload,
+    mergeRuntimePayloadIfCurrent,
     getByThreadId,
     list,
     deleteByThreadId,

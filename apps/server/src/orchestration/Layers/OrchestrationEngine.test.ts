@@ -4,6 +4,7 @@ import {
   DEFAULT_PROVIDER_INTERACTION_MODE,
   MessageId,
   ProjectId,
+  ProviderDriverKind,
   ThreadId,
   TurnId,
   type OrchestrationEvent,
@@ -17,6 +18,7 @@ import * as Metric from "effect/Metric";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { describe, expect, it } from "vite-plus/test";
 
 import { PersistenceSqlError } from "../../persistence/Errors.ts";
@@ -58,15 +60,17 @@ async function createOrchestrationSystem() {
     Layer.provide(OrchestrationEventStoreLive),
     Layer.provide(OrchestrationCommandReceiptRepositoryLive),
     Layer.provide(RepositoryIdentityResolver.layer),
-    Layer.provide(SqlitePersistenceMemory),
+    Layer.provideMerge(SqlitePersistenceMemory),
     Layer.provideMerge(ServerConfigLayer),
     Layer.provideMerge(NodeServices.layer),
   );
   const runtime = ManagedRuntime.make(orchestrationLayer);
   const engine = await runtime.runPromise(Effect.service(OrchestrationEngineService));
   const snapshotQuery = await runtime.runPromise(Effect.service(ProjectionSnapshotQuery));
+  const sql = await runtime.runPromise(Effect.service(SqlClient.SqlClient));
   return {
     engine,
+    sql,
     readModel: () => runtime.runPromise(snapshotQuery.getSnapshot()),
     run: <A, E>(effect: Effect.Effect<A, E>) => runtime.runPromise(effect),
     dispose: () => runtime.dispose(),
@@ -562,6 +566,451 @@ describe("OrchestrationEngine", () => {
 
     const snapshot = await system.readModel();
     expect(snapshot.threads[0]?.branch).toBe("t3code/generated-branch-name");
+    await system.dispose();
+  });
+
+  it("accepts stale session compare-and-swap commands without emitting an event", async () => {
+    const system = await createOrchestrationSystem();
+    const { engine } = system;
+    const createdAt = now();
+    const threadId = ThreadId.make("thread-session-cas");
+
+    await system.run(
+      engine.dispatch({
+        type: "project.create",
+        commandId: CommandId.make("cmd-session-cas-project-create"),
+        projectId: asProjectId("project-session-cas"),
+        title: "Session CAS Project",
+        workspaceRoot: "/tmp/project-session-cas",
+        defaultModelSelection: {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5-codex",
+        },
+        createdAt,
+      }),
+    );
+    await system.run(
+      engine.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("cmd-session-cas-thread-create"),
+        threadId,
+        projectId: asProjectId("project-session-cas"),
+        title: "Session CAS Thread",
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5-codex",
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "full-access",
+        branch: null,
+        worktreePath: null,
+        createdAt,
+      }),
+    );
+    await system.run(
+      engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-cas-current"),
+        threadId,
+        session: {
+          threadId,
+          status: "running",
+          providerName: "codex",
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          runtimeMode: "full-access",
+          activeTurnId: asTurnId("turn-current"),
+          lastError: null,
+          retrying: false,
+          updatedAt: "2026-01-01T00:00:01.000Z",
+        },
+        createdAt: "2026-01-01T00:00:01.000Z",
+      }),
+    );
+    const sequenceBeforeStaleUpdate = await system.run(engine.latestSequence);
+
+    const result = await system.run(
+      engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-cas-stale"),
+        threadId,
+        session: {
+          threadId,
+          status: "ready",
+          providerName: "codex",
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          runtimeMode: "full-access",
+          activeTurnId: null,
+          lastError: null,
+          retrying: false,
+          updatedAt: "2026-01-01T00:00:03.000Z",
+        },
+        expectedSession: {
+          threadId,
+          status: "running",
+          providerName: "codex",
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          runtimeMode: "full-access",
+          activeTurnId: asTurnId("turn-stale"),
+          lastError: null,
+          retrying: false,
+          updatedAt: "2026-01-01T00:00:01.000Z",
+        },
+        createdAt: "2026-01-01T00:00:03.000Z",
+      }),
+    );
+
+    expect(result.sequence).toBe(sequenceBeforeStaleUpdate);
+    expect(await system.run(engine.latestSequence)).toBe(sequenceBeforeStaleUpdate);
+    const thread = (await system.readModel()).threads.find((entry) => entry.id === threadId);
+    expect(thread?.session?.status).toBe("running");
+    expect(thread?.session?.activeTurnId).toBe(asTurnId("turn-current"));
+
+    await system.run(system.sql`
+      INSERT INTO provider_session_runtime (
+        thread_id,
+        provider_name,
+        provider_instance_id,
+        adapter_key,
+        runtime_mode,
+        status,
+        last_seen_at,
+        resume_cursor_json,
+        runtime_payload_json
+      )
+      VALUES (
+        ${threadId},
+        'codex',
+        'codex',
+        'codex',
+        'full-access',
+        'running',
+        '2026-01-01T00:00:04.000Z',
+        NULL,
+        '{"activeTurnId":null,"sessionPersistence":"detached"}'
+      )
+    `);
+    const matchingRuntime = await system.run(system.sql<{
+      readonly providerName: string;
+      readonly providerInstanceId: string | null;
+      readonly lastSeenAt: string;
+      readonly status: string;
+      readonly sessionPersistence: string | null;
+      readonly activeTurnType: string | null;
+    }>`
+      SELECT
+        provider_name AS "providerName",
+        provider_instance_id AS "providerInstanceId",
+        last_seen_at AS "lastSeenAt",
+        status,
+        json_extract(runtime_payload_json, '$.sessionPersistence') AS "sessionPersistence",
+        json_type(runtime_payload_json, '$.activeTurnId') AS "activeTurnType"
+      FROM provider_session_runtime
+      WHERE thread_id = ${threadId}
+    `);
+    expect(matchingRuntime).toEqual([
+      {
+        providerName: "codex",
+        providerInstanceId: "codex",
+        lastSeenAt: "2026-01-01T00:00:04.000Z",
+        status: "running",
+        sessionPersistence: "detached",
+        activeTurnType: "null",
+      },
+    ]);
+    const exactRuntimeMatch = await system.run(system.sql<{ readonly matches: number }>`
+      SELECT 1 AS matches
+      FROM provider_session_runtime
+      WHERE thread_id = ${threadId}
+        AND provider_name = ${ProviderDriverKind.make("codex")}
+        AND provider_instance_id = ${ProviderInstanceId.make("codex")}
+        AND last_seen_at = '2026-01-01T00:00:04.000Z'
+        AND status IN ('starting', 'running', 'error')
+        AND json_extract(runtime_payload_json, '$.sessionPersistence') = 'detached'
+        AND json_type(runtime_payload_json, '$.activeTurnId') = 'null'
+      LIMIT 1
+    `);
+    expect(exactRuntimeMatch).toEqual([{ matches: 1 }]);
+    const guardedThread = (await system.readModel()).threads.find((entry) => entry.id === threadId);
+    expect(guardedThread?.session).not.toBeNull();
+    if (guardedThread?.session === null || guardedThread?.session === undefined) {
+      throw new Error("Expected a current session for guarded update");
+    }
+    expect(guardedThread.session).toMatchObject({
+      status: "running",
+      activeTurnId: asTurnId("turn-current"),
+    });
+    expect(guardedThread.updatedAt).toBe("2026-01-01T00:00:01.000Z");
+    await system.run(
+      engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-provider-guard-current"),
+        threadId,
+        session: {
+          ...guardedThread.session,
+          status: "ready",
+          activeTurnId: null,
+          updatedAt: "2026-01-01T00:00:05.000Z",
+        },
+        expectedSession: guardedThread.session,
+        expectedProviderRuntime: {
+          providerName: ProviderDriverKind.make("codex"),
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          status: "running",
+          lastSeenAt: "2026-01-01T00:00:04.000Z",
+          resumeCursor: null,
+          requiresDetachedIdle: true,
+        },
+        createdAt: "2026-01-01T00:00:05.000Z",
+      }),
+    );
+    const sequenceBeforeProviderClaim = await system.run(engine.latestSequence);
+    await system.run(system.sql`
+      UPDATE provider_session_runtime
+      SET runtime_payload_json =
+        '{"activeTurnId":"provider-turn","sessionPersistence":"detached"}'
+      WHERE thread_id = ${threadId}
+    `);
+    const claimedThread = (await system.readModel()).threads.find((entry) => entry.id === threadId);
+    expect(claimedThread?.session).not.toBeNull();
+    if (claimedThread?.session === null || claimedThread?.session === undefined) {
+      throw new Error("Expected a current session after guarded update");
+    }
+    const guardedResult = await system.run(
+      engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-provider-guard-stale"),
+        threadId,
+        session: {
+          ...claimedThread.session,
+          status: "interrupted",
+          lastError: "stale observer",
+          updatedAt: "2026-01-01T00:00:06.000Z",
+        },
+        expectedSession: claimedThread.session,
+        expectedProviderRuntime: {
+          providerName: ProviderDriverKind.make("codex"),
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          status: "running",
+          lastSeenAt: "2026-01-01T00:00:04.000Z",
+          resumeCursor: null,
+          requiresDetachedIdle: true,
+        },
+        createdAt: "2026-01-01T00:00:06.000Z",
+      }),
+    );
+    expect(guardedResult.sequence).toBe(sequenceBeforeProviderClaim);
+    expect(await system.run(engine.latestSequence)).toBe(sequenceBeforeProviderClaim);
+    expect(
+      (await system.readModel()).threads.find((entry) => entry.id === threadId)?.session?.status,
+    ).toBe("ready");
+
+    await system.run(system.sql`
+      UPDATE provider_session_runtime
+      SET
+        status = 'stopped',
+        last_seen_at = '2026-01-01T00:00:07.000Z',
+        runtime_payload_json =
+          '{"activeTurnId":"finished-turn","sessionPersistence":"process-bound"}'
+      WHERE thread_id = ${threadId}
+    `);
+    const mirroredThread = (await system.readModel()).threads.find(
+      (entry) => entry.id === threadId,
+    );
+    expect(mirroredThread?.session).not.toBeNull();
+    if (mirroredThread?.session === null || mirroredThread?.session === undefined) {
+      throw new Error("Expected a current session for exact runtime guard");
+    }
+    await system.run(
+      engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-provider-guard-exact-stopped"),
+        threadId,
+        session: {
+          ...mirroredThread.session,
+          status: "interrupted",
+          activeTurnId: null,
+          lastError: "detached turn ended",
+          updatedAt: "2026-01-01T00:00:08.000Z",
+        },
+        expectedSession: mirroredThread.session,
+        expectedProviderRuntime: {
+          providerName: ProviderDriverKind.make("codex"),
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          status: "stopped",
+          lastSeenAt: "2026-01-01T00:00:07.000Z",
+          resumeCursor: null,
+          requiresDetachedIdle: false,
+        },
+        createdAt: "2026-01-01T00:00:08.000Z",
+      }),
+    );
+    expect(
+      (await system.readModel()).threads.find((entry) => entry.id === threadId)?.session?.status,
+    ).toBe("interrupted");
+
+    const exactGuardedThread = (await system.readModel()).threads.find(
+      (entry) => entry.id === threadId,
+    );
+    expect(exactGuardedThread?.session).not.toBeNull();
+    if (exactGuardedThread?.session === null || exactGuardedThread?.session === undefined) {
+      throw new Error("Expected a current session after exact runtime guard");
+    }
+    const sequenceBeforeResumeCursorChange = await system.run(engine.latestSequence);
+    await system.run(system.sql`
+      UPDATE provider_session_runtime
+      SET resume_cursor_json = '{"threadId":"replacement-provider-thread"}'
+      WHERE thread_id = ${threadId}
+    `);
+    const staleResumeCursorResult = await system.run(
+      engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-provider-guard-stale-resume-cursor"),
+        threadId,
+        session: {
+          ...exactGuardedThread.session,
+          status: "ready",
+          lastError: null,
+          updatedAt: "2026-01-01T00:00:09.000Z",
+        },
+        expectedSession: exactGuardedThread.session,
+        expectedProviderRuntime: {
+          providerName: ProviderDriverKind.make("codex"),
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          status: "stopped",
+          lastSeenAt: "2026-01-01T00:00:07.000Z",
+          resumeCursor: null,
+          requiresDetachedIdle: false,
+        },
+        createdAt: "2026-01-01T00:00:09.000Z",
+      }),
+    );
+    expect(staleResumeCursorResult.sequence).toBe(sequenceBeforeResumeCursorChange);
+
+    const sequenceBeforeRuntimeVersionChange = await system.run(engine.latestSequence);
+    await system.run(system.sql`
+      UPDATE provider_session_runtime
+      SET
+        status = 'running',
+        last_seen_at = '2026-01-01T00:00:09.000Z',
+        resume_cursor_json = NULL
+      WHERE thread_id = ${threadId}
+    `);
+    const staleRuntimeResult = await system.run(
+      engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-provider-guard-stale-runtime-version"),
+        threadId,
+        session: {
+          ...exactGuardedThread.session,
+          status: "ready",
+          lastError: null,
+          updatedAt: "2026-01-01T00:00:10.000Z",
+        },
+        expectedSession: exactGuardedThread.session,
+        expectedProviderRuntime: {
+          providerName: ProviderDriverKind.make("codex"),
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          status: "stopped",
+          lastSeenAt: "2026-01-01T00:00:07.000Z",
+          resumeCursor: null,
+          requiresDetachedIdle: false,
+        },
+        createdAt: "2026-01-01T00:00:10.000Z",
+      }),
+    );
+    expect(staleRuntimeResult.sequence).toBe(sequenceBeforeRuntimeVersionChange);
+
+    const expectedAbsenceResult = await system.run(
+      engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-provider-guard-expected-absence"),
+        threadId,
+        session: {
+          ...exactGuardedThread.session,
+          status: "ready",
+          lastError: null,
+          updatedAt: "2026-01-01T00:00:11.000Z",
+        },
+        expectedSession: exactGuardedThread.session,
+        expectedProviderRuntime: null,
+        createdAt: "2026-01-01T00:00:11.000Z",
+      }),
+    );
+    expect(expectedAbsenceResult.sequence).toBe(sequenceBeforeRuntimeVersionChange);
+    expect(
+      (await system.readModel()).threads.find((entry) => entry.id === threadId)?.session?.status,
+    ).toBe("interrupted");
+
+    const sequenceBeforeStaleTranscriptImport = await system.run(engine.latestSequence);
+    const staleTranscriptImport = await system.run(
+      engine.dispatch({
+        type: "thread.message.import",
+        commandId: CommandId.make("cmd-session-provider-guard-stale-transcript-import"),
+        threadId,
+        messageId: MessageId.make("message-stale-transcript"),
+        role: "assistant",
+        text: "Stale observer output",
+        turnId: asTurnId("turn-stale-transcript"),
+        expectedProviderRuntime: {
+          providerName: ProviderDriverKind.make("codex"),
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          status: "stopped",
+          lastSeenAt: "2026-01-01T00:00:07.000Z",
+          resumeCursor: null,
+          requiresDetachedIdle: false,
+        },
+        createdAt: "2026-01-01T00:00:11.500Z",
+      }),
+    );
+    expect(staleTranscriptImport.sequence).toBe(sequenceBeforeStaleTranscriptImport);
+    expect(
+      (await system.readModel()).threads
+        .find((entry) => entry.id === threadId)
+        ?.messages.some((message) => message.id === MessageId.make("message-stale-transcript")),
+    ).toBe(false);
+
+    await system.run(
+      engine.dispatch({
+        type: "thread.message.import",
+        commandId: CommandId.make("cmd-session-provider-guard-concurrent-user-message"),
+        threadId,
+        messageId: MessageId.make("message-concurrent-user"),
+        role: "user",
+        text: "Start another turn",
+        createdAt: "2026-01-01T00:00:12.000Z",
+      }),
+    );
+    const threadWithConcurrentUserMessage = (await system.readModel()).threads.find(
+      (entry) => entry.id === threadId,
+    );
+    expect(threadWithConcurrentUserMessage?.session).not.toBeNull();
+    if (
+      threadWithConcurrentUserMessage?.session === null ||
+      threadWithConcurrentUserMessage?.session === undefined
+    ) {
+      throw new Error("Expected a current session after concurrent user message");
+    }
+    const sequenceBeforeStaleUserMessageGuard = await system.run(engine.latestSequence);
+    const staleUserMessageResult = await system.run(
+      engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-provider-guard-stale-user-messages"),
+        threadId,
+        session: {
+          ...threadWithConcurrentUserMessage.session,
+          status: "ready",
+          lastError: null,
+          updatedAt: "2026-01-01T00:00:13.000Z",
+        },
+        expectedSession: threadWithConcurrentUserMessage.session,
+        expectedUserMessageIds: [],
+        createdAt: "2026-01-01T00:00:13.000Z",
+      }),
+    );
+    expect(staleUserMessageResult.sequence).toBe(sequenceBeforeStaleUserMessageGuard);
+    expect(
+      (await system.readModel()).threads.find((entry) => entry.id === threadId)?.session?.status,
+    ).toBe("interrupted");
     await system.dispose();
   });
 
