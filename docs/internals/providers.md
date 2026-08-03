@@ -146,7 +146,9 @@ Detached idle bindings are also observed for independent Codex CLI activity. Rol
 time and open-file ownership are the direct liveness signals; state-database `active` status is only
 used when direct rollout evidence is unavailable. Transcript imports and final session projection
 use runtime compare-and-swap guards so a concurrent T3 or CLI writer wins instead of receiving stale
-observer output.
+observer output. Existing projections seed monotonic rollout cursors, so periodic observation reads
+only records newer than the last persisted import instead of reparsing the complete transcript.
+Linux ownership probes inspect file descriptors only for Codex executables.
 
 Provider event command ids are stable across replay, so reconnecting T3 does not duplicate already
 persisted orchestration changes. Transport commands reuse their id while retrying against the same

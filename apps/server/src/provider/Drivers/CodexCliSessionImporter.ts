@@ -72,6 +72,7 @@ const MAX_INTERACTIVE_THREADS_PER_SCAN = 100;
 const ROLLOUT_TERMINAL_EVENT_TAIL_BYTES = 4 * 1024 * 1024;
 const ROLLOUT_ACTIVITY_TAIL_BYTES = 8 * 1024 * 1024;
 const ROLLOUT_MESSAGE_READ_CHUNK_BYTES = 1024 * 1024;
+const ROLLOUT_RESUME_OFFSET_INITIAL_TAIL_BYTES = 1024 * 1024;
 const CODEX_CLI_LIVE_INACTIVITY_GRACE_MS = 15 * 60_000;
 const CODEX_CLI_IMPORT_VERSION = 2;
 const CODEX_CLI_IMPORT_FAILURE_BACKOFF_INITIAL_MS = 60_000;
@@ -498,6 +499,14 @@ function rolloutRecordTurnId(payload: UnknownRecord): TurnId | undefined {
     return TurnId.make(metadata.turn_id);
   }
   return typeof payload.turn_id === "string" ? TurnId.make(payload.turn_id) : undefined;
+}
+
+function rolloutRecordTimestampMillis(value: UnknownRecord): number | undefined {
+  if (typeof value.timestamp !== "string") {
+    return undefined;
+  }
+  const timestamp = Date.parse(value.timestamp);
+  return Number.isFinite(timestamp) ? timestamp : undefined;
 }
 
 function parseToolArguments(value: unknown): UnknownRecord | undefined {
@@ -1434,6 +1443,23 @@ export function shouldProbeCodexCliRolloutOwner(input: {
   );
 }
 
+export function shouldReadCodexRolloutTerminalEvidence(input: {
+  readonly rolloutPathAvailable: boolean;
+  readonly staleActiveTurnId: string | null;
+  readonly observesDetachedCliSession: boolean;
+  readonly taskState: CodexCliRolloutTaskState;
+  readonly terminalTransitionObserved: boolean;
+}): boolean {
+  return (
+    input.rolloutPathAvailable &&
+    input.staleActiveTurnId !== null &&
+    (!input.observesDetachedCliSession ||
+      input.terminalTransitionObserved ||
+      input.taskState === "completed" ||
+      input.taskState === "interrupted")
+  );
+}
+
 type CodexCliStaleSessionResolution =
   | { readonly status: "preserve" }
   | { readonly status: "ready"; readonly lastError: string | null }
@@ -1701,6 +1727,15 @@ export function resolveStaleCodexCliSession(input: {
   };
 }
 
+export function isCodexProcessExecutable(executablePath: string): boolean {
+  const executableName =
+    executablePath
+      .replace(/ \(deleted\)$/u, "")
+      .split(/[/\\]/u)
+      .at(-1) ?? "";
+  return /^codex(?:$|[-.])/iu.test(executableName);
+}
+
 const collectOpenCodexRolloutPaths = Effect.fn("CodexCliSessionImporter.collectOpenRollouts")(
   function* (
     fileSystem: FileSystem.FileSystem,
@@ -1722,6 +1757,12 @@ const collectOpenCodexRolloutPaths = Effect.fn("CodexCliSessionImporter.collectO
 
     for (const pid of procEntries) {
       if (!/^\d+$/.test(pid)) {
+        continue;
+      }
+      const executable = yield* fileSystem
+        .readLink(path.join("/proc", pid, "exe"))
+        .pipe(Effect.orElseSucceed(() => ""));
+      if (!isCodexProcessExecutable(executable)) {
         continue;
       }
       const descriptorRoot = path.join("/proc", pid, "fd");
@@ -1798,15 +1839,20 @@ export function parseCodexRolloutTerminalEvidence(
   return NO_CODEX_ROLLOUT_TERMINAL_EVIDENCE;
 }
 
-function parseCodexRolloutTaskTransitions(contents: string): {
+function parseCodexRolloutTaskTransitions(
+  contents: string,
+  initialLifecycle: CodexCliRolloutTaskLifecycle = {
+    state: null,
+    turnId: null,
+  },
+  preserveSelectedTurn = false,
+): {
   readonly lifecycle: CodexCliRolloutTaskLifecycle;
   readonly terminalTransitionObserved: boolean;
 } {
   const lines = contents.split(/\r?\n/u);
-  let lifecycle: CodexCliRolloutTaskLifecycle = {
-    state: null,
-    turnId: null,
-  };
+  let lifecycle = initialLifecycle;
+  let selectedTurnId = preserveSelectedTurn ? initialLifecycle.turnId : null;
   let terminalTransitionObserved = false;
   for (const line of lines) {
     if (!line?.includes('"type":"event_msg"') && !line?.includes('"type":"response_item"')) {
@@ -1818,7 +1864,7 @@ function parseCodexRolloutTaskTransitions(contents: string): {
     }
     if (value.type === "response_item") {
       const responseTurnId = rolloutRecordTurnId(value.payload);
-      if (responseTurnId !== undefined && responseTurnId !== lifecycle.turnId) {
+      if (responseTurnId !== undefined && lifecycle.turnId === null) {
         lifecycle = {
           state: null,
           turnId: responseTurnId,
@@ -1835,21 +1881,34 @@ function parseCodexRolloutTaskTransitions(contents: string): {
           state: "active",
           turnId: typeof value.payload.turn_id === "string" ? value.payload.turn_id : null,
         };
+        if (preserveSelectedTurn) {
+          selectedTurnId = lifecycle.turnId;
+        }
         break;
-      case "task_complete":
+      case "task_complete": {
+        const turnId = typeof value.payload.turn_id === "string" ? value.payload.turn_id : null;
+        if (selectedTurnId !== null && turnId !== null && turnId !== selectedTurnId) {
+          break;
+        }
+        terminalTransitionObserved = true;
         lifecycle = {
           state: "completed",
-          turnId: typeof value.payload.turn_id === "string" ? value.payload.turn_id : null,
+          turnId,
         };
-        terminalTransitionObserved = true;
         break;
-      case "turn_aborted":
+      }
+      case "turn_aborted": {
+        const turnId = typeof value.payload.turn_id === "string" ? value.payload.turn_id : null;
+        if (selectedTurnId !== null && turnId !== null && turnId !== selectedTurnId) {
+          break;
+        }
+        terminalTransitionObserved = true;
         lifecycle = {
           state: "interrupted",
-          turnId: typeof value.payload.turn_id === "string" ? value.payload.turn_id : null,
+          turnId,
         };
-        terminalTransitionObserved = true;
         break;
+      }
       default:
         continue;
     }
@@ -1894,24 +1953,56 @@ export function advanceCodexRolloutTaskCursor(
 ): CodexCliRolloutTaskCursor {
   const combined = `${cursor?.pendingLine ?? ""}${contents}`;
   const { completeContents, pendingLine } = splitCodexRolloutContents(combined);
-  const observed = parseCodexRolloutTaskTransitions(completeContents);
-  const observedTurnChanged =
-    observed.lifecycle.turnId !== null &&
-    cursor?.lifecycle.turnId !== null &&
-    cursor?.lifecycle.turnId !== undefined &&
-    observed.lifecycle.turnId !== cursor.lifecycle.turnId;
+  const observed = parseCodexRolloutTaskTransitions(completeContents, cursor?.lifecycle, true);
   return {
     offset,
     pendingLine,
-    lifecycle:
-      observed.lifecycle.state === null
-        ? {
-            state: observedTurnChanged ? null : (cursor?.lifecycle.state ?? null),
-            turnId: observed.lifecycle.turnId ?? cursor?.lifecycle.turnId ?? null,
-          }
-        : observed.lifecycle,
+    lifecycle: observed.lifecycle,
     terminalTransitionObserved: observed.terminalTransitionObserved,
   };
+}
+
+export function findCodexRolloutResumeOffsetInTail(input: {
+  readonly bytes: Uint8Array;
+  readonly baseOffset: number;
+  readonly fileSize: number;
+  readonly importedAtMillis: number;
+}): number | undefined {
+  let lineStart = 0;
+  if (input.baseOffset > 0) {
+    while (lineStart < input.bytes.length && input.bytes[lineStart] !== 0x0a) {
+      lineStart += 1;
+    }
+    lineStart += 1;
+  }
+
+  let observedImportedBoundary = false;
+  let firstNewerRecordOffset: number | undefined;
+  const decoder = new TextDecoder();
+  for (let index = lineStart; index <= input.bytes.length; index += 1) {
+    if (index < input.bytes.length && input.bytes[index] !== 0x0a) {
+      continue;
+    }
+    if (index > lineStart) {
+      const line = decoder.decode(input.bytes.subarray(lineStart, index));
+      const value = parseUnknownJsonRecord(line);
+      const timestamp =
+        value === undefined ? undefined : rolloutRecordTimestampMillis(value as UnknownRecord);
+      if (timestamp !== undefined) {
+        if (timestamp <= input.importedAtMillis) {
+          observedImportedBoundary = true;
+        } else if (firstNewerRecordOffset === undefined) {
+          firstNewerRecordOffset = input.baseOffset + lineStart;
+        }
+      }
+    }
+    lineStart = index + 1;
+  }
+
+  if (observedImportedBoundary || input.baseOffset === 0) {
+    return firstNewerRecordOffset ?? input.fileSize;
+  }
+  return undefined;
 }
 
 export function advanceCodexRolloutMessageCursor(input: {
@@ -2293,6 +2384,46 @@ const readCodexRolloutTail = Effect.fn("CodexCliSessionImporter.readRolloutTail"
   ).pipe(Effect.orElseSucceed(() => ""));
 });
 
+const findCodexRolloutResumeOffset = Effect.fn("CodexCliSessionImporter.findRolloutResumeOffset")(
+  function* (fileSystem: FileSystem.FileSystem, rolloutPath: string, importedAtMillis: number) {
+    return yield* Effect.scoped(
+      Effect.gen(function* () {
+        const file = yield* fileSystem.open(rolloutPath, { flag: "r" });
+        const stat = yield* file.stat;
+        const fileSize = Number(stat.size);
+        if (fileSize <= 0) {
+          return 0;
+        }
+        let tailBytes = Math.min(fileSize, ROLLOUT_RESUME_OFFSET_INITIAL_TAIL_BYTES);
+
+        for (;;) {
+          const baseOffset = fileSize - tailBytes;
+          yield* file.seek(baseOffset, "start");
+          const bytes = yield* file.readAlloc(tailBytes);
+          const resumeOffset = Option.match(bytes, {
+            onNone: () => fileSize,
+            onSome: (value) =>
+              findCodexRolloutResumeOffsetInTail({
+                bytes: value,
+                baseOffset,
+                fileSize,
+                importedAtMillis,
+              }),
+          });
+          if (resumeOffset !== undefined) {
+            return resumeOffset;
+          }
+          if (baseOffset === 0) {
+            return 0;
+          }
+          tailBytes = Math.min(fileSize, tailBytes * 2);
+          yield* Effect.yieldNow;
+        }
+      }),
+    ).pipe(Effect.orElseSucceed(() => 0));
+  },
+);
+
 const readCodexRolloutActivityTail = Effect.fn("CodexCliSessionImporter.readRolloutActivityTail")(
   function* (
     fileSystem: FileSystem.FileSystem,
@@ -2414,7 +2545,7 @@ export function shouldHydrateObservedCodexCliTranscript(input: {
     input.observesDetachedCliSession &&
     (input.terminalTransitionObserved ||
       (input.rolloutTranscriptInspected
-        ? (input.rolloutTranscriptChanged || !input.importIsCurrent) &&
+        ? input.rolloutTranscriptChanged &&
           (!input.rolloutTranscriptComplete || !input.rolloutTranscriptSynchronized)
         : !input.importIsCurrent))
   );
@@ -2735,8 +2866,22 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
     const scanIntervalMs = Math.max(1, options?.scanIntervalMs ?? DEFAULT_SCAN_INTERVAL_MS);
     const rolloutTaskCursors = new Map<string, CodexCliRolloutTaskCursor>();
     const rolloutMessageCursors = new Map<string, CodexCliRolloutMessageCursor>();
+    const rolloutResumeOffsets = new Map<string, number>();
     const observedImportedUpdatedAt = new Map<ThreadId, number>();
     const importFailureBackoffs = new Map<string, CodexCliImportFailureBackoff>();
+
+    const resolveCodexRolloutResumeOffset = Effect.fn(
+      "CodexCliSessionImporter.resolveRolloutResumeOffset",
+    )(function* (rolloutPath: string, importedAtMillis: number) {
+      const key = `${rolloutPath}\0${importedAtMillis}`;
+      const cached = rolloutResumeOffsets.get(key);
+      if (cached !== undefined) {
+        return cached;
+      }
+      const offset = yield* findCodexRolloutResumeOffset(fileSystem, rolloutPath, importedAtMillis);
+      rolloutResumeOffsets.set(key, offset);
+      return offset;
+    });
 
     const readCodexRolloutMessages = Effect.fn("CodexCliSessionImporter.readRolloutMessages")(
       function* (
@@ -2744,6 +2889,7 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
         threadId: string,
         createdAt: number,
         activityTurnId: string | null,
+        resumeAfterMillis: number | undefined,
       ) {
         return yield* Effect.scoped(
           Effect.gen(function* () {
@@ -2765,13 +2911,21 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
                 activityChanged: false,
               } satisfies CodexCliRolloutMessageCursorRead;
             }
+            const initialOffset =
+              cached === undefined && resumeAfterMillis !== undefined
+                ? Math.min(
+                    size,
+                    yield* resolveCodexRolloutResumeOffset(rolloutPath, resumeAfterMillis),
+                  )
+                : 0;
             const canContinue =
               cached !== undefined &&
               cached.offset < size &&
               (cached.modifiedAtMillis === undefined ||
                 modifiedAtMillis === undefined ||
                 cached.modifiedAtMillis <= modifiedAtMillis);
-            const start = canContinue ? cached.offset : 0;
+            const canResumeFromProjection = cached === undefined && initialOffset > 0;
+            const start = canContinue ? cached.offset : canResumeFromProjection ? initialOffset : 0;
             const length = size - start;
             if (length <= 0) {
               const resetCachedHistory = cached !== undefined && !canContinue;
@@ -2925,6 +3079,7 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
       rolloutPath: string,
       initializeWithoutRead: boolean,
       importedAtMillis: number | undefined,
+      baselineLifecycle: CodexCliRolloutTaskLifecycle | undefined,
     ) {
       return yield* Effect.scoped(
         Effect.gen(function* () {
@@ -2936,8 +3091,28 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
             importedAtMillis,
             rolloutUpdatedAtMillis,
           );
-          const cached = rolloutTaskCursors.get(rolloutPath);
+          const storedCursor = rolloutTaskCursors.get(rolloutPath);
+          const resumedOffset =
+            storedCursor === undefined &&
+            baselineLifecycle !== undefined &&
+            importedAtMillis !== undefined
+              ? Math.min(
+                  size,
+                  yield* resolveCodexRolloutResumeOffset(rolloutPath, importedAtMillis),
+                )
+              : undefined;
+          const cached =
+            storedCursor ??
+            (resumedOffset === undefined
+              ? undefined
+              : ({
+                  offset: resumedOffset,
+                  pendingLine: "",
+                  lifecycle: baselineLifecycle!,
+                  terminalTransitionObserved: false,
+                } satisfies CodexCliRolloutTaskCursor));
           if (cached !== undefined && cached.offset === size) {
+            rolloutTaskCursors.set(rolloutPath, cached);
             return {
               offset: cached.offset,
               lifecycle: cached.lifecycle,
@@ -3580,23 +3755,31 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
         metadataWriteMs: 0,
       };
       const staleActiveTurnId = staleSession?.activeTurnId ?? null;
-      const rolloutTerminalEvidence =
-        rolloutPath === undefined || staleActiveTurnId === null
-          ? ({
-              state: null,
-              finalMessage: null,
-              completedAt: null,
-            } satisfies CodexCliRolloutTerminalEvidence)
-          : yield* Effect.gen(function* () {
-              metrics.rolloutTailReadCount += 1;
-              return yield* readCodexRolloutTerminalEvidence(
-                fileSystem,
-                rolloutPath,
-                staleActiveTurnId,
-              );
-            });
       const rolloutIsOpen = rolloutPath !== undefined && openRolloutPaths.has(rolloutPath);
       const listedThreadIsRecent = isRecentCodexCliActivity(listedThread.updatedAt, nowMillis);
+      const projectedTaskLifecycle = (() => {
+        const projectedSession = projectedThread?.session;
+        if (projectedSession?.status === "running" && projectedSession.activeTurnId !== null) {
+          return {
+            state: "active",
+            turnId: projectedSession.activeTurnId,
+          } satisfies CodexCliRolloutTaskLifecycle;
+        }
+        const latestTurn = projectedThread?.latestTurn;
+        if (latestTurn?.state === "completed") {
+          return {
+            state: "completed",
+            turnId: latestTurn.turnId,
+          } satisfies CodexCliRolloutTaskLifecycle;
+        }
+        if (latestTurn?.state === "interrupted") {
+          return {
+            state: "interrupted",
+            turnId: latestTurn.turnId,
+          } satisfies CodexCliRolloutTaskLifecycle;
+        }
+        return undefined;
+      })();
       const observedRolloutTask =
         (!observesDetachedCliSession && !refreshesDetachedCliTranscript) ||
         rolloutPath === undefined
@@ -3617,8 +3800,28 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
                 rolloutPath,
                 !inspectDetachedCliSession && !refreshesDetachedCliTranscript,
                 importedAtMillis,
+                projectedTaskLifecycle,
               );
             });
+      const rolloutTerminalEvidence =
+        shouldReadCodexRolloutTerminalEvidence({
+          rolloutPathAvailable: rolloutPath !== undefined,
+          staleActiveTurnId,
+          observesDetachedCliSession,
+          taskState: observedRolloutTask.lifecycle.state,
+          terminalTransitionObserved: observedRolloutTask.terminalTransitionObserved,
+        }) &&
+        rolloutPath !== undefined &&
+        staleActiveTurnId !== null
+          ? yield* Effect.gen(function* () {
+              metrics.rolloutTailReadCount += 1;
+              return yield* readCodexRolloutTerminalEvidence(
+                fileSystem,
+                rolloutPath,
+                staleActiveTurnId,
+              );
+            })
+          : NO_CODEX_ROLLOUT_TERMINAL_EVIDENCE;
       const rolloutEvidenceAvailable =
         rolloutPath !== undefined &&
         (observedRolloutTask.rolloutUpdatedAtMillis !== undefined ||
@@ -3636,17 +3839,19 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
         rolloutIsOpen,
         rolloutIsRecent,
       });
-      const observedSessionStateWithTurn =
-        observedRolloutTask.lifecycle.turnId === null
-          ? observedSessionState
-          : {
-              ...observedSessionState,
-              activeTurnId:
-                observedSessionState.status === "running"
-                  ? TurnId.make(observedRolloutTask.lifecycle.turnId)
-                  : null,
-              observedTurnId: TurnId.make(observedRolloutTask.lifecycle.turnId),
-            };
+      const observedActiveTurnId =
+        observedSessionState.status !== "running"
+          ? null
+          : observedRolloutTask.lifecycle.state === "active" &&
+              observedRolloutTask.lifecycle.turnId !== null
+            ? TurnId.make(observedRolloutTask.lifecycle.turnId)
+            : projectedThread?.latestTurn?.state === "running"
+              ? projectedThread.latestTurn.turnId
+              : null;
+      const observedSessionStateWithTurn = {
+        ...observedSessionState,
+        activeTurnId: observedActiveTurnId,
+      };
       let observerSessionSynchronized = !observesDetachedCliSession;
       if (
         observesDetachedCliSession &&
@@ -3662,7 +3867,8 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
         observedRolloutTask.rolloutUpdatedAtMillis === undefined
           ? importIsCurrent
           : observedRolloutTask.importIsFresh;
-      const observedActivityTurnId = observedRolloutTask.lifecycle.turnId ?? staleActiveTurnId;
+      const observedActivityTurnId =
+        observedActiveTurnId ?? observedRolloutTask.lifecycle.turnId ?? staleActiveTurnId;
       const observedRolloutMessages =
         rolloutPath === undefined ||
         (!observesDetachedCliSession && !refreshesDetachedCliTranscript) ||
@@ -3675,6 +3881,7 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
                 listedThread.id,
                 listedThread.createdAt,
                 observedActivityTurnId,
+                preparedThreadTranscript === undefined ? undefined : importedAtMillis,
               );
             });
       const observedRolloutTranscriptSynchronized =
@@ -3799,6 +4006,7 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
                 thread.id,
                 thread.createdAt,
                 rolloutActivityTurnId,
+                projectedThreadTranscriptBeforeImport === undefined ? undefined : importedAtMillis,
               );
             }));
       const rolloutActivities =
@@ -4378,6 +4586,7 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
     });
 
     const scan = Effect.gen(function* () {
+      rolloutResumeOffsets.clear();
       const targets = yield* resolveDiscoveryTargets();
       yield* clientPool.reconcile(targets);
       const retainedRolloutPaths = new Set<string>();

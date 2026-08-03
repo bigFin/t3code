@@ -23,7 +23,9 @@ import {
   collectCodexCliImportedMessages,
   collectCodexCliRolloutActivities,
   collectCodexCliRolloutMessages,
+  findCodexRolloutResumeOffsetInTail,
   hasSynchronizedCodexCliTranscript,
+  isCodexProcessExecutable,
   isCodexRolloutPathWithinSessionsRoot,
   isCodexCliImportFreshForRollout,
   isCompleteCodexRolloutMessageRead,
@@ -59,6 +61,7 @@ import {
   shouldInterruptStaleCodexCliSession,
   shouldPersistCodexCliImportMetadata,
   shouldProbeCodexCliRolloutOwner,
+  shouldReadCodexRolloutTerminalEvidence,
   shouldReadCodexRolloutActivities,
   shouldSkipCurrentCodexCliImport,
   shouldSkipUnchangedDetachedCodexCliObserver,
@@ -2384,6 +2387,42 @@ describe("CodexCliSessionImporter transcript conversion", () => {
     ).toBe(false);
   });
 
+  it("reads terminal evidence only when a detached observer sees a terminal transition", () => {
+    const activeObserver = {
+      rolloutPathAvailable: true,
+      staleActiveTurnId: "turn-current",
+      observesDetachedCliSession: true,
+      taskState: "active" as const,
+      terminalTransitionObserved: false,
+    };
+
+    expect(shouldReadCodexRolloutTerminalEvidence(activeObserver)).toBe(false);
+    expect(
+      shouldReadCodexRolloutTerminalEvidence({
+        ...activeObserver,
+        terminalTransitionObserved: true,
+      }),
+    ).toBe(true);
+    expect(
+      shouldReadCodexRolloutTerminalEvidence({
+        ...activeObserver,
+        taskState: "completed",
+      }),
+    ).toBe(true);
+    expect(
+      shouldReadCodexRolloutTerminalEvidence({
+        ...activeObserver,
+        observesDetachedCliSession: false,
+      }),
+    ).toBe(true);
+    expect(
+      shouldReadCodexRolloutTerminalEvidence({
+        ...activeObserver,
+        rolloutPathAvailable: false,
+      }),
+    ).toBe(false);
+  });
+
   it("reads the latest global Codex rollout task lifecycle state", () => {
     const started = [
       JSON.stringify({
@@ -2440,8 +2479,8 @@ describe("CodexCliSessionImporter transcript conversion", () => {
       responseOnly,
     ].join("\n");
     expect(parseLatestCodexRolloutTaskState(currentTurnAfterOlderCompletion)).toEqual({
-      state: null,
-      turnId: "turn-tail",
+      state: "completed",
+      turnId: "turn-old",
     });
   });
 
@@ -2507,8 +2546,8 @@ describe("CodexCliSessionImporter transcript conversion", () => {
       started.length + 400,
     );
     expect(currentTurnFromTail.lifecycle).toEqual({
-      state: null,
-      turnId: "turn-tail",
+      state: "completed",
+      turnId: "turn-1",
     });
 
     const nextTurn = advanceCodexRolloutTaskCursor(
@@ -2531,6 +2570,165 @@ describe("CodexCliSessionImporter transcript conversion", () => {
       turnId: "turn-2",
     });
     expect(nextTurn.terminalTransitionObserved).toBe(true);
+  });
+
+  it("keeps the newest explicitly active turn across interleaved parent and child records", () => {
+    const active = advanceCodexRolloutTaskCursor(
+      undefined,
+      `${JSON.stringify({
+        type: "event_msg",
+        payload: { type: "task_started", turn_id: "turn-current" },
+      })}\n`,
+      100,
+    );
+
+    const interleaved = advanceCodexRolloutTaskCursor(
+      active,
+      [
+        JSON.stringify({
+          type: "response_item",
+          payload: {
+            type: "reasoning",
+            internal_chat_message_metadata_passthrough: { turn_id: "turn-parent" },
+          },
+        }),
+        JSON.stringify({
+          type: "response_item",
+          payload: {
+            type: "custom_tool_call_output",
+            internal_chat_message_metadata_passthrough: { turn_id: "turn-current" },
+          },
+        }),
+        JSON.stringify({
+          type: "event_msg",
+          payload: { type: "task_complete", turn_id: "turn-parent" },
+        }),
+        "",
+      ].join("\n"),
+      400,
+    );
+
+    expect(interleaved.lifecycle).toEqual({
+      state: "active",
+      turnId: "turn-current",
+    });
+    expect(interleaved.terminalTransitionObserved).toBe(false);
+
+    const completed = advanceCodexRolloutTaskCursor(
+      interleaved,
+      `${JSON.stringify({
+        type: "event_msg",
+        payload: { type: "task_complete", turn_id: "turn-current" },
+      })}\n`,
+      500,
+    );
+    expect(completed.lifecycle).toEqual({
+      state: "completed",
+      turnId: "turn-current",
+    });
+  });
+
+  it("does not let a stale terminal record replace the selected turn completion", () => {
+    const active = advanceCodexRolloutTaskCursor(
+      undefined,
+      `${JSON.stringify({
+        type: "event_msg",
+        payload: { type: "task_started", turn_id: "turn-current" },
+      })}\n`,
+      100,
+    );
+
+    const completed = advanceCodexRolloutTaskCursor(
+      active,
+      [
+        JSON.stringify({
+          type: "event_msg",
+          payload: { type: "task_complete", turn_id: "turn-current" },
+        }),
+        JSON.stringify({
+          type: "event_msg",
+          payload: { type: "task_complete", turn_id: "turn-parent" },
+        }),
+        "",
+      ].join("\n"),
+      300,
+    );
+
+    expect(completed.lifecycle).toEqual({
+      state: "completed",
+      turnId: "turn-current",
+    });
+    expect(completed.terminalTransitionObserved).toBe(true);
+  });
+
+  it("finds the first rollout record newer than the last imported timestamp", () => {
+    const records = [
+      JSON.stringify({
+        timestamp: "2026-08-03T12:00:00.000Z",
+        type: "event_msg",
+        payload: { type: "token_count" },
+      }),
+      JSON.stringify({
+        timestamp: "2026-08-03T12:00:02.000Z",
+        type: "response_item",
+        payload: { type: "reasoning" },
+      }),
+      JSON.stringify({
+        timestamp: "2026-08-03T12:00:03.000Z",
+        type: "response_item",
+        payload: { type: "message" },
+      }),
+      "",
+    ];
+    const encodedRecords = records.map((record) => new TextEncoder().encode(`${record}\n`));
+    const bytes = new TextEncoder().encode(records.join("\n"));
+    const firstNewerOffset = encodedRecords[0]!.length;
+
+    expect(
+      findCodexRolloutResumeOffsetInTail({
+        bytes,
+        baseOffset: 0,
+        fileSize: bytes.length,
+        importedAtMillis: Date.parse("2026-08-03T12:00:01.000Z"),
+      }),
+    ).toBe(firstNewerOffset);
+    expect(
+      findCodexRolloutResumeOffsetInTail({
+        bytes,
+        baseOffset: 0,
+        fileSize: bytes.length,
+        importedAtMillis: Date.parse("2026-08-03T12:00:04.000Z"),
+      }),
+    ).toBe(bytes.length);
+  });
+
+  it("requires an imported boundary before resuming from a partial rollout tail", () => {
+    const partialPrefix = "partial-record\n";
+    const newerRecord = `${JSON.stringify({
+      timestamp: "2026-08-03T12:00:03.000Z",
+      type: "response_item",
+      payload: { type: "reasoning" },
+    })}\n`;
+    const bytes = new TextEncoder().encode(`${partialPrefix}${newerRecord}`);
+
+    expect(
+      findCodexRolloutResumeOffsetInTail({
+        bytes,
+        baseOffset: 1_000,
+        fileSize: 1_000 + bytes.length,
+        importedAtMillis: Date.parse("2026-08-03T12:00:01.000Z"),
+      }),
+    ).toBeUndefined();
+  });
+
+  it("limits rollout owner probing to Codex executables", () => {
+    expect(isCodexProcessExecutable("/home/admin/.codex/packages/current/codex")).toBe(true);
+    expect(isCodexProcessExecutable("/nix/store/hash-codex-1.2/bin/codex-linux")).toBe(true);
+    expect(isCodexProcessExecutable("/home/admin/.codex/packages/current/codex (deleted)")).toBe(
+      true,
+    );
+    expect(isCodexProcessExecutable("/usr/bin/node")).toBe(false);
+    expect(isCodexProcessExecutable("/tmp/codex-helper/node")).toBe(false);
   });
 
   it("settles detached CLI observation when active rollout evidence goes stale", () => {
