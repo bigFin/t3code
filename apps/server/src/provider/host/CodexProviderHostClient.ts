@@ -266,6 +266,7 @@ export const makeCodexProviderHostRuntime = Effect.fn("makeCodexProviderHostRunt
     let retainedProviderEvents = 0;
     let retainedProviderEventBytes = 0;
     const capacityWaiters = new Set<() => void>();
+    const drainWaiters = new Set<() => void>();
     const detachCloseTimeoutMs = Math.max(1, input.detachCloseTimeoutMs ?? DETACH_CLOSE_TIMEOUT_MS);
     const reconnectWindowMs = Math.max(1, input.reconnectWindowMs ?? RECONNECT_WINDOW_MS);
     const commandTimeoutMs = Math.max(1, input.commandTimeoutMs ?? COMMAND_TIMEOUT_MS);
@@ -281,10 +282,19 @@ export const makeCodexProviderHostRuntime = Effect.fn("makeCodexProviderHostRunt
 
     const providerEventsDrained = () => retainedProviderEvents === 0;
 
+    const wakeWaiters = (waiters: Set<() => void>) => {
+      const pending = Array.from(waiters);
+      waiters.clear();
+      for (const resolve of pending) resolve();
+    };
+
     const wakeCapacityWaiters = () => {
+      wakeWaiters(capacityWaiters);
+    };
+
+    const wakeDrainWaiters = () => {
       if (!closing && !providerEventsDrained()) return;
-      for (const resolve of capacityWaiters) resolve();
-      capacityWaiters.clear();
+      wakeWaiters(drainWaiters);
     };
 
     const reserveProviderEvent = (retainedBytes: number): boolean => {
@@ -303,7 +313,28 @@ export const makeCodexProviderHostRuntime = Effect.fn("makeCodexProviderHostRunt
       retainedProviderEvents = Math.max(0, retainedProviderEvents - 1);
       retainedProviderEventBytes = Math.max(0, retainedProviderEventBytes - retainedBytes);
       wakeCapacityWaiters();
+      wakeDrainWaiters();
     };
+
+    const waitForProviderEventCapacity = (
+      current: HostConnection,
+      retainedBytes: number,
+    ): Promise<boolean> =>
+      new Promise((resolve) => {
+        const retry = () => {
+          capacityWaiters.delete(retry);
+          if (current.closed || current.socket.destroyed) {
+            resolve(false);
+            return;
+          }
+          if (reserveProviderEvent(retainedBytes)) {
+            resolve(true);
+            return;
+          }
+          capacityWaiters.add(retry);
+        };
+        retry();
+      });
 
     const waitForProviderEventDrain = (signal: AbortSignal): Promise<void> =>
       new Promise((resolve) => {
@@ -316,10 +347,10 @@ export const makeCodexProviderHostRuntime = Effect.fn("makeCodexProviderHostRunt
           resolve();
         };
         const cancel = () => {
-          capacityWaiters.delete(finish);
+          drainWaiters.delete(finish);
           resolve();
         };
-        capacityWaiters.add(finish);
+        drainWaiters.add(finish);
         signal.addEventListener("abort", cancel, { once: true });
       });
 
@@ -733,14 +764,12 @@ export const makeCodexProviderHostRuntime = Effect.fn("makeCodexProviderHostRunt
           });
         };
 
-        socket.setEncoding("utf8");
-        socket.on("data", (chunk: string) => {
-          const framed = current.lineFramer.push(chunk);
-          if (framed.overflowed) {
-            socket.destroy(new Error("Provider-host response exceeded the maximum frame size."));
-            return;
-          }
-          for (const framedLine of framed.lines) {
+        const inboundBatches: Array<ReadonlyArray<string>> = [];
+        let processingInbound = false;
+
+        const processInboundLines = async (lines: ReadonlyArray<string>) => {
+          for (const framedLine of lines) {
+            if (current.closed || socket.destroyed) return;
             const line = framedLine.trim();
             if (!line) continue;
             let envelope: ProviderHostCompatibleServerEnvelope;
@@ -904,13 +933,21 @@ export const makeCodexProviderHostRuntime = Effect.fn("makeCodexProviderHostRunt
                 const providerEvent = envelope.event;
                 const sequence = Number(envelope.sequence);
                 const retainedBytes = Buffer.byteLength(framedLine);
-                if (!reserveProviderEvent(retainedBytes)) {
+                if (retainedBytes > maxPendingProviderEventBytes) {
                   socket.destroy(
                     new Error(
-                      "Provider-host event queue exceeded its bounded count or byte capacity.",
+                      "Provider-host event exceeded the bounded event queue byte capacity.",
                     ),
                   );
                   return;
+                }
+                if (!reserveProviderEvent(retainedBytes)) {
+                  socket.pause();
+                  const reserved = await waitForProviderEventCapacity(current, retainedBytes);
+                  if (!reserved) return;
+                  if (!current.closed && !socket.destroyed) {
+                    socket.resume();
+                  }
                 }
                 if (!current.snapshotReceived) {
                   current.replayEvents.push({
@@ -932,11 +969,47 @@ export const makeCodexProviderHostRuntime = Effect.fn("makeCodexProviderHostRunt
               }
             }
           }
+        };
+
+        const processInboundBatches = async () => {
+          if (processingInbound) return;
+          processingInbound = true;
+          try {
+            while (inboundBatches.length > 0 && !current.closed && !socket.destroyed) {
+              const lines = inboundBatches.shift();
+              if (lines) {
+                await processInboundLines(lines);
+              }
+            }
+          } catch (cause) {
+            if (!socket.destroyed) {
+              socket.destroy(
+                cause instanceof Error
+                  ? cause
+                  : new Error("Failed to process a provider-host response.", { cause }),
+              );
+            }
+          } finally {
+            processingInbound = false;
+          }
+        };
+
+        socket.setEncoding("utf8");
+        socket.on("data", (chunk: string) => {
+          const framed = current.lineFramer.push(chunk);
+          if (framed.overflowed) {
+            socket.destroy(new Error("Provider-host response exceeded the maximum frame size."));
+            return;
+          }
+          if (framed.lines.length === 0) return;
+          inboundBatches.push(framed.lines);
+          void processInboundBatches();
         });
         socket.once("error", (cause) => fail(connectionClosureError(cause)));
         socket.once("close", () => {
           sockets.delete(socket);
           current.closed = true;
+          wakeCapacityWaiters();
           current.lineFramer.clear();
           for (const replayEvent of current.replayEvents.splice(0)) {
             releaseProviderEvent(replayEvent.retainedBytes);
@@ -1171,6 +1244,7 @@ export const makeCodexProviderHostRuntime = Effect.fn("makeCodexProviderHostRunt
       }
       closing = true;
       wakeCapacityWaiters();
+      wakeDrainWaiters();
       const current = connection;
       connection = undefined;
       for (const socket of sockets) {

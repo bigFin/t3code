@@ -3250,7 +3250,7 @@ it.effect("keeps attach-existing protocol failures transient", () => {
   );
 });
 
-it.effect("bounds slow-reader buffering and resumes the missing event through replay", () => {
+it.effect("backpressures a slow reader without closing the provider-host attachment", () => {
   const root = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-provider-host-bounded-"));
   const socketPath = NodePath.join(root, "control.sock");
   const sockets = new Set<NodeNet.Socket>();
@@ -3259,11 +3259,7 @@ it.effect("bounds slow-reader buffering and resumes the missing event through re
   const now = "2026-01-01T00:00:00.000Z";
   const replayCursors: Array<number | undefined> = [];
   let connectionCount = 0;
-  let resolveFirstClosed: () => void = () => undefined;
-  const firstClosed = new Promise<void>((resolve) => {
-    resolveFirstClosed = resolve;
-  });
-  let floodFirstConnection: () => void = () => undefined;
+  let connectionClosed = false;
 
   const eventEnvelope = (sequence: number) => {
     const event: ProviderEvent = {
@@ -3287,14 +3283,11 @@ it.effect("bounds slow-reader buffering and resumes the missing event through re
 
   const server = NodeNet.createServer((socket) => {
     connectionCount += 1;
-    const currentConnection = connectionCount;
     sockets.add(socket);
     socket.setEncoding("utf8");
     socket.on("close", () => {
       sockets.delete(socket);
-      if (currentConnection === 1) {
-        resolveFirstClosed();
-      }
+      connectionClosed = true;
     });
     socket.write(
       `${JSON.stringify({
@@ -3337,31 +3330,18 @@ it.effect("bounds slow-reader buffering and resumes the missing event through re
           createdAt: now,
           updatedAt: now,
         };
-        if (currentConnection === 1) {
-          floodFirstConnection = () => {
-            socket.write([eventEnvelope(1), eventEnvelope(2), eventEnvelope(3)].join("\n") + "\n");
-          };
-          socket.write(
-            `${JSON.stringify({
-              version: PROVIDER_HOST_PROTOCOL_VERSION,
-              type: "snapshot",
-              threadId,
-              cursor: 0,
-              state,
-            })}\n`,
-          );
-          continue;
-        }
         socket.write(
           [
-            eventEnvelope(3),
+            eventEnvelope(1),
+            eventEnvelope(2),
             JSON.stringify({
               version: PROVIDER_HOST_PROTOCOL_VERSION,
               type: "snapshot",
               threadId,
-              cursor: 3,
+              cursor: 2,
               state,
             }),
+            eventEnvelope(3),
           ].join("\n") + "\n",
         );
       }
@@ -3385,12 +3365,10 @@ it.effect("bounds slow-reader buffering and resumes the missing event through re
           },
         });
         NodeAssert.equal((yield* runtime.start()).status, "ready");
-        floodFirstConnection();
-        yield* Effect.promise(() => firstClosed).pipe(Effect.timeout("1 second"));
 
         const events = Array.from(
           yield* runtime.events.pipe(
-            Stream.take(5),
+            Stream.take(3),
             Stream.runCollect,
             Effect.timeout("2 seconds"),
           ),
@@ -3398,19 +3376,15 @@ it.effect("bounds slow-reader buffering and resumes the missing event through re
 
         NodeAssert.deepStrictEqual(
           events.map((event) => event.method),
-          [
-            "item/agentMessage/delta",
-            "item/agentMessage/delta",
-            "session/reconnecting",
-            "item/agentMessage/delta",
-            "session/reattached",
-          ],
+          ["item/agentMessage/delta", "item/agentMessage/delta", "item/agentMessage/delta"],
         );
         NodeAssert.deepStrictEqual(
           events.filter((event) => event.textDelta).map((event) => event.textDelta),
           ["bounded-1", "bounded-2", "bounded-3"],
         );
-        NodeAssert.deepStrictEqual(replayCursors.slice(0, 2), [0, 2]);
+        NodeAssert.equal(connectionCount, 1);
+        NodeAssert.equal(connectionClosed, false);
+        NodeAssert.deepStrictEqual(replayCursors, [0]);
         NodeAssert.equal(__testing.maxPendingProviderEvents, 4_096);
         NodeAssert.equal(__testing.maxPendingProviderEventBytes, 16 * 1024 * 1024);
       }),

@@ -140,7 +140,9 @@ then reconciles app-server history with the durable rollout without changing the
 owner, status, active turn, or resume cursor. Partial app-server turns (`summary` or `notLoaded`) use
 the rollout as the historical fallback. The control-protocol handshake has a short deadline, while
 the first snapshot has a separate, longer bounded deadline so resuming a large Codex thread is not
-mistaken for an unreachable host.
+mistaken for an unreachable host. The client replay queue remains count- and byte-bounded; if its
+consumer falls behind, T3 pauses socket reads and applies transport backpressure instead of closing
+the attachment.
 
 Detached idle bindings are also observed for independent Codex CLI activity. Rollout modification
 time and open-file ownership are the direct liveness signals; state-database `active` status is only
