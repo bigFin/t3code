@@ -81,11 +81,12 @@ Wakeup handling differs by phase, in [supervisor.ts][supervisor]:
   session survives foregrounding. `application-active-reconnect` skips the probe
   and replaces the lease outright.
 - Web and desktop also emit `connection-watchdog-probe` once per minute while
-  the document is visible. The supervisor uses the short probe timeout and
-  replaces a stale lease immediately on failure. The watchdog is one shared
-  timer per application runtime. It pauses while hidden and, unlike foreground
-  activation, does not restart shell or thread subscriptions on a healthy
-  connection.
+  the document is visible. The supervisor uses the normal connection-probe
+  timeout and keeps the live lease after one transient failure while it
+  immediately confirms the result. Only a failed confirmation replaces the
+  lease. The watchdog is one shared timer per application runtime. It pauses
+  while hidden and, unlike foreground activation, does not restart shell or
+  thread subscriptions on a healthy connection.
 
 The UI derives `available`, `offline`, `connecting`, `reconnecting`,
 `connected`, and `error` from supervisor state plus explicit data-sync state.
@@ -96,12 +97,14 @@ and thread synchronization are independent data states. A healthy RPC transport
 with a failed shell subscription is shown as connected with a synchronization
 error, not as a reconnect that is not actually scheduled.
 
-Cached thread shells can outlive a lost transport. While an environment is not
-connected, web sidebar rows replace stale in-flight `Working` or `Retrying`
-presentation with `Disconnected`; pending approval and input states retain
-their higher priority. The V2 sidebar derives this from one environment-status
-set at its root; the legacy sidebar reuses environment presentation data it
-already observes. Neither path adds per-thread polling.
+Cached thread shells can outlive a lost transport. When supervisor presentation
+contains positive failure evidence, web sidebar rows replace stale in-flight
+`Working` or `Retrying` presentation with `Disconnected`; initial connection,
+healthy reconnect preparation, and data synchronization alone do not. Pending
+approval and input states retain their higher priority. The V2 sidebar derives
+this from one environment-status set at its root; the legacy sidebar reuses
+environment presentation data it already observes. Neither path adds per-thread
+polling.
 
 ## Server Restart Reconciliation
 

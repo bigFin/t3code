@@ -185,8 +185,9 @@ connection method. See [Running T3 Code in the Background](./background-service.
 
 When a remote host disappears without closing its connection cleanly, a visible web or desktop
 client checks the connection about once a minute. If the server does not respond, T3 Code marks the
-environment as reconnecting and replaces stale in-flight **Working** or **Retrying** labels with
-**Disconnected**. These checks pause while the app is hidden and do not poll each thread.
+environment as reconnecting after a confirmation check and replaces stale in-flight **Working** or
+**Retrying** labels with **Disconnected**. A single delayed response does not discard a healthy
+connection. These checks pause while the app is hidden and do not poll each thread.
 
 When the host and T3 server return, the client reconnects automatically. T3 Code does not send a
 message or automatically resume an agent turn. If only the T3 server restarted and an independent

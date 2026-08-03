@@ -13,6 +13,7 @@ import {
   connectionPhaseMessage,
   connectionStatusText,
   connectionStatusTitle,
+  isEnvironmentUnavailable,
   presentEnvironmentConnection,
   presentConnectionState,
 } from "./presentation.ts";
@@ -53,6 +54,36 @@ function supervisorState(overrides: Partial<SupervisorConnectionState>): Supervi
 describe("connection presentation", () => {
   it("preserves profile display information without exposing credentials", () => {
     expect(connectionCatalogDisplayUrl(ENTRY)).toBe("https://environment.example.test");
+  });
+
+  it("requires positive connection failure evidence before declaring an environment unavailable", () => {
+    expect(isEnvironmentUnavailable({ phase: "available", error: null, traceId: null })).toBe(
+      false,
+    );
+    expect(isEnvironmentUnavailable({ phase: "connecting", error: null, traceId: null })).toBe(
+      false,
+    );
+    expect(isEnvironmentUnavailable({ phase: "reconnecting", error: null, traceId: null })).toBe(
+      false,
+    );
+    expect(isEnvironmentUnavailable({ phase: "connected", error: null, traceId: null })).toBe(
+      false,
+    );
+    expect(isEnvironmentUnavailable({ phase: "offline", error: null, traceId: null })).toBe(true);
+    expect(
+      isEnvironmentUnavailable({
+        phase: "reconnecting",
+        error: "Socket closed.",
+        traceId: "trace-retry",
+      }),
+    ).toBe(true);
+    expect(
+      isEnvironmentUnavailable({
+        phase: "error",
+        error: "Authentication required.",
+        traceId: "trace-auth",
+      }),
+    ).toBe(true);
   });
 
   it("distinguishes initial connection, reconnect, and retry errors", () => {

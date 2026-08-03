@@ -1021,11 +1021,45 @@ describe("EnvironmentSupervisor", () => {
     }).pipe(Effect.provide(TestClock.layer())),
   );
 
-  it.effect("reconnects when a visible application watchdog probe fails", () =>
+  it.effect("keeps the live session when watchdog confirmation succeeds", () =>
     Effect.gen(function* () {
+      const probeCount = yield* Ref.make(0);
+      const confirmationCompleted = yield* Deferred.make<void>();
+      const harness = yield* makeHarness({
+        probe: () =>
+          Ref.updateAndGet(probeCount, (count) => count + 1).pipe(
+            Effect.flatMap((count) =>
+              count === 1
+                ? Effect.fail(transient("The live session is temporarily delayed."))
+                : Deferred.succeed(confirmationCompleted, undefined).pipe(Effect.asVoid),
+            ),
+          ),
+      });
+      const supervisor = yield* EnvironmentSupervisor.make(TARGET_ENTRY, {
+        initiallyDesired: true,
+      }).pipe(Effect.provide(harness.dependencies));
+
+      yield* awaitState(supervisor.state, (state) => state.phase === "connected");
+      yield* harness.wake("connection-watchdog-probe");
+      yield* Deferred.await(confirmationCompleted);
+
+      expect(yield* Ref.get(probeCount)).toBe(2);
+      expect(yield* Ref.get(harness.sessionCount)).toBe(1);
+      expect(yield* Ref.get(harness.releaseCount)).toBe(0);
+      expect((yield* SubscriptionRef.get(supervisor.state)).phase).toBe("connected");
+    }),
+  );
+
+  it.effect("reconnects after watchdog confirmation also fails", () =>
+    Effect.gen(function* () {
+      const probeCount = yield* Ref.make(0);
       const harness = yield* makeHarness({
         probe: (attempt) =>
-          attempt === 1 ? Effect.fail(transient("The live session is stale.")) : Effect.void,
+          attempt === 1
+            ? Ref.update(probeCount, (count) => count + 1).pipe(
+                Effect.andThen(Effect.fail(transient("The live session is stale."))),
+              )
+            : Effect.void,
       });
       const supervisor = yield* EnvironmentSupervisor.make(TARGET_ENTRY, {
         initiallyDesired: true,
@@ -1040,8 +1074,56 @@ describe("EnvironmentSupervisor", () => {
         (state) => state.phase === "connected" && state.generation === 2,
       );
 
+      expect(yield* Ref.get(probeCount)).toBe(2);
       expect(yield* Ref.get(harness.sessionCount)).toBe(2);
       expect(yield* Ref.get(harness.releaseCount)).toBe(1);
+    }).pipe(Effect.provide(TestClock.layer())),
+  );
+
+  it.effect("uses the normal connection timeout for visible watchdog probes", () =>
+    Effect.gen(function* () {
+      const probeCount = yield* Ref.make(0);
+      const firstProbeStarted = yield* Deferred.make<void>();
+      const confirmationProbeStarted = yield* Deferred.make<void>();
+      const harness = yield* makeHarness({
+        probe: (attempt) =>
+          attempt === 1
+            ? Ref.updateAndGet(probeCount, (count) => count + 1).pipe(
+                Effect.flatMap((count) =>
+                  Deferred.succeed(
+                    count === 1 ? firstProbeStarted : confirmationProbeStarted,
+                    undefined,
+                  ),
+                ),
+                Effect.andThen(Effect.never),
+              )
+            : Effect.void,
+      });
+      const supervisor = yield* EnvironmentSupervisor.make(TARGET_ENTRY, {
+        initiallyDesired: true,
+      }).pipe(Effect.provide(harness.dependencies));
+
+      yield* awaitState(supervisor.state, (state) => state.phase === "connected");
+      yield* harness.wake("connection-watchdog-probe");
+      yield* Deferred.await(firstProbeStarted);
+      yield* TestClock.adjust("3 seconds");
+
+      expect(yield* Ref.get(probeCount)).toBe(1);
+      expect(yield* Ref.get(harness.releaseCount)).toBe(0);
+      expect((yield* SubscriptionRef.get(supervisor.state)).phase).toBe("connected");
+
+      yield* TestClock.adjust("12 seconds");
+      yield* Deferred.await(confirmationProbeStarted);
+
+      expect(yield* Ref.get(probeCount)).toBe(2);
+      expect(yield* Ref.get(harness.releaseCount)).toBe(0);
+      expect((yield* SubscriptionRef.get(supervisor.state)).phase).toBe("connected");
+
+      yield* TestClock.adjust("15 seconds");
+      yield* awaitState(
+        supervisor.state,
+        (state) => state.phase === "backoff" && state.lastFailure?.reason === "timeout",
+      );
     }).pipe(Effect.provide(TestClock.layer())),
   );
 

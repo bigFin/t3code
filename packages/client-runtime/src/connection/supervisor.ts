@@ -405,6 +405,7 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
     lease: ConnectionDriver.EnvironmentConnectionLease,
   ) {
     let consecutiveTransientProbeFailures = 0;
+    let watchdogConfirmationPending = false;
 
     for (;;) {
       const next = yield* Queue.take(signals);
@@ -436,9 +437,9 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
             const probe = yield* lease.session.probe.pipe(
               Effect.timeoutOrElse({
                 duration:
-                  next.reason === "application-active"
-                    ? CONNECTION_PROBE_TIMEOUT
-                    : MOBILE_CONNECTION_PROBE_TIMEOUT,
+                  next.reason === "application-active-probe"
+                    ? MOBILE_CONNECTION_PROBE_TIMEOUT
+                    : CONNECTION_PROBE_TIMEOUT,
                 orElse: () =>
                   Effect.fail(
                     new ConnectionTransientError({
@@ -461,9 +462,31 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
               if (probeEvent._tag === "ProbeCompleted") {
                 if (Exit.isSuccess(probeEvent.exit)) {
                   consecutiveTransientProbeFailures = 0;
+                  watchdogConfirmationPending = false;
                   break;
                 }
                 const typedFailure = probeEvent.exit.cause.reasons.find(Cause.isFailReason);
+                if (
+                  next.reason === "connection-watchdog-probe" &&
+                  typedFailure?.error._tag === "ConnectionTransientError" &&
+                  !watchdogConfirmationPending
+                ) {
+                  watchdogConfirmationPending = true;
+                  yield* Effect.logWarning(
+                    "Connection watchdog failed once; confirming before replacing the live session.",
+                    {
+                      environmentId: target.environmentId,
+                      environmentLabel: target.label,
+                      reason: typedFailure.error.reason,
+                      detail: typedFailure.error.detail,
+                    },
+                  );
+                  yield* signal({
+                    _tag: "Wakeup",
+                    reason: "connection-watchdog-probe",
+                  });
+                  break;
+                }
                 if (
                   next.reason === "application-active" &&
                   typedFailure?.error._tag === "ConnectionTransientError" &&

@@ -24,6 +24,20 @@ export interface EnvironmentPresentation {
   readonly serverConfig: ServerConfig | null;
 }
 
+export function isEnvironmentUnavailable(connection: EnvironmentConnectionPresentation): boolean {
+  switch (connection.phase) {
+    case "offline":
+    case "error":
+      return true;
+    case "reconnecting":
+      return connection.error !== null;
+    case "available":
+    case "connecting":
+    case "connected":
+      return false;
+  }
+}
+
 export function presentConnectionState(
   state: SupervisorConnectionState,
 ): EnvironmentConnectionPresentation {
