@@ -61,6 +61,7 @@ const REMOTE_READY_TIMEOUT_MS = 15_000;
 const REMOTE_PACKAGE_READY_TIMEOUT_MS = 120_000;
 const REMOTE_REUSE_READY_TIMEOUT_MS = 2_000;
 const EXISTING_TUNNEL_READY_TIMEOUT_MS = 15_000;
+const EXISTING_TUNNEL_READY_PROBE_TIMEOUT_MS = 5_000;
 
 export interface RemoteT3RunnerOptions {
   readonly packageCacheDir?: string | null;
@@ -1854,6 +1855,7 @@ const makeSshEnvironmentManager = Effect.fn("ssh/tunnel.SshEnvironmentManager.ma
           baseUrl: entry.httpBaseUrl,
           path: T3_SERVER_READINESS_PATH,
           timeoutMs: EXISTING_TUNNEL_READY_TIMEOUT_MS,
+          probeTimeoutMs: EXISTING_TUNNEL_READY_PROBE_TIMEOUT_MS,
         }),
       );
       if (Exit.isSuccess(readinessExit)) {

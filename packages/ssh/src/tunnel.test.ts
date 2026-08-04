@@ -799,6 +799,64 @@ describe("ssh tunnel scripts", () => {
     }).pipe(Effect.provide(layer), Effect.scoped);
   });
 
+  it.effect("keeps an existing tunnel when replay traffic delays its readiness probe", () => {
+    let tunnelSpawnCount = 0;
+    let tunnelKillCount = 0;
+    let readinessRequestCount = 0;
+    const spawner = ChildProcessSpawner.make((command) =>
+      Effect.sync(() => {
+        const args = commandArgs(command);
+        if (args.includes("-N")) {
+          tunnelSpawnCount += 1;
+          return makeRunningProcess(() => {
+            tunnelKillCount += 1;
+          });
+        }
+        if (args.includes("sh") && args.includes("--")) {
+          return makeSuccessfulProcess('{"remotePort":3773}\n');
+        }
+        return makeSuccessfulProcess('{"stopped":true}\n');
+      }),
+    );
+    const replayCongestedHttpClient = HttpClient.make((request) =>
+      Effect.gen(function* () {
+        readinessRequestCount += 1;
+        if (readinessRequestCount > 1 && tunnelSpawnCount === 1) {
+          yield* Effect.sleep(Duration.seconds(2));
+        }
+        return HttpClientResponse.fromWeb(request, new Response("", { status: 200 }));
+      }),
+    );
+    const layer = Layer.mergeAll(
+      NodeServices.layer,
+      TestClock.layer(),
+      Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner),
+      Layer.succeed(HttpClient.HttpClient, replayCongestedHttpClient),
+      Layer.succeed(NetService.NetService, testNetService),
+      SshPasswordPrompt.disabledLayer,
+      SshEnvironmentManager.layer(),
+    );
+    const target = {
+      alias: "devbox",
+      hostname: "devbox.example.com",
+      username: "julius",
+      port: 2222,
+    } as const;
+
+    return Effect.gen(function* () {
+      const manager = yield* SshEnvironmentManager;
+      const first = yield* manager.ensureEnvironment(target);
+      const secondFiber = yield* manager.ensureEnvironment(target).pipe(Effect.forkChild);
+      yield* Effect.yieldNow;
+      yield* TestClock.adjust(Duration.seconds(2));
+      const second = yield* Fiber.join(secondFiber);
+
+      assert.equal(second.httpBaseUrl, first.httpBaseUrl);
+      assert.equal(tunnelSpawnCount, 1);
+      assert.equal(tunnelKillCount, 0);
+    }).pipe(Effect.provide(layer), Effect.scoped);
+  });
+
   it.effect("rotates a stale local tunnel without stopping the reusable remote server", () => {
     const spawnedCommands: Array<ReadonlyArray<string>> = [];
     let tunnelSpawnCount = 0;
