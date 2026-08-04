@@ -75,6 +75,7 @@ const ROLLOUT_MESSAGE_READ_CHUNK_BYTES = 1024 * 1024;
 const ROLLOUT_RESUME_OFFSET_INITIAL_TAIL_BYTES = 1024 * 1024;
 const CODEX_CLI_LIVE_INACTIVITY_GRACE_MS = 15 * 60_000;
 const CODEX_CLI_IMPORT_VERSION = 2;
+const CODEX_CLI_OBSERVER_RECONCILIATION_VERSION = 1;
 const CODEX_CLI_IMPORT_FAILURE_BACKOFF_INITIAL_MS = 60_000;
 const CODEX_CLI_IMPORT_FAILURE_BACKOFF_MAX_MS = 60 * 60_000;
 const CODEX_CLI_MESSAGE_IMPORT_BATCH_SIZE = 100;
@@ -1230,6 +1231,50 @@ function readCodexCliImportVersion(runtimePayload: unknown): number | undefined 
     : undefined;
 }
 
+function readCodexCliObserverReconciliationVersion(runtimePayload: unknown): number | undefined {
+  if (
+    runtimePayload === null ||
+    typeof runtimePayload !== "object" ||
+    Array.isArray(runtimePayload) ||
+    !("codexCliObserverReconciliationVersion" in runtimePayload)
+  ) {
+    return undefined;
+  }
+  return typeof runtimePayload.codexCliObserverReconciliationVersion === "number" &&
+    Number.isFinite(runtimePayload.codexCliObserverReconciliationVersion)
+    ? runtimePayload.codexCliObserverReconciliationVersion
+    : undefined;
+}
+
+function readCodexCliReconciledTurn(
+  runtimePayload: unknown,
+): ReconciledCodexCliTurnState | undefined {
+  if (
+    runtimePayload === null ||
+    typeof runtimePayload !== "object" ||
+    Array.isArray(runtimePayload) ||
+    !("codexCliReconciledTurn" in runtimePayload)
+  ) {
+    return undefined;
+  }
+  const value = runtimePayload.codexCliReconciledTurn;
+  if (
+    value === null ||
+    typeof value !== "object" ||
+    Array.isArray(value) ||
+    !("turnId" in value) ||
+    typeof value.turnId !== "string" ||
+    !("state" in value) ||
+    (value.state !== "completed" && value.state !== "interrupted" && value.state !== "error")
+  ) {
+    return undefined;
+  }
+  return {
+    turnId: TurnId.make(value.turnId),
+    state: value.state,
+  };
+}
+
 function isCodexCliImportedBinding(
   binding: ProviderRuntimeBinding | undefined,
 ): binding is ProviderRuntimeBinding {
@@ -1542,6 +1587,22 @@ interface ObservedCodexCliSessionState {
   readonly activeTurnId: null;
   readonly lastError: string | null;
 }
+
+type SynchronizedCodexCliSessionState = {
+  readonly status: "ready" | "running" | "interrupted" | "error";
+  readonly activeTurnId: TurnId | null;
+  readonly lastError: string | null;
+};
+
+type ReconciledCodexCliTurnState = {
+  readonly turnId: TurnId;
+  readonly state: "completed" | "interrupted" | "error";
+};
+
+type HydratedCodexCliSessionState = {
+  readonly session: SynchronizedCodexCliSessionState;
+  readonly reconciledTurn: ReconciledCodexCliTurnState | null;
+};
 
 interface CodexCliThreadImportCandidate {
   readonly listedThread: CodexListedThread;
@@ -2094,7 +2155,6 @@ export function resolveObservedCodexCliSessionState(input: {
   readonly taskState: CodexCliRolloutTaskState;
   readonly listedThreadIsActive: boolean;
   readonly listedThreadHasSystemError: boolean;
-  readonly rolloutEvidenceAvailable: boolean;
   readonly rolloutIsOpen: boolean;
   readonly rolloutIsRecent: boolean;
 }): ObservedCodexCliSessionState {
@@ -2128,27 +2188,6 @@ export function resolveObservedCodexCliSessionState(input: {
         : "The Codex process ended before it produced a final response.",
     };
   }
-  if (input.rolloutEvidenceAvailable) {
-    if (input.rolloutIsOpen || input.rolloutIsRecent) {
-      return {
-        status: "running",
-        activeTurnId: null,
-        lastError: null,
-      };
-    }
-    if (input.listedThreadHasSystemError) {
-      return {
-        status: "error",
-        activeTurnId: null,
-        lastError: "Codex reported a system error for this thread.",
-      };
-    }
-    return {
-      status: "ready",
-      activeTurnId: null,
-      lastError: null,
-    };
-  }
   if (input.listedThreadHasSystemError) {
     return {
       status: "error",
@@ -2167,6 +2206,99 @@ export function resolveObservedCodexCliSessionState(input: {
     status: "ready",
     activeTurnId: null,
     lastError: null,
+  };
+}
+
+export function resolveConcreteObservedCodexCliSessionState(
+  state: ObservedCodexCliSessionState,
+  activeTurnId: TurnId | null,
+): SynchronizedCodexCliSessionState {
+  if (state.status === "running" && activeTurnId === null) {
+    return {
+      status: "ready",
+      activeTurnId: null,
+      lastError: null,
+    };
+  }
+  return {
+    ...state,
+    activeTurnId,
+  };
+}
+
+export function resolveHydratedObservedCodexCliSessionState(input: {
+  readonly thread: Pick<CodexReadThread, "status" | "turns">;
+  readonly fallback: SynchronizedCodexCliSessionState;
+}): HydratedCodexCliSessionState {
+  const latestTurn = input.thread.turns.at(-1);
+  if (latestTurn?.status === "inProgress") {
+    return {
+      session: {
+        status: "running",
+        activeTurnId: TurnId.make(latestTurn.id),
+        lastError: null,
+      },
+      reconciledTurn: null,
+    };
+  }
+  if (latestTurn?.status === "interrupted") {
+    return {
+      session: {
+        status: "interrupted",
+        activeTurnId: null,
+        lastError: "The Codex turn was interrupted before it produced a final response.",
+      },
+      reconciledTurn: {
+        turnId: TurnId.make(latestTurn.id),
+        state: "interrupted",
+      },
+    };
+  }
+  if (latestTurn?.status === "failed" || input.thread.status.type === "systemError") {
+    return {
+      session: {
+        status: "error",
+        activeTurnId: null,
+        lastError:
+          latestTurn?.status === "failed"
+            ? (latestTurn.error?.message ?? "The Codex turn failed.")
+            : "Codex reported a system error for this thread.",
+      },
+      reconciledTurn:
+        latestTurn === undefined
+          ? null
+          : {
+              turnId: TurnId.make(latestTurn.id),
+              state: "error",
+            },
+    };
+  }
+  if (latestTurn?.status === "completed") {
+    return {
+      session: {
+        status: "ready",
+        activeTurnId: null,
+        lastError: null,
+      },
+      reconciledTurn: {
+        turnId: TurnId.make(latestTurn.id),
+        state: "completed",
+      },
+    };
+  }
+  if (input.thread.status.type === "active" && latestTurn !== undefined) {
+    return {
+      session: {
+        status: "running",
+        activeTurnId: TurnId.make(latestTurn.id),
+        lastError: null,
+      },
+      reconciledTurn: null,
+    };
+  }
+  return {
+    session: input.fallback,
+    reconciledTurn: null,
   };
 }
 
@@ -2583,12 +2715,26 @@ export function shouldInspectDetachedCodexCliObserver(input: {
   readonly binding: ProviderRuntimeBinding | undefined;
   readonly listedThread: CodexListedThread;
   readonly projectedSessionStatus: string | undefined;
+  readonly projectedLatestTurn?: {
+    readonly turnId: TurnId;
+    readonly state: "running" | "completed" | "interrupted" | "error";
+  } | null;
 }): boolean {
+  const reconciledTurn = readCodexCliReconciledTurn(input.binding?.runtimePayload);
+  const projectedTerminalTurn = input.projectedLatestTurn;
+  const terminalTurnNeedsReconciliation =
+    projectedTerminalTurn !== null &&
+    projectedTerminalTurn !== undefined &&
+    projectedTerminalTurn.state !== "running" &&
+    (reconciledTurn === undefined ||
+      reconciledTurn.turnId !== projectedTerminalTurn.turnId ||
+      reconciledTurn.state !== projectedTerminalTurn.state);
   return (
     isDetachedCodexCliObserverBinding(input.binding) &&
     (input.listedThread.status.type === "active" ||
       input.projectedSessionStatus === "starting" ||
       input.projectedSessionStatus === "running" ||
+      terminalTurnNeedsReconciliation ||
       (input.listedThread.status.type === "systemError" &&
         input.projectedSessionStatus !== observedCodexCliSessionStatus(input.listedThread)))
   );
@@ -2596,6 +2742,15 @@ export function shouldInspectDetachedCodexCliObserver(input: {
 
 function hasCurrentCodexCliImportVersion(binding: ProviderRuntimeBinding | undefined): boolean {
   return readCodexCliImportVersion(binding?.runtimePayload) === CODEX_CLI_IMPORT_VERSION;
+}
+
+export function hasCurrentCodexCliObserverReconciliation(
+  binding: ProviderRuntimeBinding | undefined,
+): boolean {
+  return (
+    readCodexCliObserverReconciliationVersion(binding?.runtimePayload) ===
+    CODEX_CLI_OBSERVER_RECONCILIATION_VERSION
+  );
 }
 
 export function shouldSkipCurrentCodexCliImport(
@@ -3338,6 +3493,9 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
         binding: existingBinding,
         listedThread,
         projectedSessionStatus: projectedThread?.session?.status,
+        ...(projectedThread?.latestTurn !== undefined
+          ? { projectedLatestTurn: projectedThread.latestTurn }
+          : {}),
       });
       const importedAtMillis = readCodexCliImportedAt(existingBinding?.runtimePayload);
       // Currentness is persisted independently of the active thread projection.
@@ -3634,6 +3792,84 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
       return true;
     });
 
+    const reconcileObservedDetachedCliTurn = Effect.fn(
+      "CodexCliSessionImporter.reconcileObservedDetachedCliTurn",
+    )(function* (
+      prepared: PreparedCodexCliThreadImport,
+      state: ReconciledCodexCliTurnState,
+      observedSessionState: SynchronizedCodexCliSessionState,
+      expectedUserMessageIds: ReadonlyArray<MessageId>,
+      completedAt: string,
+    ) {
+      const currentThread = (yield* projectionSnapshotQuery.getThreadShellsByIds([
+        prepared.threadId,
+      ])).get(prepared.threadId);
+      if (currentThread === undefined) {
+        return false;
+      }
+      const currentBinding = Option.getOrUndefined(yield* directory.getBinding(prepared.threadId));
+      if (
+        !isDetachedCodexCliObserverBinding(currentBinding) ||
+        prepared.existingBinding === undefined ||
+        !isSameCodexCliProviderRuntimeOwner(currentBinding, prepared.existingBinding)
+      ) {
+        return false;
+      }
+      const session = currentThread.session;
+      if (session === null || !codexCliSessionMatchesObservedState(session, observedSessionState)) {
+        return false;
+      }
+      if (
+        currentThread.latestTurn?.turnId === state.turnId &&
+        currentThread.latestTurn.state === state.state
+      ) {
+        return true;
+      }
+
+      const reconciledAt = DateTime.formatIso(yield* DateTime.now);
+      const expectedProviderRuntime = resolveCodexCliProviderRuntimeExpectation(
+        currentBinding,
+        true,
+      );
+      yield* orchestrationEngine.dispatch({
+        type: "thread.turn.reconcile",
+        commandId: stableCommandId(
+          "turn-cli-reconciled",
+          prepared.threadId,
+          state.turnId,
+          state.state,
+          session.updatedAt,
+          stableTextHash(expectedUserMessageIds.join("\0")),
+          ...providerRuntimeExpectationCommandParts(expectedProviderRuntime),
+          completedAt,
+          reconciledAt,
+        ),
+        threadId: prepared.threadId,
+        turnId: state.turnId,
+        state: state.state,
+        completedAt,
+        expectedSession: session,
+        expectedUserMessageIds,
+        expectedProviderRuntime,
+        createdAt: reconciledAt,
+      });
+      const reconciledThread = (yield* projectionSnapshotQuery.getThreadShellsByIds([
+        prepared.threadId,
+      ])).get(prepared.threadId);
+      const synchronized =
+        reconciledThread?.latestTurn?.turnId === state.turnId &&
+        reconciledThread.latestTurn.state === state.state;
+      if (synchronized) {
+        yield* Effect.logInfo("codex.cli-import.observed-turn-state", {
+          threadId: prepared.threadId,
+          providerThreadId: prepared.listedThread.id,
+          turnId: state.turnId,
+          state: state.state,
+        });
+      }
+      return synchronized;
+    });
+
     const bindingAllowsCodexCliActivityImport = (
       prepared: PreparedCodexCliThreadImport,
       binding: ProviderRuntimeBindingWithMetadata | undefined,
@@ -3822,11 +4058,6 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
               );
             })
           : NO_CODEX_ROLLOUT_TERMINAL_EVIDENCE;
-      const rolloutEvidenceAvailable =
-        rolloutPath !== undefined &&
-        (observedRolloutTask.rolloutUpdatedAtMillis !== undefined ||
-          rolloutIsOpen ||
-          observedRolloutTask.lifecycle.state !== null);
       const rolloutIsRecent =
         observedRolloutTask.rolloutUpdatedAtMillis === undefined
           ? listedThreadIsRecent
@@ -3835,7 +4066,6 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
         taskState: observedRolloutTask.lifecycle.state,
         listedThreadIsActive: listedThread.status.type === "active",
         listedThreadHasSystemError: listedThread.status.type === "systemError",
-        rolloutEvidenceAvailable,
         rolloutIsOpen,
         rolloutIsRecent,
       });
@@ -3845,13 +4075,11 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
           : observedRolloutTask.lifecycle.state === "active" &&
               observedRolloutTask.lifecycle.turnId !== null
             ? TurnId.make(observedRolloutTask.lifecycle.turnId)
-            : projectedThread?.latestTurn?.state === "running"
-              ? projectedThread.latestTurn.turnId
-              : null;
-      const observedSessionStateWithTurn = {
-        ...observedSessionState,
-        activeTurnId: observedActiveTurnId,
-      };
+            : null;
+      const observedSessionStateWithTurn = resolveConcreteObservedCodexCliSessionState(
+        observedSessionState,
+        observedActiveTurnId,
+      );
       let observerSessionSynchronized = !observesDetachedCliSession;
       if (
         observesDetachedCliSession &&
@@ -3864,9 +4092,10 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
         );
       }
       const observerImportIsCurrent =
-        observedRolloutTask.rolloutUpdatedAtMillis === undefined
+        (observedRolloutTask.rolloutUpdatedAtMillis === undefined
           ? importIsCurrent
-          : observedRolloutTask.importIsFresh;
+          : observedRolloutTask.importIsFresh) &&
+        (!observesDetachedCliSession || hasCurrentCodexCliObserverReconciliation(existingBinding));
       const observedActivityTurnId =
         observedActiveTurnId ?? observedRolloutTask.lifecycle.turnId ?? staleActiveTurnId;
       const observedRolloutMessages =
@@ -3918,7 +4147,7 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
       }
       if (
         observesDetachedCliSession &&
-        observedSessionState.status === "running" &&
+        observedSessionStateWithTurn.status === "running" &&
         !observerNeedsHydration
       ) {
         if (!observerSessionSynchronized) {
@@ -3939,7 +4168,7 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
           ? ("recovering-live" satisfies CodexCliThreadImportResult)
           : ("skipped" satisfies CodexCliThreadImportResult);
       }
-      if (observesDetachedCliSession && !observerNeedsHydration) {
+      if (observesDetachedCliSession && !observerNeedsHydration && !inspectDetachedCliSession) {
         if (!observerSessionSynchronized) {
           observerSessionSynchronized = yield* syncObservedDetachedCliSession(
             target,
@@ -3962,7 +4191,7 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
         observedRolloutMessages !== undefined &&
         shouldUseCodexRolloutTranscriptWithoutThreadRead({
           observesDetachedCliSession,
-          observedSessionStatus: observedSessionState.status,
+          observedSessionStatus: observedSessionStateWithTurn.status,
           rolloutTranscriptComplete: observedRolloutMessages.complete,
           terminalTransitionObserved: observedRolloutTask.terminalTransitionObserved,
         });
@@ -4181,47 +4410,29 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
       const transcriptHydrationSucceeded = transcript.complete && transcriptSynchronized;
 
       const sessionSyncStartedAt = yield* Clock.currentTimeMillis;
+      let observerReconciledTurn: ReconciledCodexCliTurnState | null = null;
       if (observesDetachedCliSession && transcriptHydrationSucceeded) {
-        const latestTurn = thread.turns.at(-1);
-        if (observedRolloutTask.lifecycle.state !== null) {
-          observerSessionSynchronized = yield* syncObservedDetachedCliSession(
-            target,
+        const hydratedState = resolveHydratedObservedCodexCliSessionState({
+          thread,
+          fallback: observedSessionStateWithTurn,
+        });
+        observerSessionSynchronized = yield* syncObservedDetachedCliSession(
+          target,
+          prepared,
+          hydratedState.session,
+          expectedUserMessageIds,
+        );
+        if (observerSessionSynchronized && hydratedState.reconciledTurn !== null) {
+          observerSessionSynchronized = yield* reconcileObservedDetachedCliTurn(
             prepared,
-            observedSessionStateWithTurn,
+            hydratedState.reconciledTurn,
+            hydratedState.session,
             expectedUserMessageIds,
+            DateTime.formatIso(DateTime.makeUnsafe(unixSecondsToMillis(thread.updatedAt, 0))),
           );
-        } else if (latestTurn?.status === "interrupted") {
-          observerSessionSynchronized = yield* syncObservedDetachedCliSession(
-            target,
-            prepared,
-            {
-              status: "interrupted",
-              activeTurnId: null,
-              lastError: "The Codex turn was interrupted before it produced a final response.",
-            },
-            expectedUserMessageIds,
-          );
-        } else if (thread.status.type === "systemError" || latestTurn?.status === "failed") {
-          observerSessionSynchronized = yield* syncObservedDetachedCliSession(
-            target,
-            prepared,
-            {
-              status: "error",
-              activeTurnId: null,
-              lastError:
-                latestTurn?.status === "failed"
-                  ? (latestTurn.error?.message ?? "The Codex turn failed.")
-                  : "Codex reported a system error for this thread.",
-            },
-            expectedUserMessageIds,
-          );
-        } else {
-          observerSessionSynchronized = yield* syncObservedDetachedCliSession(
-            target,
-            prepared,
-            observedSessionStateWithTurn,
-            expectedUserMessageIds,
-          );
+          if (observerSessionSynchronized) {
+            observerReconciledTurn = hydratedState.reconciledTurn;
+          }
         }
       }
       phaseTimings.sessionSyncMs = Math.max(
@@ -4341,6 +4552,14 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
         importedAt,
         codexCliImportVersion: CODEX_CLI_IMPORT_VERSION,
         codexCliUpdatedAt: thread.updatedAt,
+        ...(observesDetachedCliSession
+          ? {
+              codexCliObserverReconciliationVersion: CODEX_CLI_OBSERVER_RECONCILIATION_VERSION,
+            }
+          : {}),
+        ...(observerReconciledTurn !== null
+          ? { codexCliReconciledTurn: observerReconciledTurn }
+          : {}),
         ...(refreshesDetachedCliTranscript ? { codexCliTranscriptRefreshRequired: false } : {}),
       };
       const metadataWriteStartedAt = yield* Clock.currentTimeMillis;

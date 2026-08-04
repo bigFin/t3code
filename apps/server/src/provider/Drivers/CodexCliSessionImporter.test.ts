@@ -24,6 +24,7 @@ import {
   collectCodexCliRolloutActivities,
   collectCodexCliRolloutMessages,
   findCodexRolloutResumeOffsetInTail,
+  hasCurrentCodexCliObserverReconciliation,
   hasSynchronizedCodexCliTranscript,
   isCodexProcessExecutable,
   isCodexRolloutPathWithinSessionsRoot,
@@ -44,8 +45,10 @@ import {
   reconcileCodexCliImportedMessages,
   resolveCodexCliImportBinding,
   resolveCodexCliExpectedUserMessageIds,
+  resolveConcreteObservedCodexCliSessionState,
   resolveCodexCliProviderRuntimeExpectation,
   resolveCodexCliRecoveredCheckpointRequest,
+  resolveHydratedObservedCodexCliSessionState,
   resolveObservedCodexCliSessionSyncAction,
   resolveCodexCliTranscriptMessages,
   readCodexCliImportedAt,
@@ -1268,6 +1271,37 @@ describe("CodexCliSessionImporter transcript conversion", () => {
         binding,
         listedThread: thread,
         projectedSessionStatus: "interrupted",
+      }),
+    ).toBe(false);
+    expect(
+      shouldInspectDetachedCodexCliObserver({
+        binding,
+        listedThread: thread,
+        projectedSessionStatus: "interrupted",
+        projectedLatestTurn: {
+          turnId: TurnId.make("turn-needs-reconciliation"),
+          state: "interrupted",
+        },
+      }),
+    ).toBe(true);
+    expect(
+      shouldInspectDetachedCodexCliObserver({
+        binding: {
+          ...binding,
+          runtimePayload: {
+            ...binding.runtimePayload,
+            codexCliReconciledTurn: {
+              turnId: "turn-needs-reconciliation",
+              state: "interrupted",
+            },
+          },
+        },
+        listedThread: thread,
+        projectedSessionStatus: "interrupted",
+        projectedLatestTurn: {
+          turnId: TurnId.make("turn-needs-reconciliation"),
+          state: "interrupted",
+        },
       }),
     ).toBe(false);
     expect(
@@ -2737,7 +2771,6 @@ describe("CodexCliSessionImporter transcript conversion", () => {
         taskState: "active",
         listedThreadIsActive: false,
         listedThreadHasSystemError: false,
-        rolloutEvidenceAvailable: true,
         rolloutIsOpen: false,
         rolloutIsRecent: true,
       }),
@@ -2751,7 +2784,6 @@ describe("CodexCliSessionImporter transcript conversion", () => {
         taskState: "active",
         listedThreadIsActive: false,
         listedThreadHasSystemError: false,
-        rolloutEvidenceAvailable: true,
         rolloutIsOpen: true,
         rolloutIsRecent: false,
       }),
@@ -2765,7 +2797,6 @@ describe("CodexCliSessionImporter transcript conversion", () => {
         taskState: "active",
         listedThreadIsActive: false,
         listedThreadHasSystemError: false,
-        rolloutEvidenceAvailable: true,
         rolloutIsOpen: false,
         rolloutIsRecent: false,
       }),
@@ -2779,7 +2810,6 @@ describe("CodexCliSessionImporter transcript conversion", () => {
         taskState: "interrupted",
         listedThreadIsActive: false,
         listedThreadHasSystemError: false,
-        rolloutEvidenceAvailable: true,
         rolloutIsOpen: false,
         rolloutIsRecent: false,
       }),
@@ -2793,7 +2823,6 @@ describe("CodexCliSessionImporter transcript conversion", () => {
         taskState: "completed",
         listedThreadIsActive: true,
         listedThreadHasSystemError: true,
-        rolloutEvidenceAvailable: true,
         rolloutIsOpen: true,
         rolloutIsRecent: true,
       }),
@@ -2807,7 +2836,6 @@ describe("CodexCliSessionImporter transcript conversion", () => {
         taskState: null,
         listedThreadIsActive: false,
         listedThreadHasSystemError: true,
-        rolloutEvidenceAvailable: true,
         rolloutIsOpen: false,
         rolloutIsRecent: false,
       }),
@@ -2821,8 +2849,20 @@ describe("CodexCliSessionImporter transcript conversion", () => {
         taskState: null,
         listedThreadIsActive: false,
         listedThreadHasSystemError: true,
-        rolloutEvidenceAvailable: true,
         rolloutIsOpen: true,
+        rolloutIsRecent: false,
+      }),
+    ).toEqual({
+      status: "error",
+      activeTurnId: null,
+      lastError: "Codex reported a system error for this thread.",
+    });
+    expect(
+      resolveObservedCodexCliSessionState({
+        taskState: null,
+        listedThreadIsActive: true,
+        listedThreadHasSystemError: false,
+        rolloutIsOpen: false,
         rolloutIsRecent: false,
       }),
     ).toEqual({
@@ -2835,28 +2875,113 @@ describe("CodexCliSessionImporter transcript conversion", () => {
         taskState: null,
         listedThreadIsActive: true,
         listedThreadHasSystemError: false,
-        rolloutEvidenceAvailable: true,
         rolloutIsOpen: false,
         rolloutIsRecent: false,
       }),
     ).toEqual({
+      status: "running",
+      activeTurnId: null,
+      lastError: null,
+    });
+  });
+
+  it("requires a concrete turn before synchronizing detached work as running", () => {
+    const observed = resolveObservedCodexCliSessionState({
+      taskState: null,
+      listedThreadIsActive: true,
+      listedThreadHasSystemError: false,
+      rolloutIsOpen: true,
+      rolloutIsRecent: true,
+    });
+
+    expect(resolveConcreteObservedCodexCliSessionState(observed, null)).toEqual({
       status: "ready",
       activeTurnId: null,
       lastError: null,
     });
     expect(
-      resolveObservedCodexCliSessionState({
-        taskState: null,
-        listedThreadIsActive: true,
-        listedThreadHasSystemError: false,
-        rolloutEvidenceAvailable: false,
-        rolloutIsOpen: false,
-        rolloutIsRecent: false,
-      }),
+      resolveConcreteObservedCodexCliSessionState(observed, TurnId.make("turn-active")),
     ).toEqual({
       status: "running",
+      activeTurnId: TurnId.make("turn-active"),
+      lastError: null,
+    });
+  });
+
+  it("uses hydrated Codex turn state instead of an open idle rollout", () => {
+    const staleFallback = {
+      status: "ready" as const,
       activeTurnId: null,
       lastError: null,
+    };
+
+    expect(
+      resolveHydratedObservedCodexCliSessionState({
+        thread: {
+          status: { type: "idle" },
+          turns: [
+            {
+              id: "turn-complete",
+              status: "completed",
+              items: [],
+            },
+          ],
+        },
+        fallback: staleFallback,
+      }),
+    ).toEqual({
+      session: staleFallback,
+      reconciledTurn: {
+        turnId: TurnId.make("turn-complete"),
+        state: "completed",
+      },
+    });
+    expect(
+      resolveHydratedObservedCodexCliSessionState({
+        thread: {
+          status: { type: "active", activeFlags: [] },
+          turns: [
+            {
+              id: "turn-active",
+              status: "inProgress",
+              items: [],
+            },
+          ],
+        },
+        fallback: staleFallback,
+      }),
+    ).toEqual({
+      session: {
+        status: "running",
+        activeTurnId: TurnId.make("turn-active"),
+        lastError: null,
+      },
+      reconciledTurn: null,
+    });
+    expect(
+      resolveHydratedObservedCodexCliSessionState({
+        thread: {
+          status: { type: "idle" },
+          turns: [
+            {
+              id: "turn-interrupted",
+              status: "interrupted",
+              items: [],
+            },
+          ],
+        },
+        fallback: staleFallback,
+      }),
+    ).toEqual({
+      session: {
+        status: "interrupted",
+        activeTurnId: null,
+        lastError: "The Codex turn was interrupted before it produced a final response.",
+      },
+      reconciledTurn: {
+        turnId: TurnId.make("turn-interrupted"),
+        state: "interrupted",
+      },
     });
   });
 
@@ -3129,6 +3254,32 @@ describe("CodexCliSessionImporter transcript conversion", () => {
       ),
     ).toBe(false);
     expect(isCurrentCodexCliImport(undefined, makeThread())).toBe(false);
+  });
+
+  it("tracks the one-time detached observer reconciliation migration independently", () => {
+    const binding = {
+      threadId: ThreadId.make("019codex-thread"),
+      provider: ProviderDriverKind.make("codex"),
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      status: "running" as const,
+      runtimeMode: "full-access" as const,
+      runtimePayload: {
+        sessionPersistence: "detached",
+        activeTurnId: null,
+        codexCliImportVersion: 2,
+      },
+    };
+
+    expect(hasCurrentCodexCliObserverReconciliation(binding)).toBe(false);
+    expect(
+      hasCurrentCodexCliObserverReconciliation({
+        ...binding,
+        runtimePayload: {
+          ...binding.runtimePayload,
+          codexCliObserverReconciliationVersion: 1,
+        },
+      }),
+    ).toBe(true);
   });
 
   it("skips unchanged imports when archived threads are absent from active projections", () => {

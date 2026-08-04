@@ -3247,6 +3247,116 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
     }),
   );
 
+  it.effect("authoritative reconciliation corrects an optimistic interrupt", () =>
+    Effect.gen(function* () {
+      const engine = yield* OrchestrationEngineService;
+      const sql = yield* SqlClient.SqlClient;
+      const threadId = ThreadId.make("thread-engine-turn-reconcile");
+      const turnId = TurnId.make("turn-engine-turn-reconcile");
+      const runningSession = {
+        threadId,
+        status: "running" as const,
+        providerName: "codex",
+        runtimeMode: "full-access" as const,
+        activeTurnId: turnId,
+        lastError: null,
+        updatedAt: "2026-02-26T15:00:02.000Z",
+      };
+      const readySession = {
+        ...runningSession,
+        status: "ready" as const,
+        activeTurnId: null,
+        updatedAt: "2026-02-26T15:00:04.000Z",
+      };
+
+      yield* engine.dispatch({
+        type: "project.create",
+        commandId: CommandId.make("cmd-engine-turn-reconcile-project"),
+        projectId: ProjectId.make("project-engine-turn-reconcile"),
+        title: "Engine Turn Reconcile",
+        workspaceRoot: "/tmp/project-engine-turn-reconcile",
+        defaultModelSelection: {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5-codex",
+        },
+        createdAt: "2026-02-26T15:00:00.000Z",
+      });
+      yield* engine.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("cmd-engine-turn-reconcile-thread"),
+        threadId,
+        projectId: ProjectId.make("project-engine-turn-reconcile"),
+        title: "Engine Turn Reconcile",
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5-codex",
+        },
+        interactionMode: "default",
+        runtimeMode: "full-access",
+        branch: null,
+        worktreePath: null,
+        createdAt: "2026-02-26T15:00:01.000Z",
+      });
+      yield* engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-engine-turn-reconcile-running"),
+        threadId,
+        session: runningSession,
+        createdAt: runningSession.updatedAt,
+      });
+      yield* engine.dispatch({
+        type: "thread.turn.interrupt",
+        commandId: CommandId.make("cmd-engine-turn-reconcile-interrupt"),
+        threadId,
+        turnId,
+        createdAt: "2026-02-26T15:00:03.000Z",
+      });
+      yield* engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-engine-turn-reconcile-ready"),
+        threadId,
+        session: readySession,
+        expectedSession: runningSession,
+        createdAt: readySession.updatedAt,
+      });
+      yield* engine.dispatch({
+        type: "thread.turn.reconcile",
+        commandId: CommandId.make("cmd-engine-turn-reconcile-completed"),
+        threadId,
+        turnId,
+        state: "completed",
+        completedAt: readySession.updatedAt,
+        expectedSession: readySession,
+        createdAt: "2026-02-26T15:00:05.000Z",
+      });
+
+      const rows = yield* sql<{
+        readonly sessionStatus: string;
+        readonly latestTurnId: string | null;
+        readonly turnState: string | null;
+      }>`
+        SELECT
+          sessions.status AS "sessionStatus",
+          threads.latest_turn_id AS "latestTurnId",
+          turns.state AS "turnState"
+        FROM projection_threads threads
+        JOIN projection_thread_sessions sessions
+          ON sessions.thread_id = threads.thread_id
+        LEFT JOIN projection_turns turns
+          ON turns.thread_id = threads.thread_id
+          AND turns.turn_id = threads.latest_turn_id
+        WHERE threads.thread_id = ${threadId}
+      `;
+      assert.deepEqual(rows, [
+        {
+          sessionStatus: "ready",
+          latestTurnId: turnId,
+          turnState: "completed",
+        },
+      ]);
+    }),
+  );
+
   it.effect("projects persist updated scripts from project.meta.update", () =>
     Effect.gen(function* () {
       const engine = yield* OrchestrationEngineService;

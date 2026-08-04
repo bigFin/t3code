@@ -30,6 +30,7 @@ import {
   ThreadUnsnoozedPayload,
   ThreadRevertedPayload,
   ThreadSessionSetPayload,
+  ThreadTurnReconciledPayload,
   ThreadTurnDiffCompletedPayload,
 } from "./Schemas.ts";
 
@@ -582,6 +583,39 @@ export function projectEvent(
                       completedAt: session.updatedAt,
                     }
                   : thread.latestTurn,
+            updatedAt: event.occurredAt,
+          }),
+        };
+      });
+
+    case "thread.turn-reconciled":
+      return Effect.gen(function* () {
+        const payload = yield* decodeForEvent(
+          ThreadTurnReconciledPayload,
+          event.payload,
+          event.type,
+          "payload",
+        );
+        const thread = nextBase.threads.find((entry) => entry.id === payload.threadId);
+        if (!thread) {
+          return nextBase;
+        }
+        const existingTurn =
+          thread.latestTurn?.turnId === payload.turnId ? thread.latestTurn : null;
+        return {
+          ...nextBase,
+          threads: updateThread(nextBase.threads, payload.threadId, {
+            latestTurn: {
+              turnId: payload.turnId,
+              state: payload.state,
+              requestedAt: existingTurn?.requestedAt ?? payload.completedAt,
+              startedAt: existingTurn?.startedAt ?? payload.completedAt,
+              completedAt: payload.completedAt,
+              assistantMessageId: existingTurn?.assistantMessageId ?? null,
+              ...(existingTurn?.sourceProposedPlan !== undefined
+                ? { sourceProposedPlan: existingTurn.sourceProposedPlan }
+                : {}),
+            },
             updatedAt: event.occurredAt,
           }),
         };

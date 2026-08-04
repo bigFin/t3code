@@ -228,6 +228,29 @@ export function applyThreadDetailEvent(
       };
     }
 
+    case "thread.turn-reconciled": {
+      const existingTurn =
+        thread.latestTurn?.turnId === event.payload.turnId ? thread.latestTurn : null;
+      return {
+        kind: "updated",
+        thread: {
+          ...thread,
+          latestTurn: {
+            turnId: event.payload.turnId,
+            state: event.payload.state,
+            requestedAt: existingTurn?.requestedAt ?? event.payload.completedAt,
+            startedAt: existingTurn?.startedAt ?? event.payload.completedAt,
+            completedAt: event.payload.completedAt,
+            assistantMessageId: existingTurn?.assistantMessageId ?? null,
+            ...(existingTurn?.sourceProposedPlan !== undefined
+              ? { sourceProposedPlan: existingTurn.sourceProposedPlan }
+              : {}),
+          },
+          updatedAt: event.occurredAt,
+        },
+      };
+    }
+
     // ── Messages ────────────────────────────────────────────────────
     case "thread.message-sent": {
       const message: OrchestrationMessage = {

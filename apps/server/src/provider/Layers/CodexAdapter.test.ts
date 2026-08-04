@@ -1087,6 +1087,38 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
     }),
   );
 
+  it.effect("treats a detached running snapshot without an active turn as ready", () =>
+    Effect.gen(function* () {
+      const { adapter, runtime } = yield* startLifecycleRuntime();
+      const firstEventFiber = yield* Stream.runHead(adapter.streamEvents).pipe(Effect.forkChild);
+
+      yield* runtime.emit({
+        id: asEventId("evt-session-reattached-without-turn"),
+        kind: "session",
+        provider: ProviderDriverKind.make("codex"),
+        threadId: asThreadId("thread-1"),
+        createdAt: "2026-01-01T00:00:00.000Z",
+        method: "session/reattached",
+        message: "T3 reattached to the independent Codex execution.",
+        payload: {
+          status: "running",
+        },
+      });
+
+      const firstEvent = yield* Fiber.join(firstEventFiber);
+      NodeAssert.equal(firstEvent._tag, "Some");
+      if (firstEvent._tag !== "Some") return;
+      NodeAssert.equal(firstEvent.value.type, "session.state.changed");
+      if (firstEvent.value.type !== "session.state.changed") return;
+      NodeAssert.equal(firstEvent.value.payload.state, "ready");
+      NodeAssert.equal(firstEvent.value.payload.activeTurnId, null);
+      NodeAssert.deepStrictEqual(firstEvent.value.payload.detail, {
+        source: "provider-host-reattach",
+        providerStatus: "running",
+      });
+    }),
+  );
+
   it.effect("preserves truncated replay metadata on canonical runtime events", () =>
     Effect.gen(function* () {
       const { adapter, runtime } = yield* startLifecycleRuntime();

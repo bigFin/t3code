@@ -902,6 +902,22 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           return;
         }
 
+        case "thread.turn-reconciled": {
+          const existingRow = yield* projectionThreadRepository.getById({
+            threadId: event.payload.threadId,
+          });
+          if (Option.isNone(existingRow)) {
+            return;
+          }
+          yield* projectionThreadRepository.upsert({
+            ...existingRow.value,
+            latestTurnId: event.payload.turnId,
+            updatedAt: event.occurredAt,
+          });
+          attachmentSideEffects.threadShellSummaryRefreshIds.add(event.payload.threadId);
+          return;
+        }
+
         case "thread.turn-diff-completed": {
           const existingRow = yield* projectionThreadRepository.getById({
             threadId: event.payload.threadId,
@@ -1418,6 +1434,40 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             requestedAt: event.payload.createdAt,
             startedAt: event.payload.createdAt,
             completedAt: event.payload.createdAt,
+            checkpointTurnCount: null,
+            checkpointRef: null,
+            checkpointStatus: null,
+            checkpointFiles: [],
+          });
+          return;
+        }
+
+        case "thread.turn-reconciled": {
+          const existingTurn = yield* projectionTurnRepository.getByTurnId({
+            threadId: event.payload.threadId,
+            turnId: event.payload.turnId,
+          });
+          if (Option.isSome(existingTurn)) {
+            yield* projectionTurnRepository.upsertByTurnId({
+              ...existingTurn.value,
+              state: event.payload.state,
+              requestedAt: existingTurn.value.requestedAt ?? event.payload.completedAt,
+              startedAt: existingTurn.value.startedAt ?? event.payload.completedAt,
+              completedAt: event.payload.completedAt,
+            });
+            return;
+          }
+          yield* projectionTurnRepository.upsertByTurnId({
+            turnId: event.payload.turnId,
+            threadId: event.payload.threadId,
+            pendingMessageId: null,
+            sourceProposedPlanThreadId: null,
+            sourceProposedPlanId: null,
+            assistantMessageId: null,
+            state: event.payload.state,
+            requestedAt: event.payload.completedAt,
+            startedAt: event.payload.completedAt,
+            completedAt: event.payload.completedAt,
             checkpointTurnCount: null,
             checkpointRef: null,
             checkpointStatus: null,

@@ -177,6 +177,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
             Effect.gen(function* () {
               const providerRuntimeGuardedCommand =
                 envelope.command.type === "thread.session.set" ||
+                envelope.command.type === "thread.turn.reconcile" ||
                 envelope.command.type === "thread.message.import" ||
                 envelope.command.type === "thread.messages.import"
                   ? envelope.command
@@ -184,11 +185,13 @@ const makeOrchestrationEngine = Effect.gen(function* () {
               const expectedProviderRuntime =
                 providerRuntimeGuardedCommand?.expectedProviderRuntime;
               const expectedUserMessageIds =
-                envelope.command.type === "thread.session.set"
+                envelope.command.type === "thread.session.set" ||
+                envelope.command.type === "thread.turn.reconcile"
                   ? envelope.command.expectedUserMessageIds
                   : undefined;
               const guardedThreadId =
-                envelope.command.type === "thread.session.set"
+                envelope.command.type === "thread.session.set" ||
+                envelope.command.type === "thread.turn.reconcile"
                   ? envelope.command.threadId
                   : undefined;
               const expectedResumeCursorJson =

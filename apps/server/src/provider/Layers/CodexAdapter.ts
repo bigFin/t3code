@@ -695,7 +695,10 @@ function mapToRuntimeEvents(
         case "ready":
           return "ready" as const;
         case "running":
-          return "running" as const;
+          // A detached snapshot cannot prove work is active without the
+          // provider turn id. Transcript discovery will recover a genuinely
+          // active external turn authoritatively.
+          return payload.activeTurnId === undefined ? ("ready" as const) : ("running" as const);
         case "error":
           return "error" as const;
         case "closed":

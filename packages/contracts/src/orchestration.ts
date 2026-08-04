@@ -835,6 +835,19 @@ const ThreadSessionSetCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+const ThreadTurnReconcileCommand = Schema.Struct({
+  type: Schema.Literal("thread.turn.reconcile"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  turnId: TurnId,
+  state: Schema.Literals(["completed", "interrupted", "error"]),
+  completedAt: IsoDateTime,
+  expectedSession: Schema.optional(Schema.NullOr(OrchestrationSession)),
+  expectedUserMessageIds: Schema.optional(Schema.Array(MessageId)),
+  expectedProviderRuntime: Schema.optional(ExpectedProviderRuntime),
+  createdAt: IsoDateTime,
+});
+
 const ThreadMessageAssistantDeltaCommand = Schema.Struct({
   type: Schema.Literal("thread.message.assistant.delta"),
   commandId: CommandId,
@@ -939,6 +952,7 @@ const ThreadTitleRegenerationCompleteCommand = Schema.Struct({
 
 const InternalOrchestrationCommand = Schema.Union([
   ThreadSessionSetCommand,
+  ThreadTurnReconcileCommand,
   ThreadMessageAssistantDeltaCommand,
   ThreadMessageAssistantCompleteCommand,
   ThreadMessageImportCommand,
@@ -982,6 +996,7 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.reverted",
   "thread.session-stop-requested",
   "thread.session-set",
+  "thread.turn-reconciled",
   "thread.proposed-plan-upserted",
   "thread.turn-diff-completed",
   "thread.activity-appended",
@@ -1175,6 +1190,13 @@ export const ThreadSessionSetPayload = Schema.Struct({
   session: OrchestrationSession,
 });
 
+export const ThreadTurnReconciledPayload = Schema.Struct({
+  threadId: ThreadId,
+  turnId: TurnId,
+  state: Schema.Literals(["completed", "interrupted", "error"]),
+  completedAt: IsoDateTime,
+});
+
 export const ThreadProposedPlanUpsertedPayload = Schema.Struct({
   threadId: ThreadId,
   proposedPlan: OrchestrationProposedPlan,
@@ -1337,6 +1359,11 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("thread.session-set"),
     payload: ThreadSessionSetPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.turn-reconciled"),
+    payload: ThreadTurnReconciledPayload,
   }),
   Schema.Struct({
     ...EventBaseFields,

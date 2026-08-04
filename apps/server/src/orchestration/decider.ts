@@ -1071,6 +1071,36 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       return [unsettledEvent, sessionSetEvent];
     }
 
+    case "thread.turn.reconcile": {
+      const thread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      if (
+        command.expectedSession !== undefined &&
+        !orchestrationSessionsEqual(thread.session, command.expectedSession)
+      ) {
+        return ORCHESTRATION_COMMAND_NOOP;
+      }
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+          metadata: {},
+        })),
+        type: "thread.turn-reconciled",
+        payload: {
+          threadId: command.threadId,
+          turnId: command.turnId,
+          state: command.state,
+          completedAt: command.completedAt,
+        },
+      };
+    }
+
     case "thread.message.assistant.delta": {
       yield* requireThread({
         readModel,

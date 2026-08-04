@@ -691,6 +691,49 @@ describe("applyThreadDetailEvent", () => {
     });
   });
 
+  describe("thread.turn-reconciled", () => {
+    it("corrects an optimistically interrupted turn from authoritative provider state", () => {
+      const interruptedThread: OrchestrationThread = {
+        ...baseThread,
+        latestTurn: {
+          turnId: TurnId.make("turn-1"),
+          state: "interrupted",
+          requestedAt: "2026-04-01T07:00:00.000Z",
+          startedAt: "2026-04-01T07:00:01.000Z",
+          completedAt: "2026-04-01T07:00:02.000Z",
+          assistantMessageId: MessageId.make("msg-3"),
+        },
+      };
+
+      const result = applyThreadDetailEvent(interruptedThread, {
+        ...baseEventFields,
+        sequence: 10,
+        occurredAt: "2026-04-01T08:00:01.000Z",
+        aggregateKind: "thread",
+        aggregateId: ThreadId.make("thread-1"),
+        type: "thread.turn-reconciled",
+        payload: {
+          threadId: ThreadId.make("thread-1"),
+          turnId: TurnId.make("turn-1"),
+          state: "completed",
+          completedAt: "2026-04-01T08:00:00.000Z",
+        },
+      });
+
+      expect(result.kind).toBe("updated");
+      if (result.kind === "updated") {
+        expect(result.thread.latestTurn).toEqual({
+          turnId: TurnId.make("turn-1"),
+          state: "completed",
+          requestedAt: "2026-04-01T07:00:00.000Z",
+          startedAt: "2026-04-01T07:00:01.000Z",
+          completedAt: "2026-04-01T08:00:00.000Z",
+          assistantMessageId: MessageId.make("msg-3"),
+        });
+      }
+    });
+  });
+
   describe("thread.turn-diff-completed", () => {
     it("adds a checkpoint and updates latestTurn", () => {
       const result = applyThreadDetailEvent(baseThread, {
