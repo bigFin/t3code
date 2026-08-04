@@ -143,7 +143,7 @@ export function splitPiRpcLines(
 
 export const makePiRuntime = Effect.fn("makePiRuntime")(function* () {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-  const encodeJson = Schema.encodeUnknownEffect(Schema.UnknownFromJsonString);
+  const encodeJson = Schema.encodeUnknownEffect(Schema.fromJsonString(Schema.Unknown));
 
   const runCommand: PiRuntimeShape["runCommand"] = Effect.fn("PiRuntime.runCommand")(function* (
     input,

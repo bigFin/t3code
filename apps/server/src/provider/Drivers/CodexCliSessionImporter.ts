@@ -83,7 +83,7 @@ const CODEX_CLI_COLD_ACTIVITY_LIMIT = 500;
 export const CODEX_INTERACTIVE_SOURCE_KINDS = ["cli", "vscode"] as const;
 
 const decodeCodexSettings = Schema.decodeUnknownEffect(CodexSettings);
-const encodeUnknownJsonString = Schema.encodeUnknownSync(Schema.UnknownFromJsonString);
+const encodeUnknownJsonString = Schema.encodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
 const isModelSelection = Schema.is(ModelSelection);
 
 type CodexListedThread = CodexSchema.V2ThreadListResponse["data"][number];

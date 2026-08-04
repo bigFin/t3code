@@ -126,7 +126,7 @@ const isCodexResumeCursor = Schema.is(CodexResumeCursorSchema);
 const isCodexSessionRuntimeThreadIdMissingError = Schema.is(
   CodexSessionRuntimeThreadIdMissingError,
 );
-const encodeUnknownJsonString = Schema.encodeUnknownSync(Schema.UnknownFromJsonString);
+const encodeUnknownJsonString = Schema.encodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
 const decodeJsonString = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Json));
 
 function providerSessionSnapshotState(snapshot: ProviderSession): Schema.Json {

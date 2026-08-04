@@ -20,7 +20,7 @@ const decodeRpcRequest = Schema.decodeUnknownSync(
     }),
   ),
 );
-const encodeUnknownJson = Schema.encodeUnknownSync(Schema.UnknownFromJsonString);
+const encodeUnknownJson = Schema.encodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
 
 function makeRpcHandle(input: {
   readonly stdin: ChildProcessSpawner.ChildProcessHandle["stdin"];

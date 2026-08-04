@@ -676,6 +676,7 @@ describe("ssh tunnel scripts", () => {
       assert.isDefined(firstTunnelCommand);
       assert.include(firstTunnelCommand, "ControlMaster=no");
       assert.include(firstTunnelCommand, "ControlPath=none");
+      assert.include(firstTunnelCommand, "ControlPersist=no");
 
       const reused = yield* manager.ensureEnvironment(target);
       assert.equal(reused.httpBaseUrl, first.httpBaseUrl);
