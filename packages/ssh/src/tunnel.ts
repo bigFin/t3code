@@ -270,12 +270,130 @@ export const decideRemoteT3Version: (
   return comparison === null ? "unknown" : comparison > 0 ? "upgrade" : "reuse";
 };
 
+export interface ManagedRuntimeProcess {
+  readonly pid: number;
+  readonly parentPid: number;
+  readonly ownsLog: boolean;
+}
+
+export const managedRuntimeComponentPids: (
+  processes: ReadonlyArray<ManagedRuntimeProcess>,
+  targetPid: number,
+) => ReadonlyArray<number> = function managedRuntimeComponentPids(processes, targetPid) {
+  const managed = new Map(
+    processes.filter((process) => process.ownsLog).map((process) => [process.pid, process]),
+  );
+  if (!managed.has(targetPid)) return [];
+
+  const component = new Set([targetPid]);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const process of managed.values()) {
+      if (component.has(process.pid)) continue;
+      if (component.has(process.parentPid)) {
+        component.add(process.pid);
+        changed = true;
+        continue;
+      }
+      for (const memberPid of component) {
+        const member = managed.get(memberPid);
+        if (member?.parentPid === process.pid) {
+          component.add(process.pid);
+          changed = true;
+          break;
+        }
+      }
+    }
+  }
+  return [...component].sort((left, right) => left - right);
+};
+
+export const staleManagedRuntimePids: (
+  processes: ReadonlyArray<ManagedRuntimeProcess>,
+  activePid?: number,
+) => ReadonlyArray<number> = function staleManagedRuntimePids(processes, activePid) {
+  const active =
+    activePid === undefined
+      ? new Set()
+      : new Set(managedRuntimeComponentPids(processes, activePid));
+  return processes
+    .filter((process) => process.ownsLog && !active.has(process.pid))
+    .map((process) => process.pid)
+    .sort((left, right) => left - right);
+};
+
 function buildRemoteVersionDecisionScript(): string {
   return `${compareRemoteT3Versions.toString()}
 ${decideRemoteT3Version.toString()}
 const desired = process.argv[2] ?? "";
 const current = process.argv[3] ?? "";
 process.stdout.write(decideRemoteT3Version(desired, current));`;
+}
+
+function buildRemoteManagedRuntimeProcessScript(): string {
+  return `${managedRuntimeComponentPids.toString()}
+${staleManagedRuntimePids.toString()}
+const fs = require("node:fs");
+const childProcess = require("node:child_process");
+const logPath = process.argv[2] ?? "";
+const targetPid = Number.parseInt(process.argv[3] ?? "", 10);
+const mode = process.argv[4] ?? "";
+let expectedLogPath = "";
+try {
+  expectedLogPath = fs.realpathSync(logPath);
+} catch {}
+let processTable = "";
+try {
+  processTable = childProcess.execFileSync("ps", ["-eo", "pid=,ppid="], {
+    encoding: "utf8",
+  });
+} catch {}
+const processes = processTable
+  .split(/\\r?\\n/u)
+  .map((line) => line.trim().split(/\\s+/u))
+  .filter((parts) => parts.length >= 2)
+  .map(([pidValue, parentPidValue]) => {
+    const pid = Number.parseInt(pidValue ?? "", 10);
+    const parentPid = Number.parseInt(parentPidValue ?? "", 10);
+    let ownsLog = false;
+    if (
+      process.platform === "linux" &&
+      expectedLogPath &&
+      Number.isInteger(pid) &&
+      pid > 0
+    ) {
+      for (const fd of [1, 2]) {
+        try {
+          if (fs.realpathSync(\`/proc/\${pid}/fd/\${fd}\`) === expectedLogPath) {
+            ownsLog = true;
+            break;
+          }
+        } catch {}
+      }
+    }
+    return { pid, parentPid, ownsLog };
+  })
+  .filter(
+    (process) =>
+      Number.isInteger(process.pid) &&
+      process.pid > 0 &&
+      Number.isInteger(process.parentPid) &&
+      process.parentPid >= 0,
+  );
+let selected = [];
+if (mode === "component") {
+  selected = managedRuntimeComponentPids(processes, targetPid);
+  if (selected.length === 0 && process.platform !== "linux" && targetPid > 0) {
+    selected = [targetPid];
+  }
+} else if (mode === "stale") {
+  selected = staleManagedRuntimePids(
+    processes,
+    Number.isInteger(targetPid) && targetPid > 0 ? targetPid : undefined,
+  );
+}
+process.stdout.write(selected.join(" "));`;
 }
 
 function buildRemoteNodeEngineCheckScript(): string {
@@ -599,33 +717,12 @@ wait_ready() {
 @@T3_WAIT_READY_SCRIPT@@
 NODE
 }
-wait_for_pid_exit() {
-  PID_TO_WAIT="$1"
-  WAIT_COUNT=0
-  while kill -0 "$PID_TO_WAIT" 2>/dev/null && [ "$WAIT_COUNT" -lt 20 ]; do
-    WAIT_COUNT=$((WAIT_COUNT + 1))
-    sleep 0.1
-  done
+managed_runtime_pids() {
+  node - "$LOG_FILE" "$1" "$2" <<'NODE'
+@@T3_MANAGED_PROCESS_SCRIPT@@
+NODE
 }
-descendant_pids() {
-  ROOT_PID="$1"
-  ps -eo pid=,ppid= 2>/dev/null | awk -v root="$ROOT_PID" '
-    { parent[$1] = $2 }
-    END {
-      for (pid in parent) {
-        current = pid
-        while ((current in parent) && parent[current] != current) {
-          if (parent[current] == root) {
-            print pid
-            break
-          }
-          current = parent[current]
-        }
-      }
-    }
-  '
-}
-pid_tree_is_running() {
+pid_list_is_running() {
   for PID_TO_CHECK in $1; do
     if kill -0 "$PID_TO_CHECK" 2>/dev/null; then
       return 0
@@ -633,10 +730,10 @@ pid_tree_is_running() {
   done
   return 1
 }
-wait_for_pid_tree_exit() {
-  PID_TREE_TO_WAIT="$1"
+wait_for_pid_list_exit() {
+  PID_LIST_TO_WAIT="$1"
   WAIT_COUNT=0
-  while pid_tree_is_running "$PID_TREE_TO_WAIT" && [ "$WAIT_COUNT" -lt 20 ]; do
+  while pid_list_is_running "$PID_LIST_TO_WAIT" && [ "$WAIT_COUNT" -lt 20 ]; do
     WAIT_COUNT=$((WAIT_COUNT + 1))
     sleep 0.1
   done
@@ -712,18 +809,32 @@ prune_inactive_package_archives() {
 stop_pid() {
   PID_TO_STOP="$1"
   if [ -n "$PID_TO_STOP" ] && kill -0 "$PID_TO_STOP" 2>/dev/null; then
-    PID_TREE="$PID_TO_STOP $(descendant_pids "$PID_TO_STOP" || true)"
-    for PID_TO_SIGNAL in $PID_TREE; do
+    MANAGED_PIDS="$(managed_runtime_pids "$PID_TO_STOP" component 2>/dev/null || true)"
+    if [ -z "$MANAGED_PIDS" ]; then
+      MANAGED_PIDS="$PID_TO_STOP"
+    fi
+    for PID_TO_SIGNAL in $MANAGED_PIDS; do
       kill "$PID_TO_SIGNAL" 2>/dev/null || true
     done
-    wait_for_pid_tree_exit "$PID_TREE"
-    if pid_tree_is_running "$PID_TREE"; then
-      for PID_TO_SIGNAL in $PID_TREE; do
+    wait_for_pid_list_exit "$MANAGED_PIDS"
+    if pid_list_is_running "$MANAGED_PIDS"; then
+      for PID_TO_SIGNAL in $MANAGED_PIDS; do
         kill -KILL "$PID_TO_SIGNAL" 2>/dev/null || true
       done
-      wait_for_pid_tree_exit "$PID_TREE"
+      wait_for_pid_list_exit "$MANAGED_PIDS"
     fi
   fi
+}
+stop_stale_managed_runtimes() {
+  ACTIVE_PID="$1"
+  STALE_MANAGED_PIDS="$(managed_runtime_pids "$ACTIVE_PID" stale 2>/dev/null || true)"
+  if [ -z "$STALE_MANAGED_PIDS" ]; then
+    return
+  fi
+  for PID_TO_SIGNAL in $STALE_MANAGED_PIDS; do
+    kill -KILL "$PID_TO_SIGNAL" 2>/dev/null || true
+  done
+  wait_for_pid_list_exit "$STALE_MANAGED_PIDS"
 }
 is_legacy_managed_runtime() {
   node - "$DEFAULT_RUNTIME_PID" "$LOG_FILE" <<'NODE'
@@ -774,6 +885,7 @@ fi
 if [ -n "$DEFAULT_REMOTE_PORT" ]; then
   REMOTE_PORT="$DEFAULT_REMOTE_PORT"
   if wait_ready "@@T3_REUSE_READY_TIMEOUT_MS@@"; then
+    stop_stale_managed_runtimes "$DEFAULT_RUNTIME_PID"
     if [ -n "$DEFAULT_RUNTIME_STATE_KEY" ]; then
       REMOTE_PID="$DEFAULT_RUNTIME_PID"
       REMOTE_MANAGED="managed"
@@ -837,6 +949,8 @@ elif [ -n "$REMOTE_PID" ] && [ -n "$REMOTE_PORT" ] && kill -0 "$REMOTE_PID" 2>/d
     REMOTE_PID=""
     REMOTE_PORT=""
     REMOTE_MANAGED=""
+  else
+    stop_stale_managed_runtimes "$REMOTE_PID"
   fi
 else
   REMOTE_PID=""
@@ -844,6 +958,7 @@ else
   REMOTE_MANAGED=""
 fi
 if [ -z "$REMOTE_PORT" ]; then
+  stop_stale_managed_runtimes ""
   install_runner_candidate
   if [ ! -x "$RUNNER_FILE" ]; then
     printf 'Remote T3 runner is unavailable. Reconnect to bootstrap it again.\\n' >&2
@@ -862,8 +977,7 @@ if [ -z "$REMOTE_PORT" ]; then
   if ! wait_ready "@@T3_READY_TIMEOUT_MS@@"; then
     printf 'Remote T3 server did not become ready on 127.0.0.1:%s.\\n' "$REMOTE_PORT" >&2
     tail -n 80 "$LOG_FILE" >&2 2>/dev/null || true
-    kill "$REMOTE_PID" 2>/dev/null || true
-    wait_for_pid_exit "$REMOTE_PID"
+    stop_pid "$REMOTE_PID"
     rm -f "$PID_FILE" "$PORT_FILE" "$MANAGED_FILE"
     exit 1
   fi
@@ -903,42 +1017,37 @@ STATE_DIR="$HOME/.t3/ssh-launch/@@T3_STATE_KEY@@"
 PID_FILE="$STATE_DIR/pid"
 PORT_FILE="$STATE_DIR/port"
 MANAGED_FILE="$STATE_DIR/managed"
+LOG_FILE="$STATE_DIR/server.log"
+managed_runtime_pids() {
+  node - "$LOG_FILE" "$1" component <<'NODE'
+@@T3_MANAGED_PROCESS_SCRIPT@@
+NODE
+}
 REMOTE_MANAGED="$(cat "$MANAGED_FILE" 2>/dev/null || true)"
 REMOTE_PID="$(cat "$PID_FILE" 2>/dev/null || true)"
 if [ "$REMOTE_MANAGED" != "external" ] && [ -n "$REMOTE_PID" ] && kill -0 "$REMOTE_PID" 2>/dev/null; then
-  PID_TREE="$REMOTE_PID $(ps -eo pid=,ppid= 2>/dev/null | awk -v root="$REMOTE_PID" '
-    { parent[$1] = $2 }
-    END {
-      for (pid in parent) {
-        current = pid
-        while ((current in parent) && parent[current] != current) {
-          if (parent[current] == root) {
-            print pid
-            break
-          }
-          current = parent[current]
-        }
-      }
-    }
-  ' || true)"
-  for PID_TO_SIGNAL in $PID_TREE; do
+  MANAGED_PIDS="$(managed_runtime_pids "$REMOTE_PID" 2>/dev/null || true)"
+  if [ -z "$MANAGED_PIDS" ]; then
+    MANAGED_PIDS="$REMOTE_PID"
+  fi
+  for PID_TO_SIGNAL in $MANAGED_PIDS; do
     kill "$PID_TO_SIGNAL" 2>/dev/null || true
   done
   WAIT_COUNT=0
-  PID_TREE_RUNNING=1
-  while [ "$PID_TREE_RUNNING" -eq 1 ] && [ "$WAIT_COUNT" -lt 20 ]; do
-    PID_TREE_RUNNING=0
-    for PID_TO_CHECK in $PID_TREE; do
+  PID_LIST_RUNNING=1
+  while [ "$PID_LIST_RUNNING" -eq 1 ] && [ "$WAIT_COUNT" -lt 20 ]; do
+    PID_LIST_RUNNING=0
+    for PID_TO_CHECK in $MANAGED_PIDS; do
       if kill -0 "$PID_TO_CHECK" 2>/dev/null; then
-        PID_TREE_RUNNING=1
+        PID_LIST_RUNNING=1
         break
       fi
     done
     WAIT_COUNT=$((WAIT_COUNT + 1))
-    [ "$PID_TREE_RUNNING" -eq 0 ] || sleep 0.1
+    [ "$PID_LIST_RUNNING" -eq 0 ] || sleep 0.1
   done
-  if [ "$PID_TREE_RUNNING" -eq 1 ]; then
-    for PID_TO_SIGNAL in $PID_TREE; do
+  if [ "$PID_LIST_RUNNING" -eq 1 ]; then
+    for PID_TO_SIGNAL in $MANAGED_PIDS; do
       kill -KILL "$PID_TO_SIGNAL" 2>/dev/null || true
     done
   fi
@@ -1104,6 +1213,7 @@ export function buildRemoteLaunchScript(input?: RemoteT3RunnerOptions): string {
     T3_PACKAGE_ARCHIVE_PATH: shellSingleQuote(packageArchivePath),
     T3_PACKAGE_CACHE_DIR: shellSingleQuote(packageCacheDir),
     T3_VERSION_DECISION_SCRIPT: stripTrailingNewlines(buildRemoteVersionDecisionScript()),
+    T3_MANAGED_PROCESS_SCRIPT: stripTrailingNewlines(buildRemoteManagedRuntimeProcessScript()),
     T3_PICK_PORT_SCRIPT: stripTrailingNewlines(REMOTE_PICK_PORT_SCRIPT),
     T3_WAIT_READY_SCRIPT: stripTrailingNewlines(REMOTE_WAIT_READY_SCRIPT),
     T3_DEFAULT_REMOTE_PORT: String(DEFAULT_REMOTE_PORT),
@@ -1122,6 +1232,7 @@ export function buildRemotePairingScript(target: DesktopSshEnvironmentTarget): s
 
 export function buildRemoteStopScript(target: DesktopSshEnvironmentTarget): string {
   return applyScriptPlaceholders(REMOTE_STOP_SCRIPT, {
+    T3_MANAGED_PROCESS_SCRIPT: stripTrailingNewlines(buildRemoteManagedRuntimeProcessScript()),
     T3_STATE_KEY: remoteStateKey(target),
   });
 }

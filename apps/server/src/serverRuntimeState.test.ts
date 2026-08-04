@@ -45,6 +45,82 @@ describe("serverRuntimeState", () => {
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 
+  it.effect("clears runtime state only while the releasing server still owns it", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "t3-server-runtime-state-test-",
+      });
+      const statePath = path.join(root, "runtime", "server.json");
+      const state: ServerRuntimeState.PersistedServerRuntimeState = {
+        version: 1,
+        pid: 123,
+        port: 4_971,
+        origin: "http://127.0.0.1:4971",
+        startedAt: "2026-06-20T00:00:00.000Z",
+        sshLaunch: {
+          stateKey: "host-state",
+          runnerId: "runner-one",
+        },
+      };
+
+      yield* ServerRuntimeState.persistServerRuntimeState({ path: statePath, state });
+      yield* ServerRuntimeState.clearPersistedServerRuntimeStateIfOwned({
+        path: statePath,
+        state,
+      });
+
+      const restored = yield* ServerRuntimeState.readPersistedServerRuntimeState(statePath);
+      assert.isTrue(Option.isNone(restored));
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("preserves replacement runtime state when an older server exits", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "t3-server-runtime-state-test-",
+      });
+      const statePath = path.join(root, "runtime", "server.json");
+      const previous: ServerRuntimeState.PersistedServerRuntimeState = {
+        version: 1,
+        pid: 123,
+        port: 4_971,
+        origin: "http://127.0.0.1:4971",
+        startedAt: "2026-06-20T00:00:00.000Z",
+        sshLaunch: {
+          stateKey: "host-state",
+          runnerId: "runner-one",
+        },
+      };
+      const replacement: ServerRuntimeState.PersistedServerRuntimeState = {
+        ...previous,
+        pid: 456,
+        port: 4_972,
+        origin: "http://127.0.0.1:4972",
+        startedAt: "2026-06-20T00:01:00.000Z",
+        sshLaunch: {
+          stateKey: "host-state",
+          runnerId: "runner-two",
+        },
+      };
+
+      yield* ServerRuntimeState.persistServerRuntimeState({
+        path: statePath,
+        state: replacement,
+      });
+      yield* ServerRuntimeState.clearPersistedServerRuntimeStateIfOwned({
+        path: statePath,
+        state: previous,
+      });
+
+      const restored = yield* ServerRuntimeState.readPersistedServerRuntimeState(statePath);
+      assert.deepEqual(Option.getOrThrow(restored), replacement);
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
   it.effect("records the running server package version", () =>
     Effect.gen(function* () {
       const state = yield* ServerRuntimeState.makePersistedServerRuntimeState({
@@ -209,7 +285,7 @@ describe("serverRuntimeState", () => {
         assert.equal(error.operation, "persist");
         assert.equal(error.statePath, statePath);
         assert.equal(error.message, `Failed to persist server runtime state at ${statePath}.`);
-        assert.deepInclude(error.cause, { _tag: "PlatformError" });
+        assert.deepInclude(error.cause, { code: "EEXIST" });
       }
     }).pipe(Effect.provide(NodeServices.layer)),
   );

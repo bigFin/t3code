@@ -26,8 +26,10 @@ import {
   describeReadinessCause,
   issueRemotePairingToken,
   launchOrReuseRemoteServer,
+  managedRuntimeComponentPids,
   REMOTE_PICK_PORT_SCRIPT,
   REMOTE_WAIT_READY_SCRIPT,
+  staleManagedRuntimePids,
   SshEnvironmentManager,
   T3_SERVER_READINESS_PATH,
   waitForHttpReady,
@@ -325,7 +327,12 @@ describe("ssh tunnel scripts", () => {
       "does not satisfy required range ",
     );
     assert.include(buildRemoteLaunchScript(), 'stop_pid "$REMOTE_PID"');
-    assert.include(buildRemoteLaunchScript(), "ps -eo pid=,ppid=");
+    assert.include(buildRemoteLaunchScript(), 'execFileSync("ps", ["-eo", "pid=,ppid="]');
+    assert.include(buildRemoteLaunchScript(), "stop_stale_managed_runtimes");
+    assert.include(buildRemoteLaunchScript(), "managedRuntimeComponentPids");
+    assert.include(buildRemoteLaunchScript(), "staleManagedRuntimePids");
+    assert.include(buildRemoteLaunchScript(), "fs.realpathSync(`/proc/${pid}/fd/${fd}`)");
+    assert.notInclude(buildRemoteLaunchScript(), "descendant_pids");
     assert.include(buildRemoteLaunchScript(), 'kill -KILL "$PID_TO_SIGNAL"');
     assert.include(buildRemoteLaunchScript(), "wait_ready");
     assert.include(buildRemoteLaunchScript(), '"$RUNNER_FILE" serve --host 127.0.0.1');
@@ -350,7 +357,9 @@ describe("ssh tunnel scripts", () => {
       'if [ "$REMOTE_MANAGED" != "external" ] && [ -n "$REMOTE_PID" ]',
     );
     assert.include(buildRemoteStopScript(target), 'kill "$PID_TO_SIGNAL" 2>/dev/null || true');
-    assert.include(buildRemoteStopScript(target), "ps -eo pid=,ppid=");
+    assert.include(buildRemoteStopScript(target), 'execFileSync("ps", ["-eo", "pid=,ppid="]');
+    assert.include(buildRemoteStopScript(target), "managedRuntimeComponentPids");
+    assert.notInclude(buildRemoteStopScript(target), "descendant_pids");
     assert.include(buildRemoteStopScript(target), 'kill -KILL "$PID_TO_SIGNAL"');
     assert.include(buildRemoteStopScript(target), 'rm -f "$PID_FILE" "$PORT_FILE" "$MANAGED_FILE"');
     assert.include(
@@ -401,6 +410,32 @@ describe("ssh tunnel scripts", () => {
     );
     assert.equal(compareRemoteT3Versions("", "1.2.3"), null);
     assert.equal(compareRemoteT3Versions("nightly", "1.2.3"), null);
+  });
+
+  it("isolates managed server components without selecting provider descendants", () => {
+    const processes = [
+      { pid: 100, parentPid: 1, ownsLog: true },
+      { pid: 101, parentPid: 100, ownsLog: true },
+      { pid: 102, parentPid: 101, ownsLog: false },
+      { pid: 200, parentPid: 1, ownsLog: true },
+      { pid: 201, parentPid: 200, ownsLog: true },
+    ];
+
+    assert.deepEqual(managedRuntimeComponentPids(processes, 101), [100, 101]);
+    assert.deepEqual(staleManagedRuntimePids(processes, 101), [200, 201]);
+    assert.notInclude(managedRuntimeComponentPids(processes, 101), 102);
+  });
+
+  it("selects every managed component when no runtime is active", () => {
+    const processes = [
+      { pid: 100, parentPid: 1, ownsLog: true },
+      { pid: 101, parentPid: 100, ownsLog: true },
+      { pid: 102, parentPid: 101, ownsLog: false },
+      { pid: 200, parentPid: 1, ownsLog: true },
+    ];
+
+    assert.deepEqual(staleManagedRuntimePids(processes), [100, 101, 200]);
+    assert.deepEqual(managedRuntimeComponentPids(processes, 102), []);
   });
 
   it("never replaces a healthy runtime with an equal or older packaged build", () => {

@@ -6,6 +6,7 @@ import * as Schema from "effect/Schema";
 
 import { writeFileStringAtomically } from "./atomicWrite.ts";
 import type * as ServerConfig from "./config.ts";
+import { acquireSqliteTransactionLock } from "./sqliteTransactionLock.ts";
 import { formatHostForUrl, isWildcardHost } from "./startupAccess.ts";
 import packageJson from "../package.json" with { type: "json" };
 
@@ -42,9 +43,11 @@ export class ServerRuntimeStateError extends Schema.TaggedErrorClass<ServerRunti
   }
 }
 
+const PersistedServerRuntimeStateJson = Schema.fromJsonString(PersistedServerRuntimeState);
 const decodePersistedServerRuntimeState = Schema.decodeUnknownEffect(
-  Schema.fromJsonString(PersistedServerRuntimeState),
+  PersistedServerRuntimeStateJson,
 );
+const encodePersistedServerRuntimeState = Schema.encodeEffect(PersistedServerRuntimeStateJson);
 
 const runtimeOriginForConfig = (
   config: Pick<ServerConfig.ServerConfig["Service"], "host">,
@@ -83,25 +86,29 @@ export const makePersistedServerRuntimeState = (input: {
     };
   });
 
-export const persistServerRuntimeState = (input: {
+const withServerRuntimeStateLock = <A, E, R>(input: {
   readonly path: string;
-  readonly state: PersistedServerRuntimeState;
-}) =>
-  writeFileStringAtomically({
-    filePath: input.path,
-    contents: `${JSON.stringify(input.state)}\n`,
-  }).pipe(
-    Effect.mapError(
-      (cause) =>
+  readonly operation: ServerRuntimeStateError["operation"];
+  readonly effect: Effect.Effect<A, E, R>;
+}): Effect.Effect<A, E | ServerRuntimeStateError, R> =>
+  Effect.acquireUseRelease(
+    Effect.tryPromise({
+      try: (signal) =>
+        acquireSqliteTransactionLock(`${input.path}.lock.sqlite`, {
+          signal,
+        }),
+      catch: (cause) =>
         new ServerRuntimeStateError({
-          operation: "persist",
+          operation: input.operation,
           statePath: input.path,
           cause,
         }),
-    ),
+    }),
+    () => input.effect,
+    (lock) => Effect.promise(() => lock.release()).pipe(Effect.orDie),
   );
 
-export const clearPersistedServerRuntimeState = (path: string) =>
+const removePersistedServerRuntimeState = (path: string) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     yield* fs.remove(path, { force: true }).pipe(
@@ -113,18 +120,98 @@ export const clearPersistedServerRuntimeState = (path: string) =>
             cause,
           }),
       ),
-      Effect.catchTags({
-        ServerRuntimeStateError: (error) =>
-          Effect.logWarning(error.message).pipe(
-            Effect.annotateLogs({
-              operation: error.operation,
-              statePath: error.statePath,
-              cause: error,
-            }),
-          ),
-      }),
     );
   });
+
+export const persistServerRuntimeState = Effect.fn("persistServerRuntimeState")(function* (input: {
+  readonly path: string;
+  readonly state: PersistedServerRuntimeState;
+}) {
+  const encoded = yield* encodePersistedServerRuntimeState(input.state).pipe(
+    Effect.mapError(
+      (cause) =>
+        new ServerRuntimeStateError({
+          operation: "persist",
+          statePath: input.path,
+          cause,
+        }),
+    ),
+  );
+  yield* withServerRuntimeStateLock({
+    path: input.path,
+    operation: "persist",
+    effect: writeFileStringAtomically({
+      filePath: input.path,
+      contents: `${encoded}\n`,
+    }).pipe(
+      Effect.mapError(
+        (cause) =>
+          new ServerRuntimeStateError({
+            operation: "persist",
+            statePath: input.path,
+            cause,
+          }),
+      ),
+    ),
+  });
+});
+
+export const clearPersistedServerRuntimeState = (path: string) =>
+  withServerRuntimeStateLock({
+    path,
+    operation: "clear",
+    effect: removePersistedServerRuntimeState(path),
+  }).pipe(
+    Effect.catchTags({
+      ServerRuntimeStateError: (error) =>
+        Effect.logWarning(error.message).pipe(
+          Effect.annotateLogs({
+            operation: error.operation,
+            statePath: error.statePath,
+            cause: error,
+          }),
+        ),
+    }),
+  );
+
+export const identifiesPersistedServerRuntimeOwner = (
+  current: PersistedServerRuntimeState,
+  expected: PersistedServerRuntimeState,
+): boolean =>
+  current.pid === expected.pid &&
+  current.port === expected.port &&
+  current.startedAt === expected.startedAt &&
+  current.sshLaunch?.stateKey === expected.sshLaunch?.stateKey &&
+  current.sshLaunch?.runnerId === expected.sshLaunch?.runnerId;
+
+export const clearPersistedServerRuntimeStateIfOwned = Effect.fn(
+  "clearPersistedServerRuntimeStateIfOwned",
+)(function* (input: { readonly path: string; readonly state: PersistedServerRuntimeState }) {
+  yield* withServerRuntimeStateLock({
+    path: input.path,
+    operation: "clear",
+    effect: Effect.gen(function* () {
+      const current = yield* readPersistedServerRuntimeState(input.path);
+      if (
+        Option.isSome(current) &&
+        identifiesPersistedServerRuntimeOwner(current.value, input.state)
+      ) {
+        yield* removePersistedServerRuntimeState(input.path);
+      }
+    }),
+  }).pipe(
+    Effect.catchTags({
+      ServerRuntimeStateError: (error) =>
+        Effect.logWarning(error.message).pipe(
+          Effect.annotateLogs({
+            operation: error.operation,
+            statePath: error.statePath,
+            cause: error,
+          }),
+        ),
+    }),
+  );
+});
 
 export const readPersistedServerRuntimeState = (path: string) =>
   Effect.gen(function* () {
