@@ -33,6 +33,7 @@ import { ProviderServiceLive } from "./provider/Layers/ProviderService.ts";
 import { ProviderSessionReaperLive } from "./provider/Layers/ProviderSessionReaper.ts";
 import { CodexCliSessionImporterLive } from "./provider/Drivers/CodexCliSessionImporter.ts";
 import * as OpenCodeRuntime from "./provider/opencodeRuntime.ts";
+import * as PiRuntime from "./provider/piRuntime.ts";
 import * as CheckpointDiffQuery from "./checkpointing/CheckpointDiffQuery.ts";
 import * as CheckpointStore from "./checkpointing/CheckpointStore.ts";
 import * as AzureDevOpsCli from "./sourceControl/AzureDevOpsCli.ts";
@@ -342,6 +343,11 @@ const ProviderRuntimeLayerLive = Layer.mergeAll(
   CodexCliSessionImporterLive,
 ).pipe(Layer.provideMerge(ProviderLayerLive), Layer.provideMerge(OrchestrationLayerLive));
 
+const ProviderCliRuntimesLive = Layer.mergeAll(
+  OpenCodeRuntime.OpenCodeRuntimeLive,
+  PiRuntime.PiRuntimeLive,
+);
+
 const RuntimeCoreDependenciesLive = ReactorLayerLive.pipe(
   // Core Services
   Layer.provideMerge(ServerSettingsLayerLive),
@@ -366,12 +372,11 @@ const RuntimeCoreDependenciesLive = ReactorLayerLive.pipe(
   // Provided once at the runtime level so every consumer sees the same
   // logger instances.
   Layer.provideMerge(ProviderEventLoggers.layer),
-  // `OpenCodeDriver.create()` yields `OpenCodeRuntime`; previously the old
-  // `ProviderRegistryLive` pulled `OpenCodeRuntimeLive` in for itself, but
-  // the rewritten registry reads snapshots off the instance registry and
-  // no longer transitively provides it. Exposing it at the runtime level
-  // keeps a single Live for all opencode consumers.
-  Layer.provideMerge(OpenCodeRuntime.OpenCodeRuntimeLive),
+  // OpenCode and Pi drivers yield provider-specific CLI runtime services.
+  // The rewritten registry reads snapshots off the instance registry and
+  // does not transitively provide those runtimes, so expose one shared live
+  // layer here for every provider consumer.
+  Layer.provideMerge(ProviderCliRuntimesLive),
   Layer.provideMerge(WorkspaceLayerLive),
   Layer.provideMerge(ProjectFaviconResolverLayerLive),
   Layer.provideMerge(RepositoryIdentityResolver.layer),

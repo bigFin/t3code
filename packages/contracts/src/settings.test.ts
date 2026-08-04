@@ -179,6 +179,43 @@ describe("ServerSettings.providerInstances (slice-2 invariant)", () => {
   });
 });
 
+describe("PiSettings", () => {
+  it("defaults to the installed Pi command with persistent sessions enabled", () => {
+    const settings = decodeServerSettings({}).providers.piAgent;
+
+    expect(settings).toEqual({
+      enabled: true,
+      binaryPath: "pi",
+      sessionDir: "",
+      customModels: [],
+    });
+  });
+
+  it("trims Pi paths in full settings and patches", () => {
+    const settings = decodeServerSettings({
+      providers: {
+        piAgent: {
+          binaryPath: "  /opt/bin/pi  ",
+          sessionDir: "  ~/.pi/t3-sessions  ",
+        },
+      },
+    });
+    const patch = decodeServerSettingsPatch({
+      providers: {
+        piAgent: {
+          binaryPath: "  /srv/bin/pi  ",
+          sessionDir: "  /srv/pi-sessions  ",
+        },
+      },
+    });
+
+    expect(settings.providers.piAgent.binaryPath).toBe("/opt/bin/pi");
+    expect(settings.providers.piAgent.sessionDir).toBe("~/.pi/t3-sessions");
+    expect(patch.providers?.piAgent?.binaryPath).toBe("/srv/bin/pi");
+    expect(patch.providers?.piAgent?.sessionDir).toBe("/srv/pi-sessions");
+  });
+});
+
 describe("ServerSettings worktree defaults", () => {
   it("defaults start-from-origin on for legacy configs", () => {
     expect(decodeServerSettings({}).newWorktreesStartFromOrigin).toBe(true);
