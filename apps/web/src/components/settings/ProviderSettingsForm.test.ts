@@ -37,6 +37,18 @@ describe("ProviderSettingsForm helpers", () => {
     });
   });
 
+  it("offers Pi Agent as a configurable provider driver", () => {
+    const piAgent = DRIVER_OPTION_BY_VALUE[ProviderDriverKind.make("piAgent")];
+
+    expect(piAgent).toMatchObject({
+      label: "Pi Agent",
+      badgeLabel: "Early Access",
+    });
+    expect(deriveProviderSettingsFields(piAgent!).map((field) => field.key)).toContain(
+      "binaryPath",
+    );
+  });
+
   it("preserves unknown config keys while omitting empty configurable fields", () => {
     const opencode = DRIVER_OPTION_BY_VALUE[ProviderDriverKind.make("opencode")];
     expect(opencode).toBeDefined();

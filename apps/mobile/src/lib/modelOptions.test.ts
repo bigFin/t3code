@@ -10,6 +10,34 @@ import {
 } from "./modelOptions";
 
 describe("mobile model options", () => {
+  it("uses the Pi Agent product name for the default Pi provider instance", () => {
+    const config = {
+      providers: [
+        {
+          instanceId: "piAgent",
+          driver: "piAgent",
+          enabled: true,
+          installed: true,
+          auth: { status: "authenticated" },
+          models: [
+            {
+              slug: "sika/Qwythos-9B-v2-MTP-Q8_0",
+              name: "Qwythos-9B-v2-MTP-Q8_0",
+              isCustom: false,
+              capabilities: null,
+            },
+          ],
+        },
+      ],
+    } as unknown as ServerConfig;
+
+    expect(buildModelOptions(config, null)[0]).toMatchObject({
+      providerLabel: "Pi Agent",
+      providerDriver: "piAgent",
+      label: "Qwythos-9B-v2-MTP-Q8_0",
+    });
+  });
+
   it("folds legacy models into a provider-scoped menu", () => {
     const config = {
       providers: [

@@ -4,10 +4,19 @@ import {
   CursorSettings,
   GrokSettings,
   OpenCodeSettings,
+  PiSettings,
   ProviderDriverKind,
 } from "@t3tools/contracts";
 import type * as Schema from "effect/Schema";
-import { ClaudeAI, CursorIcon, GrokIcon, type Icon, OpenAI, OpenCodeIcon } from "../Icons";
+import {
+  ClaudeAI,
+  CursorIcon,
+  GrokIcon,
+  type Icon,
+  OpenAI,
+  OpenCodeIcon,
+  PiAgentIcon,
+} from "../Icons";
 
 type ProviderSettingsSchema = {
   readonly fields: Readonly<Record<string, Schema.Top>>;
@@ -67,6 +76,13 @@ export const PROVIDER_CLIENT_DEFINITIONS: readonly ProviderClientDefinition[] = 
     icon: OpenCodeIcon,
     settingsSchema: OpenCodeSettings,
   },
+  {
+    value: ProviderDriverKind.make("piAgent"),
+    label: "Pi Agent",
+    icon: PiAgentIcon,
+    badgeLabel: "Early Access",
+    settingsSchema: PiSettings,
+  },
 ];
 
 export const PROVIDER_CLIENT_DEFINITION_BY_VALUE: Partial<
@@ -80,9 +96,9 @@ export const DRIVER_OPTION_BY_VALUE = PROVIDER_CLIENT_DEFINITION_BY_VALUE;
 export type DriverOption = ProviderClientDefinition;
 
 /**
- * Look up the driver metadata for an instance's `driver` field. Accepts
- * Returns `undefined` for fork / unknown drivers so callers can decide how
- * to render them — typically by falling back to a generic card.
+ * Look up the driver metadata for an instance's `driver` field. Returns
+ * `undefined` for fork / unknown drivers so callers can decide how to render
+ * them — typically by falling back to a generic card.
  */
 export function getDriverOption(driver: ProviderDriverKind | undefined): DriverOption | undefined {
   if (driver === undefined) return undefined;

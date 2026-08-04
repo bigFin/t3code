@@ -36,6 +36,8 @@ function providerDisplayLabel(provider: {
   if (provider.displayName) return provider.displayName;
   if (provider.driver === "codex") return "Codex";
   if (provider.driver === "claudeAgent") return "Claude";
+  if (provider.driver === "opencode") return "OpenCode";
+  if (provider.driver === "piAgent") return "Pi Agent";
   return provider.instanceId;
 }
 
