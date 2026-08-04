@@ -15,7 +15,7 @@ export interface SqliteTransactionLock {
   readonly release: () => Promise<void>;
 }
 
-const isSqliteBusy = (cause: unknown): boolean => {
+export const isSqliteTransactionLockBusy = (cause: unknown): boolean => {
   const error = cause as {
     readonly code?: unknown;
     readonly errcode?: unknown;
@@ -66,7 +66,7 @@ export async function acquireSqliteTransactionLock(
         database.exec("BEGIN IMMEDIATE");
         break;
       } catch (cause) {
-        if (!isSqliteBusy(cause) || Date.now() >= deadline) {
+        if (!isSqliteTransactionLockBusy(cause) || Date.now() >= deadline) {
           throw cause;
         }
       }

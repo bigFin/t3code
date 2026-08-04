@@ -112,6 +112,7 @@ import { orchestrationHttpApiLayer } from "./orchestration/http.ts";
 import * as NetService from "@t3tools/shared/Net";
 import * as RelayClient from "@t3tools/shared/relayClient";
 import { disableTailscaleServe, ensureTailscaleServe } from "@t3tools/tailscale";
+import { acquireServerInstanceLock } from "./serverInstanceLock.ts";
 import { forkParked, ServerActivation } from "./serverActivation.ts";
 
 // Effect's default preemptive shutdown waits 20s before finalizing request scopes.
@@ -660,5 +661,14 @@ export const makeServerLayer = Layer.unwrap(
   }),
 );
 
-// The CLI supplies configuration.
-export const runServer = Layer.launch(makeServerLayer);
+// The CLI supplies configuration. Hold the environment lock outside the
+// server layer so it is acquired before any database, projector, or reaper
+// resources initialize and released only after all of them have finalized.
+export const runServer = Effect.gen(function* () {
+  const config = yield* ServerConfig.ServerConfig;
+  return yield* Effect.acquireUseRelease(
+    acquireServerInstanceLock(config),
+    () => Layer.launch(makeServerLayer),
+    (lock) => Effect.promise(() => lock.release()).pipe(Effect.orDie),
+  );
+}).pipe(Effect.withSpan("server.run"));
