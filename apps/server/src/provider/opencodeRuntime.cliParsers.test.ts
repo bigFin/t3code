@@ -58,6 +58,26 @@ describe("parseModelsCliOutput", () => {
     NodeAssert.equal(Object.keys(result.providers.get("openai")!.models).length, 1);
   });
 
+  it("preserves custom provider model slugs and display names", () => {
+    const stdout = [
+      "azure-foundry/DeepSeek-V4-Pro",
+      JSON.stringify({
+        id: "DeepSeek-V4-Pro",
+        providerID: "azure-foundry",
+        name: "DeepSeek V4 Pro (Azure AI Foundry)",
+      }),
+    ].join("\n");
+
+    const result = parseModelsCliOutput(stdout);
+    const provider = result.providers.get("azure-foundry");
+    const model = provider?.models["DeepSeek-V4-Pro"];
+
+    NodeAssert.deepEqual(result.connected, ["azure-foundry"]);
+    NodeAssert.equal(provider?.id, "azure-foundry");
+    NodeAssert.equal(model?.providerID, "azure-foundry");
+    NodeAssert.equal(model?.name, "DeepSeek V4 Pro (Azure AI Foundry)");
+  });
+
   it("handles empty input", () => {
     const result = parseModelsCliOutput("");
     NodeAssert.equal(result.providers.size, 0);
