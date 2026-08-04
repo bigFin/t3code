@@ -18,6 +18,17 @@ This supports the intended split deployment:
 - continue a discovered Codex CLI thread from T3 without starting a new Codex
   conversation.
 
+T3-created conversations remain regular Codex sessions in
+`~/.codex/sessions`. The default `codex resume` picker is filtered to the
+current working directory, so use this when looking across T3 projects:
+
+```bash
+codex resume --all --include-non-interactive
+```
+
+An exact Codex session UUID can also be resumed directly with
+`codex resume <session-id>`.
+
 Discovery is receipt-idempotent. Repeated scans reuse project, thread, message,
 and command identities, while changed transcript content receives a new command
 receipt and refreshes the projection. The importer records Codex's upstream
@@ -33,6 +44,11 @@ The flake supports `x86_64-linux` and `aarch64-linux`.
 - `packages.<system>.t3code-unwrapped`: package without optional provider tools
   added to `PATH`;
 - `overlays.default`: `t3code-bigfin` and `t3code-bigfin-unwrapped`.
+
+Each committed downstream build receives a SemVer-ordered package version based
+on the source release line and the flake revision timestamp. This lets multiple
+desktop clients share a managed SSH server without an older same-release build
+replacing a newer runtime.
 
 The wrapped package also accepts appearance overrides:
 

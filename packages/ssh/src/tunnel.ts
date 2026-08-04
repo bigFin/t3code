@@ -262,12 +262,20 @@ export const compareRemoteT3Versions: (left: string, right: string) => number | 
     return 0;
   };
 
+export const decideRemoteT3Version: (
+  desired: string,
+  current: string,
+) => "upgrade" | "reuse" | "unknown" = function decideRemoteT3Version(desired, current) {
+  const comparison = compareRemoteT3Versions(desired, current);
+  return comparison === null ? "unknown" : comparison > 0 ? "upgrade" : "reuse";
+};
+
 function buildRemoteVersionDecisionScript(): string {
   return `${compareRemoteT3Versions.toString()}
+${decideRemoteT3Version.toString()}
 const desired = process.argv[2] ?? "";
 const current = process.argv[3] ?? "";
-const comparison = compareRemoteT3Versions(desired, current);
-process.stdout.write(comparison === null ? "unknown" : comparison >= 0 ? "upgrade" : "reuse");`;
+process.stdout.write(decideRemoteT3Version(desired, current));`;
 }
 
 function buildRemoteNodeEngineCheckScript(): string {

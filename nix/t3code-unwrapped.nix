@@ -14,11 +14,12 @@
 , copyDesktopItems
 , makeDesktopItem
 , installShellFiles
+, version
 ,
 }:
 
 let
-  version = (builtins.fromJSON (builtins.readFile ../apps/server/package.json)).version;
+  sourceVersion = (builtins.fromJSON (builtins.readFile ../apps/server/package.json)).version;
 in
 stdenv.mkDerivation {
   pname = "t3code-bigfin-unwrapped";
@@ -27,6 +28,8 @@ stdenv.mkDerivation {
 
   strictDeps = true;
   __structuredAttrs = true;
+  # The version-only manifest rewrite happens after dependency installation.
+  env.pnpm_config_verify_deps_before_run = "warn";
 
   pnpmDeps = fetchPnpmDeps {
     pnpm = pnpm_11;
@@ -50,6 +53,13 @@ stdenv.mkDerivation {
   ] ++ lib.optionals stdenv.hostPlatform.isLinux [ copyDesktopItems ];
 
   preBuild = ''
+    substituteInPlace \
+      apps/server/package.json \
+      apps/desktop/package.json \
+      apps/web/package.json \
+      packages/contracts/package.json \
+      --replace-fail '"version": "${sourceVersion}"' '"version": "${version}"'
+
     export npm_config_nodedir=${nodejs_24}
     export ELECTRON_SKIP_BINARY_DOWNLOAD=1
     pnpm rebuild --pending "''${pnpmInstallFlags[@]}" --filter '!@t3tools/monorepo'

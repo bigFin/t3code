@@ -22,6 +22,7 @@ import {
   buildRemoteStopScript,
   buildRemoteT3RunnerScript,
   compareRemoteT3Versions,
+  decideRemoteT3Version,
   describeReadinessCause,
   issueRemotePairingToken,
   launchOrReuseRemoteServer,
@@ -260,7 +261,7 @@ describe("ssh tunnel scripts", () => {
     );
     assert.include(buildRemoteLaunchScript(), "runtime.serverVersion");
     assert.include(buildRemoteLaunchScript(), 'if [ "$VERSION_DECISION" != "reuse" ]; then');
-    assert.include(buildRemoteLaunchScript(), 'comparison >= 0 ? "upgrade" : "reuse"');
+    assert.include(buildRemoteLaunchScript(), 'comparison > 0 ? "upgrade" : "reuse"');
     assert.include(buildRemoteLaunchScript(), "RUNNER_CHANGED=0");
     assert.include(buildRemoteLaunchScript(), 'rm -f "$RUNNER_NEXT"');
     const archivePath = "/home/julius/.t3/ssh-runtime/packages/t3-test.tgz";
@@ -400,6 +401,21 @@ describe("ssh tunnel scripts", () => {
     );
     assert.equal(compareRemoteT3Versions("", "1.2.3"), null);
     assert.equal(compareRemoteT3Versions("nightly", "1.2.3"), null);
+  });
+
+  it("never replaces a healthy runtime with an equal or older packaged build", () => {
+    assert.equal(decideRemoteT3Version("0.0.32", "0.0.31"), "upgrade");
+    assert.equal(decideRemoteT3Version("0.0.32", "0.0.32"), "reuse");
+    assert.equal(decideRemoteT3Version("0.0.31", "0.0.32"), "reuse");
+    assert.equal(
+      decideRemoteT3Version("0.0.32-bigfin.1785860000", "0.0.32-bigfin.1785850000"),
+      "upgrade",
+    );
+    assert.equal(
+      decideRemoteT3Version("0.0.32-bigfin.1785850000", "0.0.32-bigfin.1785860000"),
+      "reuse",
+    );
+    assert.equal(decideRemoteT3Version("", "0.0.32"), "unknown");
   });
 
   it.effect("accepts launch JSON after remote shell startup noise", () => {
