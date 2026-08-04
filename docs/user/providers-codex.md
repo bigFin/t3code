@@ -119,6 +119,10 @@ This is useful when a Codex-compatible setup needs account-specific variables. A
 the provider instance that should receive them, and mark API keys or tokens as sensitive. Sensitive
 values are stored as server secrets and are not sent back to the app after saving.
 
+If the Codex configuration uses `model_catalog_json`, T3 Code reads those entries from Codex's live
+model list. Custom provider models stay in the normal model picker rather than being folded into the
+legacy-model section.
+
 ## Can I Switch Accounts In An Existing Thread?
 
 Yes, when both Codex providers share the same `CODEX_HOME path`.
