@@ -914,6 +914,7 @@ export function mergeCodexCliRolloutMessages(
       const current = merged[exactIndex]!;
       if (
         current.role !== message.role ||
+        Date.parse(message.createdAt) >= Date.parse(current.createdAt) ||
         normalizedMessageText(message.text).length > normalizedMessageText(current.text).length
       ) {
         replaceMessage(exactIndex, message);
