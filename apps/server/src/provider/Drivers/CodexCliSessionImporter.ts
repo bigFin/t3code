@@ -69,6 +69,7 @@ const LIVE_RECOVERY_SCAN_INTERVAL_MS = 5_000;
 const CODEX_APP_SERVER_FORCE_KILL_AFTER = "2 seconds" as const;
 const THREAD_LIST_PAGE_SIZE = 100;
 const MAX_INTERACTIVE_THREADS_PER_SCAN = 100;
+const MAX_INTERACTIVE_THREAD_LIST_PAGES = 100;
 const ROLLOUT_TERMINAL_EVENT_TAIL_BYTES = 4 * 1024 * 1024;
 const ROLLOUT_ACTIVITY_TAIL_BYTES = 8 * 1024 * 1024;
 const ROLLOUT_MESSAGE_READ_CHUNK_BYTES = 1024 * 1024;
@@ -353,11 +354,12 @@ function rolloutMessageId(
   payload: UnknownRecord,
   role: "user" | "assistant",
   text: string,
+  index = 0,
 ): MessageId {
   return MessageId.make(
     typeof payload.id === "string"
       ? `codex-cli:${threadId}:${payload.id}`
-      : `codex-cli:${threadId}:rollout:${rolloutRecordStableSuffix(value, role, text)}`,
+      : `codex-cli:${threadId}:rollout:${rolloutRecordStableSuffix(value, role, text)}:${index}`,
   );
 }
 
@@ -416,7 +418,11 @@ function collectCodexCliRolloutMessagesFromRecords(input: {
   const fallbackMillis = unixSecondsToMillis(input.createdAt, 0);
   let lastCreatedAtMillis = fallbackMillis - 1;
 
-  for (const value of input.records) {
+  for (let i = 0; i < input.records.length; i++) {
+    const value = input.records[i];
+    if (value === undefined) {
+      continue;
+    }
     const payload = value.payload;
     if (!isUnknownRecord(payload)) {
       continue;
@@ -471,7 +477,7 @@ function collectCodexCliRolloutMessagesFromRecords(input: {
       lastCreatedAtMillis,
     );
     messages.push({
-      messageId: rolloutMessageId(input.threadId, value, payload, role, text),
+      messageId: rolloutMessageId(input.threadId, value, payload, role, text, i),
       role,
       text,
       turnId: rolloutTurnId(input.threadId, value, payload, role, text),
@@ -2984,7 +2990,11 @@ const listInteractiveThreads = Effect.fn("CodexCliSessionImporter.listInteractiv
       });
       threads.push(...response.data.filter(isImportableCodexInteractiveThread));
       const nextCursor: string | null = response.nextCursor ?? null;
-      if (nextCursor === null || seenCursors.has(nextCursor)) {
+      if (
+        nextCursor === null ||
+        seenCursors.has(nextCursor) ||
+        seenCursors.size >= MAX_INTERACTIVE_THREAD_LIST_PAGES
+      ) {
         break;
       }
       seenCursors.add(nextCursor);
@@ -3331,14 +3341,24 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
 
           yield* file.seek(start, "start");
           const bytes = yield* file.readAlloc(length);
-          const contents = Option.match(bytes, {
-            onNone: () => "",
-            onSome: (value) => new TextDecoder().decode(value),
+          const decodedChunk = Option.match(bytes, {
+            onNone: () => undefined,
+            onSome: (value) => {
+              // Never decode through an incomplete UTF-8 sequence: a multi-byte
+              // character split by the read boundary would decode to replacement
+              // characters and drop the record. Carry the trailing bytes by
+              // keeping the cursor offset before them.
+              const completePrefixLength = codexRolloutCompleteUtf8PrefixLength(value);
+              return {
+                contents: new TextDecoder().decode(value.subarray(0, completePrefixLength)),
+                completeOffset: size - (value.length - completePrefixLength),
+              };
+            },
           });
           const cursor = advanceCodexRolloutTaskCursor(
             canContinue && !skippedIncrementalBytes ? cached : undefined,
-            contents,
-            size,
+            decodedChunk?.contents ?? "",
+            decodedChunk?.completeOffset ?? size,
           );
           rolloutTaskCursors.set(rolloutPath, cursor);
           return {

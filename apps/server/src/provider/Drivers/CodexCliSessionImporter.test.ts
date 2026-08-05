@@ -235,7 +235,7 @@ describe("CodexCliSessionImporter transcript conversion", () => {
       }),
     ).toEqual([
       {
-        messageId: MessageId.make("codex-cli:019legacy-thread:rollout:55c625b84fed838b"),
+        messageId: MessageId.make("codex-cli:019legacy-thread:rollout:55c625b84fed838b:2"),
         role: "user",
         text: "Inspect the legacy session.",
         turnId: TurnId.make("turn-legacy"),
@@ -339,7 +339,7 @@ describe("CodexCliSessionImporter transcript conversion", () => {
       }),
     ).toEqual([
       {
-        messageId: MessageId.make("codex-cli:019legacy-thread:rollout:a1255403be90f725"),
+        messageId: MessageId.make("codex-cli:019legacy-thread:rollout:a1255403be90f725:0"),
         role: "user",
         text: "Legacy user prompt.",
         turnId: TurnId.make("codex-cli:019legacy-thread:rollout-turn:a1255403be90f725"),

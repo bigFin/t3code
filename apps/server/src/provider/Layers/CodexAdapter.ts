@@ -714,9 +714,11 @@ function mapToRuntimeEvents(
         payload: {
           state,
           activeTurnId,
-          ...((state === "error" ? payload.lastError : event.message)
-            ? { reason: state === "error" ? payload.lastError : event.message }
-            : {}),
+          ...(state === "error" && (payload.lastError || event.message)
+            ? { reason: payload.lastError || event.message }
+            : event.message
+              ? { reason: event.message }
+              : {}),
           detail: {
             source: "provider-host-reattach",
             providerStatus: payload.status,
@@ -2186,6 +2188,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
           discard: true,
         },
       );
+      adapterClosing = false;
     });
 
   yield* Effect.acquireRelease(Effect.void, () =>

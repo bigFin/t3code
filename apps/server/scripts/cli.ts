@@ -330,7 +330,11 @@ const packCmd = Command.make(
       const packageJsonPath = path.join(serverDir, "package.json");
       const outputPath = path.resolve(repoRoot, config.out);
 
-      for (const relPath of ["dist/bin.mjs", "dist/client/index.html"]) {
+      for (const relPath of [
+        "dist/bin.mjs",
+        "dist/service-launcher.mjs",
+        "dist/client/index.html",
+      ]) {
         const abs = path.join(serverDir, relPath);
         if (!(yield* fs.exists(abs))) {
           return yield* new ServerCliBuildAssetMissingError({ assetPath: abs });

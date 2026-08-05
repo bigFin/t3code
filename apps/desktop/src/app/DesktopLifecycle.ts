@@ -264,10 +264,9 @@ export const make = DesktopLifecycle.of({
     const instanceLock = yield* DesktopInstanceLock.DesktopInstanceLock;
     const context = yield* Effect.context<DesktopLifecycleRuntimeServices>();
     const runEffect = Effect.runPromiseWith(context);
-    const launchIdentity = instanceLock.launchIdentity;
-    let quitAllowed = false;
-    let updaterQuitAllowed = false;
 
+    // Register second-instance listener before any yielding init so we don't miss a launch
+    // arriving during the lock acquisition gap.
     yield* electronApp.on(
       "second-instance",
       (
@@ -279,7 +278,7 @@ export const make = DesktopLifecycle.of({
         const incomingIdentity = DesktopInstanceLock.decodeDesktopLaunchIdentity(additionalData);
         if (
           Option.isNone(incomingIdentity) ||
-          incomingIdentity.value.appPath === launchIdentity.appPath
+          incomingIdentity.value.appPath === instanceLock.launchIdentity.appPath
         ) {
           void runEffect(
             desktopWindow.activate.pipe(Effect.withSpan("desktop.lifecycle.secondInstance")),
@@ -295,6 +294,9 @@ export const make = DesktopLifecycle.of({
         );
       },
     );
+
+    let quitAllowed = false;
+    let updaterQuitAllowed = false;
 
     yield* electronTheme.onUpdated(() => {
       void runEffect(

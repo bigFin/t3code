@@ -498,20 +498,42 @@ export function projectEvent(
         const checkpoints =
           assistantTurnId === null
             ? thread.checkpoints
-            : thread.checkpoints.map((checkpoint) =>
-                checkpoint.turnId === assistantTurnId
-                  ? {
-                      ...checkpoint,
-                      assistantMessageId: message.id,
-                    }
-                  : checkpoint,
-              );
+            : thread.checkpoints.map((checkpoint) => {
+                if (checkpoint.turnId !== assistantTurnId) {
+                  return checkpoint;
+                }
+                const linkedMessageId = checkpoint.assistantMessageId;
+                const linkedCreatedAt =
+                  linkedMessageId === null
+                    ? undefined
+                    : thread.messages.find((entry) => entry.id === linkedMessageId)?.createdAt;
+                // Only replace the link if this message is newer than what's already
+                // linked. Historical messages shouldn't overwrite newer ones.
+                const replaceLink =
+                  linkedCreatedAt === undefined
+                    ? message.createdAt > checkpoint.completedAt
+                    : message.createdAt > linkedCreatedAt;
+                return {
+                  ...checkpoint,
+                  assistantMessageId: replaceLink ? message.id : linkedMessageId,
+                };
+              });
         const latestTurn =
           assistantTurnId !== null && thread.latestTurn?.turnId === assistantTurnId
-            ? {
-                ...thread.latestTurn,
-                assistantMessageId: message.id,
-              }
+            ? (() => {
+                const linkedMessageId = thread.latestTurn.assistantMessageId;
+                const linkedCreatedAt =
+                  linkedMessageId === null
+                    ? undefined
+                    : thread.messages.find((entry) => entry.id === linkedMessageId)?.createdAt;
+                // Same rule: only update if newer.
+                const replaceLink =
+                  linkedCreatedAt === undefined || message.createdAt > linkedCreatedAt;
+                return {
+                  ...thread.latestTurn,
+                  assistantMessageId: replaceLink ? message.id : linkedMessageId,
+                };
+              })()
             : thread.latestTurn;
 
         return {

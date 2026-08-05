@@ -89,7 +89,7 @@ export const makeCodexClientLeasePool = <
         scope,
       } satisfies CodexClientLease<Resource>;
       leases.set(target.leaseKey, lease);
-      restartPendingKeys.delete(target.leaseKey);
+      restartPendingKeys.add(target.leaseKey);
       return {
         lease,
         restarted,
