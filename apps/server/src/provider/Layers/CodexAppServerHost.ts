@@ -241,7 +241,8 @@ export function codexAppServerHostPaths(
   buildFingerprint: ProviderHostBuildFingerprint = ProviderHostBuildFingerprint.make("development"),
 ): CodexAppServerHostPaths {
   const configuredRuntimeRoot = options.environment?.XDG_RUNTIME_DIR ?? process.env.XDG_RUNTIME_DIR;
-  const runtimeRoot = configuredRuntimeRoot ?? NodeOS.tmpdir();
+  // Empty XDG_RUNTIME_DIR is invalid — fall back to tmpdir instead of producing relative paths
+  const runtimeRoot = configuredRuntimeRoot ? configuredRuntimeRoot : NodeOS.tmpdir();
   const identity = JSON.stringify({
     stateDir: NodePath.resolve(options.stateDir),
     providerInstanceId: options.providerInstanceId,
