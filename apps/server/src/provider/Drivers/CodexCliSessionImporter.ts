@@ -467,7 +467,11 @@ function collectCodexCliRolloutMessagesFromRecords(input: {
       text = rolloutMessageText(payload.content);
     }
 
-    if (role === undefined || text.length === 0 || isSyntheticRolloutUserMessage(text)) {
+    if (
+      role === undefined ||
+      text.length === 0 ||
+      (role === "user" && isSyntheticRolloutUserMessage(text))
+    ) {
       continue;
     }
 
