@@ -324,9 +324,15 @@ function rolloutRecordStableSuffix(
   role: "user" | "assistant",
   text: string,
 ): string {
-  return stableTextHash(
-    `${typeof value.timestamp === "string" ? value.timestamp : ""}\0${role}\0${normalizedMessageText(text)}`,
-  );
+  // Include createdAt if present, otherwise fall back to timestamp.
+  // This avoids collisions when two distinct messages share the same second-precision timestamp.
+  const timestamp =
+    typeof value.createdAt === "string"
+      ? value.createdAt
+      : typeof value.timestamp === "string"
+        ? value.timestamp
+        : "";
+  return stableTextHash(`${timestamp}\0${role}\0${normalizedMessageText(text)}`);
 }
 
 function rolloutTurnId(
