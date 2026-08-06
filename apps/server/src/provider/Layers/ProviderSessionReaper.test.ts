@@ -175,6 +175,7 @@ describe("ProviderSessionReaper", () => {
     ) => ReturnType<OrchestrationEngineShape["dispatch"]>;
     readonly inactivityThresholdMs?: number;
     readonly reattachRetryIntervalMs?: number;
+    readonly reattachGiveUpMs?: number;
     readonly sweepIntervalMs?: number;
   }) {
     const stoppedThreadIds = new Set<ThreadId>();
@@ -258,6 +259,7 @@ describe("ProviderSessionReaper", () => {
       ...(input.reattachRetryIntervalMs !== undefined
         ? { reattachRetryIntervalMs: input.reattachRetryIntervalMs }
         : {}),
+      ...(input.reattachGiveUpMs !== undefined ? { reattachGiveUpMs: input.reattachGiveUpMs } : {}),
       sweepIntervalMs: input.sweepIntervalMs ?? 60_000,
     }).pipe(
       Layer.provideMerge(providerSessionDirectoryLayer),
@@ -1137,6 +1139,86 @@ describe("ProviderSessionReaper", () => {
 
     expect(harness.reattachSession).toHaveBeenCalledWith({ threadId });
     expect(harness.dispatchedCommands).toEqual([]);
+  });
+
+  it("gives up reattaching a detached execution that stays unreachable past the give-up window", async () => {
+    const threadId = ThreadId.make("thread-reaper-detached-gave-up");
+    const turnId = TurnId.make("turn-reaper-detached-gave-up");
+    const providerInstanceId = ProviderInstanceId.make("codex");
+    const lastSeenAt = "2026-04-14T00:00:00.000Z";
+    const harness = await createHarness({
+      readModel: makeReadModel([
+        {
+          id: threadId,
+          session: {
+            threadId,
+            status: "running",
+            providerName: "codex",
+            runtimeMode: "full-access",
+            activeTurnId: turnId,
+            lastError: "Reconnecting",
+            updatedAt: lastSeenAt,
+          },
+        },
+      ]),
+      sessionPersistence: "detached",
+      reattachRetryIntervalMs: 10,
+      reattachGiveUpMs: 30,
+      reattachSessionImplementation: () =>
+        Effect.fail(
+          new ProviderValidationError({
+            operation: "ProviderSessionReaper.test",
+            issue: "provider host unavailable",
+          }),
+        ),
+    });
+    const repository = await runtime!.runPromise(
+      Effect.service(ProviderSessionRuntime.ProviderSessionRuntimeRepository),
+    );
+
+    await runtime!.runPromise(
+      repository.upsert({
+        threadId,
+        providerName: "codex",
+        providerInstanceId,
+        adapterKey: "codex",
+        runtimeMode: "full-access",
+        status: "running",
+        lastSeenAt,
+        resumeCursor: {
+          opaque: "resume-detached-gave-up",
+        },
+        runtimePayload: {
+          activeTurnId: turnId,
+          lastRuntimeEvent: "provider.detachAll",
+          lastRuntimeEventAt: lastSeenAt,
+          sessionPersistence: "detached",
+        },
+      }),
+    );
+
+    const reaper = await runtime!.runPromise(Effect.service(ProviderSessionReaper));
+    scope = await runtime!.runPromise(Scope.make("sequential"));
+    await runtime!.runPromise(reaper.start().pipe(Scope.provide(scope)));
+
+    await waitFor(async () => {
+      const binding = Option.getOrUndefined(
+        await runtime!.runPromise(repository.getByThreadId({ threadId })),
+      );
+      return binding?.status === "stopped";
+    });
+
+    expect(harness.reattachSession.mock.calls.length).toBeGreaterThanOrEqual(3);
+    expect(harness.stopSession).not.toHaveBeenCalled();
+    const remaining = Option.getOrThrow(
+      await runtime!.runPromise(repository.getByThreadId({ threadId })),
+    );
+    expect(remaining.resumeCursor).toEqual({ opaque: "resume-detached-gave-up" });
+    expect(remaining.runtimePayload).toMatchObject({
+      activeTurnId: null,
+      lastRuntimeEvent: "provider.session.detached-runtime-missing-on-startup",
+      sessionPersistence: "detached",
+    });
   });
 
   it("defers stale active-turn clearing to the authoritative reattach event", async () => {

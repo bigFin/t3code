@@ -25,6 +25,7 @@ import { ProviderService } from "../Services/ProviderService.ts";
 const DEFAULT_INACTIVITY_THRESHOLD_MS = 30 * 60 * 1000;
 const DEFAULT_SWEEP_INTERVAL_MS = 5 * 60 * 1000;
 const DEFAULT_REATTACH_RETRY_INTERVAL_MS = 15 * 1000;
+const DEFAULT_REATTACH_GIVE_UP_MS = 2 * 60 * 1000;
 const RESTART_INTERRUPTION_MESSAGE =
   "The T3 server restarted while this turn was running. T3 recovered the available transcript. Send a message to continue.";
 const DETACHED_RUNTIME_RECONNECTING_MESSAGE =
@@ -36,6 +37,8 @@ export interface ProviderSessionReaperLiveOptions {
   readonly inactivityThresholdMs?: number;
   readonly sweepIntervalMs?: number;
   readonly reattachRetryIntervalMs?: number;
+  /** Wall-clock window after which a still-unreachable detached execution gives up retrying. */
+  readonly reattachGiveUpMs?: number;
 }
 
 function wasStoppedByServerShutdown(binding: ProviderRuntimeBindingWithMetadata): boolean {
@@ -83,6 +86,22 @@ function hasHonestDetachedReattachPending(binding: ProviderRuntimeBindingWithMet
     "activeTurnId" in runtimePayload &&
     runtimePayload.activeTurnId === null
   );
+}
+
+function readReattachFirstAttemptedAt(
+  binding: ProviderRuntimeBindingWithMetadata,
+): string | undefined {
+  const runtimePayload = binding.runtimePayload;
+  if (
+    runtimePayload === null ||
+    typeof runtimePayload !== "object" ||
+    Array.isArray(runtimePayload) ||
+    !("reattachFirstAttemptedAt" in runtimePayload) ||
+    typeof runtimePayload.reattachFirstAttemptedAt !== "string"
+  ) {
+    return undefined;
+  }
+  return runtimePayload.reattachFirstAttemptedAt;
 }
 
 function readPersistedSessionPersistence(
@@ -143,6 +162,7 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
       1,
       options?.reattachRetryIntervalMs ?? DEFAULT_REATTACH_RETRY_INTERVAL_MS,
     );
+    const reattachGiveUpMs = Math.max(1, options?.reattachGiveUpMs ?? DEFAULT_REATTACH_GIVE_UP_MS);
 
     const reconcileOrphanedSessions = Effect.fn("ProviderSessionReaper.reconcileOrphanedSessions")(
       function* () {
@@ -301,11 +321,73 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
               });
               return { reconciled: true, interrupted, reattached: false };
             }
+            const firstAttemptedAt = readReattachFirstAttemptedAt(binding) ?? reconciledAt;
+            const nowMs = Date.parse(reconciledAt);
+            const firstAttemptedAtMs = Date.parse(firstAttemptedAt);
+            const giveUp =
+              Number.isFinite(nowMs) &&
+              Number.isFinite(firstAttemptedAtMs) &&
+              nowMs - firstAttemptedAtMs >= reattachGiveUpMs;
+            if (giveUp) {
+              const interrupted = session?.status === "starting" || session?.status === "running";
+              yield* orchestrationEngine.dispatch({
+                type: "thread.session.set",
+                commandId: CommandId.make(
+                  [
+                    "provider-session-reaper",
+                    "startup-reattach-gave-up",
+                    binding.threadId,
+                    binding.lastSeenAt,
+                  ].join(":"),
+                ),
+                threadId: binding.threadId,
+                session: {
+                  threadId: binding.threadId,
+                  status: interrupted ? "interrupted" : "stopped",
+                  providerName: session?.providerName ?? binding.provider,
+                  providerInstanceId: binding.providerInstanceId,
+                  runtimeMode: session?.runtimeMode ?? binding.runtimeMode ?? "full-access",
+                  activeTurnId: null,
+                  lastError: DETACHED_RUNTIME_MISSING_MESSAGE,
+                  retrying: false,
+                  updatedAt: reconciledAt,
+                },
+                createdAt: reconciledAt,
+              });
+              yield* directory.upsert({
+                threadId: binding.threadId,
+                provider: binding.provider,
+                providerInstanceId: binding.providerInstanceId,
+                status: "stopped",
+                runtimePayload: {
+                  activeTurnId: null,
+                  lastRuntimeEvent: "provider.session.detached-runtime-missing-on-startup",
+                  lastRuntimeEventAt: reconciledAt,
+                  sessionPersistence: "detached",
+                },
+              });
+              yield* Effect.logWarning("provider.session.reaper.startup-reattach-gave-up", {
+                threadId: binding.threadId,
+                provider: binding.provider,
+                providerInstanceId: binding.providerInstanceId,
+                firstAttemptedAt,
+                reattachGiveUpMs,
+                interrupted,
+                cause: reattachResult.cause,
+              });
+              return { reconciled: true, interrupted, reattached: false };
+            }
             if (hasHonestDetachedReattachPending(binding)) {
+              if (readReattachFirstAttemptedAt(binding) === undefined) {
+                yield* directory.mergeRuntimePayloadIfCurrent(binding.threadId, binding, {
+                  reattachFirstAttemptedAt: reconciledAt,
+                });
+              }
               yield* Effect.logDebug("provider.session.reaper.startup-reattach-still-pending", {
                 threadId: binding.threadId,
                 provider: binding.provider,
                 providerInstanceId: binding.providerInstanceId,
+                firstAttemptedAt,
               });
               return { reconciled: false, interrupted: false, reattached: false };
             }
@@ -342,6 +424,7 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
                 lastRuntimeEvent: "provider.session.detached-reattach-pending",
                 lastRuntimeEventAt: reconciledAt,
                 sessionPersistence: "detached",
+                reattachFirstAttemptedAt: firstAttemptedAt,
               },
             });
             return { reconciled: true, interrupted: false, reattached: false };
@@ -581,6 +664,7 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
           inactivityThresholdMs,
           sweepIntervalMs,
           reattachRetryIntervalMs,
+          reattachGiveUpMs,
         });
       });
 

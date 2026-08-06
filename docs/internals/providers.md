@@ -170,7 +170,10 @@ persistence. A successful reattachment immediately projects the returned `connec
 are retried without stopping the provider or aging the binding out through inactivity cleanup. A
 typed missing-session result marks the detached execution as no longer present. T3 does not
 automatically resume the persisted provider thread, submit a follow-up prompt, or claim that an
-interrupted turn continued.
+interrupted turn continued. When a detached execution stays unreachable, the reaper eventually gives
+up: it records the attempt window in the runtime payload and, once that window passes, projects the
+same missing-runtime state (`interrupted` while a turn was active, otherwise `stopped`) so a
+permanently-hostless binding does not spin in the reconnecting state forever.
 
 The generated systemd user service uses `KillMode=process`: restarting the T3 service stops its main
 server process without killing provider hosts that intentionally continue in the service cgroup.
