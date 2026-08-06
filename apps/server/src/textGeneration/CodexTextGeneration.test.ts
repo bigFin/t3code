@@ -290,7 +290,14 @@ it.layer(CodexTextGenerationTestLayer)("CodexTextGeneration", (it) => {
           body: "",
         }),
         launchArgs: "--enable settings-feature",
-        environment: { T3CODE_CODEX_LAUNCH_ARGS: " --strict-config --listen off " },
+        // The provided environment must extend process.env: the fake codex
+        // binary is a shell script that needs PATH to find cat/grep, and
+        // ChildProcess replaces (not merges) the child environment when env is
+        // provided without extendEnv.
+        environment: {
+          ...process.env,
+          T3CODE_CODEX_LAUNCH_ARGS: " --strict-config --listen off ",
+        },
         requireArg: "--strict-config",
         forbidArg: "settings-feature",
       },
