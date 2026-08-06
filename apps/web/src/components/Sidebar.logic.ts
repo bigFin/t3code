@@ -128,6 +128,7 @@ type CompletedReadyLabel = `Completed ${string} — ready for follow-up`;
 
 type StaticThreadStatusLabel =
   | "Working"
+  | "Monitoring"
   | "Connecting"
   | "Retrying"
   | "Disconnected"
@@ -147,6 +148,9 @@ export interface ThreadStatusPill {
   pulse: boolean;
 }
 
+// Rollup order mirrors the per-thread resolver exactly: attention states,
+// then active work, then the actionable plan prompt, then passive
+// monitoring. A Monitoring sibling must never hide a Plan Ready thread.
 const THREAD_STATUS_PRIORITY: Record<StaticThreadStatusLabel, number> = {
   Error: 8,
   "Capacity Limited": 8,
@@ -158,6 +162,7 @@ const THREAD_STATUS_PRIORITY: Record<StaticThreadStatusLabel, number> = {
   Working: 3,
   Connecting: 3,
   "Plan Ready": 2,
+  Monitoring: 1,
 };
 
 function isCompletedReadyLabel(label: ThreadStatusLabel): label is CompletedReadyLabel {
@@ -176,6 +181,7 @@ type ThreadStatusInput = Pick<
   | "interactionMode"
   | "latestTurn"
   | "session"
+  | "backgroundLiveness"
 > & {
   lastVisitedAt?: string | undefined;
 };
@@ -483,6 +489,7 @@ export type SidebarV2Status =
   | "disconnected"
   | "retrying"
   | "working"
+  | "monitoring"
   | "interrupted"
   | "failed"
   | "completed"
@@ -491,7 +498,7 @@ export type SidebarV2CompactAttention = "interrupted" | "woke" | "completed" | "
 
 type SidebarV2StatusInput = Pick<
   SidebarThreadSummary,
-  "hasPendingApprovals" | "hasPendingUserInput" | "latestTurn" | "session"
+  "hasPendingApprovals" | "hasPendingUserInput" | "latestTurn" | "session" | "backgroundLiveness"
 >;
 
 export function resolveSidebarV2Status(
@@ -521,8 +528,18 @@ export function resolveSidebarV2Status(
   if (isThreadInterrupted(thread)) {
     return "interrupted";
   }
+  // A failed session outranks lingering background liveness: the user must
+  // see the failure, not a stale Working (review finding).
   if (thread.session?.status === "error" || thread.latestTurn?.state === "error") {
     return "failed";
+  }
+  // Background work outlives the turn: fleets read as working; monitoring
+  // only when watch loops are the sole live work.
+  if (thread.backgroundLiveness === "working") {
+    return "working";
+  }
+  if (thread.backgroundLiveness === "monitoring") {
+    return "monitoring";
   }
   if (resolveDurableCompletionAt(thread) !== null) {
     return "completed";
@@ -880,6 +897,8 @@ export function resolveThreadStatusPill(input: {
     };
   }
 
+  // An actionable plan prompt outranks lingering background work: it needs
+  // the user's decision, while liveness merely reports (review finding).
   const hasPlanReadyPrompt =
     !thread.hasPendingUserInput &&
     thread.interactionMode === "plan" &&
@@ -890,6 +909,28 @@ export function resolveThreadStatusPill(input: {
       label: "Plan Ready",
       colorClass: "text-violet-600 dark:text-violet-300/90",
       dotClass: "bg-violet-500 dark:bg-violet-300/90",
+      pulse: false,
+    };
+  }
+
+  // The turn can settle while native background work runs on. Subagent and
+  // workflow fleets read as plain Working; Monitoring is reserved for watch
+  // loops (a parent agent babysitting a PR, tailing checks) with no other
+  // live work. Same recede treatment as Working per inbox-zero.
+  if (thread.backgroundLiveness === "working") {
+    return {
+      label: "Working",
+      colorClass: "text-sky-600 dark:text-sky-300/80",
+      dotClass: "bg-sky-500 dark:bg-sky-300/80",
+      pulse: true,
+    };
+  }
+
+  if (thread.backgroundLiveness === "monitoring") {
+    return {
+      label: "Monitoring",
+      colorClass: "text-sky-600 dark:text-sky-300/80",
+      dotClass: "bg-sky-500 dark:bg-sky-300/80",
       pulse: false,
     };
   }
