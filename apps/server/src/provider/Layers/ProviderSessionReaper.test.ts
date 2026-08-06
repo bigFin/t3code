@@ -243,6 +243,7 @@ describe("ProviderSessionReaper", () => {
       readAggregateEvents: () => Stream.empty,
       dispatch,
       streamDomainEvents: Stream.empty,
+      subscribeDomainEvents: Effect.die("unused"),
       latestSequence: Effect.succeed(0),
     };
 

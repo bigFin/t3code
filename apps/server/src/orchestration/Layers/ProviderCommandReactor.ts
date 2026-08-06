@@ -19,6 +19,7 @@ import * as Crypto from "effect/Crypto";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Equal from "effect/Equal";
+import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -1439,7 +1440,22 @@ const make = Effect.gen(function* () {
       }
     });
 
-    yield* forkParked(Stream.runForEach(orchestrationEngine.streamDomainEvents, processEvent));
+    // Subscribe eagerly so no events are dropped between start-up and the
+    // processing loop attaching: the engine publishes as soon as a command
+    // dispatches, so a lazy subscription (like the stream getter) can miss
+    // events entirely. The subscription buffers everything published after
+    // it is established; the forked fiber just drains it.
+    const subscription = yield* orchestrationEngine.subscribeDomainEvents;
+    yield* forkParked(
+      Stream.runForEach(Stream.fromSubscription(subscription), processEvent).pipe(
+        Effect.onExit((exit) =>
+          Effect.logWarning("domain event subscription exited", {
+            success: Exit.isSuccess(exit),
+            cause: Exit.isFailure(exit) ? Cause.pretty(exit.cause) : "",
+          }),
+        ),
+      ),
+    );
 
     // The domain event stream is hot, so work pending before this reactor
     // starts cannot be resumed. Correlated completions only clear the request

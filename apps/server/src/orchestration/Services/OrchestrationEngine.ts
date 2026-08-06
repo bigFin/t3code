@@ -13,6 +13,8 @@
 import type { OrchestrationCommand, OrchestrationEvent } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
+import type * as PubSub from "effect/PubSub";
+import type * as Scope from "effect/Scope";
 import type * as Stream from "effect/Stream";
 
 import type { OrchestrationDispatchError } from "../Errors.ts";
@@ -67,6 +69,21 @@ export interface OrchestrationEngineShape {
    * This is a hot runtime stream (new events only), not a historical replay.
    */
   readonly streamDomainEvents: Stream.Stream<OrchestrationEvent>;
+
+  /**
+   * Subscribe to the engine's domain event bus, returning the subscription.
+   *
+   * Unlike `streamDomainEvents`, subscribing runs eagerly: the subscription is
+   * established when this effect succeeds, so events published afterwards are
+   * buffered and delivered to the returned subscription. Use this when the
+   * consumer must not lose events published between start-up and the moment
+   * its processing loop attaches.
+   */
+  readonly subscribeDomainEvents: Effect.Effect<
+    PubSub.Subscription<OrchestrationEvent>,
+    never,
+    Scope.Scope
+  >;
 
   /**
    * The latest sequence reflected in the engine's authoritative command read

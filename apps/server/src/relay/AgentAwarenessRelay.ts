@@ -605,8 +605,11 @@ export const make = Effect.gen(function* () {
           Effect.andThen(publishActiveThreadsOnceWhenConfigured(startupState !== "enabled")),
         ),
       );
+      // Subscribe eagerly so no events are dropped between start-up and the
+      // processing loop attaching (see ProviderCommandReactor for details).
+      const subscription = yield* orchestrationEngine.subscribeDomainEvents;
       yield* forkParked(
-        Stream.runForEach(orchestrationEngine.streamDomainEvents, (event) => {
+        Stream.runForEach(Stream.fromSubscription(subscription), (event) => {
           const threadId = eventThreadId(event);
           if (threadId === null) {
             return Effect.logDebug("agent activity publishing ignored event without thread id", {
