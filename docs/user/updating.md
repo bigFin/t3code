@@ -48,9 +48,9 @@ Server update actions only appear when the server is older than the client. The 
 depends on how that server was started. T3 Code does not update connected
 servers silently in the background.
 
-If the requested version includes a database update, remote installation stops before restart and
-asks you to run the exact `npx t3@<version> service update` command on the server machine. This is
-an intentional rollback-safety boundary.
+An older background-service launcher may ask you to run the exact
+`npx t3@<version> service update` command on the server machine. That one local update installs the
+rollback support needed for later remote updates, including versions that change the database.
 
 After selecting **Update server**, the warning becomes a three-step progress rail:
 **Download**, **Install**, and **Resume**. The same progress appears in the conversation and in
