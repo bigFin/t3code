@@ -316,6 +316,10 @@ function makeCodexProbeSnapshot(
   };
 }
 
+const yieldToEventLoop = Effect.callback<void>((resume) => {
+  setImmediate(() => resume(Effect.void));
+});
+
 function makeMutableServerSettingsService(
   initial: ContractServerSettings = DEFAULT_SERVER_SETTINGS,
 ) {
@@ -1751,6 +1755,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
                 }
                 yield* TestClock.adjust("50 millis");
                 yield* Effect.yieldNow;
+                yield* yieldToEventLoop;
               }
               return yield* registry.getProviders;
             });
