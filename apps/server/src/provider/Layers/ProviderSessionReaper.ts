@@ -23,6 +23,10 @@ import { forkParked, ServerActivation } from "../../serverActivation.ts";
 import { ProviderService } from "../Services/ProviderService.ts";
 
 const DEFAULT_INACTIVITY_THRESHOLD_MS = 30 * 60 * 1000;
+/** A Codex CLI detached-observer binding is still owned by the importer while
+ * the external CLI reports activity within this window. Older than that, the
+ * binding is orphaned and the reaper settles it like any other missing runtime. */
+const CODEX_CLI_OBSERVER_GRACE_MS = 15 * 60 * 1000;
 const DEFAULT_SWEEP_INTERVAL_MS = 5 * 60 * 1000;
 const DEFAULT_REATTACH_RETRY_INTERVAL_MS = 15 * 1000;
 const DEFAULT_REATTACH_GIVE_UP_MS = 2 * 60 * 1000;
@@ -137,6 +141,37 @@ function isCodexCliDetachedObserver(binding: ProviderRuntimeBindingWithMetadata)
   );
 }
 
+/** `codexCliUpdatedAt` is stored as Unix seconds. Absent means the importer has
+ * not settled on a heartbeat yet; treat that as fresh rather than orphaned. */
+function readCodexCliUpdatedAtMs(binding: ProviderRuntimeBindingWithMetadata): number | null {
+  const runtimePayload = binding.runtimePayload;
+  if (
+    runtimePayload === null ||
+    typeof runtimePayload !== "object" ||
+    Array.isArray(runtimePayload) ||
+    !("codexCliUpdatedAt" in runtimePayload) ||
+    typeof runtimePayload.codexCliUpdatedAt !== "number" ||
+    !Number.isFinite(runtimePayload.codexCliUpdatedAt)
+  ) {
+    return null;
+  }
+  return runtimePayload.codexCliUpdatedAt * 1000;
+}
+
+function isStaleCodexCliDetachedObserver(
+  binding: ProviderRuntimeBindingWithMetadata,
+  nowMs: number,
+): boolean {
+  if (!isCodexCliDetachedObserver(binding)) {
+    return false;
+  }
+  const updatedAtMs = readCodexCliUpdatedAtMs(binding);
+  if (updatedAtMs === null) {
+    return false;
+  }
+  return nowMs - updatedAtMs > CODEX_CLI_OBSERVER_GRACE_MS;
+}
+
 function startupStatusCommandId(
   transition: "startup-detached-missing" | "startup-reattach-retrying",
   binding: ProviderRuntimeBindingWithMetadata,
@@ -192,11 +227,15 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
         }
 
         const bindings = yield* directory.listBindings();
+        const nowMs = yield* Clock.currentTimeMillis;
         const orphanedCandidates = bindings.filter((binding) => {
           if (binding.providerInstanceId === undefined) {
             return false;
           }
-          if (isCodexCliDetachedObserver(binding)) {
+          if (
+            isCodexCliDetachedObserver(binding) &&
+            !isStaleCodexCliDetachedObserver(binding, nowMs)
+          ) {
             return false;
           }
           if (liveThreadIdsByInstance.get(binding.providerInstanceId)?.has(binding.threadId)) {
@@ -260,6 +299,46 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
             persistedSessionPersistence === "detached" ||
             (Exit.isSuccess(capabilitiesExit) &&
               capabilitiesExit.value.sessionPersistence === "detached");
+          if (isStaleCodexCliDetachedObserver(binding, nowMs)) {
+            const interrupted = session?.status === "starting" || session?.status === "running";
+            yield* orchestrationEngine.dispatch({
+              type: "thread.session.set",
+              commandId: startupStatusCommandId("startup-detached-missing", binding),
+              threadId: binding.threadId,
+              session: {
+                threadId: binding.threadId,
+                status: interrupted ? "interrupted" : "stopped",
+                providerName: session?.providerName ?? binding.provider,
+                providerInstanceId: binding.providerInstanceId,
+                runtimeMode: session?.runtimeMode ?? binding.runtimeMode ?? "full-access",
+                activeTurnId: null,
+                lastError: DETACHED_RUNTIME_MISSING_MESSAGE,
+                retrying: false,
+                updatedAt: reconciledAt,
+              },
+              createdAt: reconciledAt,
+            });
+            yield* directory.upsert({
+              threadId: binding.threadId,
+              provider: binding.provider,
+              providerInstanceId: binding.providerInstanceId,
+              status: "stopped",
+              runtimePayload: {
+                activeTurnId: null,
+                lastRuntimeEvent: "provider.session.detached-runtime-missing-on-startup",
+                lastRuntimeEventAt: reconciledAt,
+                sessionPersistence: "detached",
+              },
+            });
+            yield* Effect.logInfo("provider.session.reaper.stale-codex-cli-observer-settled", {
+              threadId: binding.threadId,
+              provider: binding.provider,
+              providerInstanceId: binding.providerInstanceId,
+              interrupted,
+              codexCliUpdatedAtMs: readCodexCliUpdatedAtMs(binding),
+            });
+            return { reconciled: true, interrupted, reattached: false };
+          }
           if (detached) {
             const reattachResult = yield* providerService
               .reattachSession({ threadId: binding.threadId })

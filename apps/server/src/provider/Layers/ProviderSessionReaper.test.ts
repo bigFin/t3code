@@ -709,6 +709,83 @@ describe("ProviderSessionReaper", () => {
     },
   );
 
+  it("settles a stale detached Codex CLI observer without reattaching", async () => {
+    const threadId = ThreadId.make("thread-reaper-codex-cli-observer-stale");
+    const turnId = TurnId.make("turn-reaper-codex-cli-observer-stale");
+    const providerInstanceId = ProviderInstanceId.make("codex");
+    const now = "2026-08-03T00:00:00.000Z";
+    const harness = await createHarness({
+      readModel: makeReadModel([
+        {
+          id: threadId,
+          session: {
+            threadId,
+            status: "ready",
+            providerName: "codex",
+            runtimeMode: "full-access",
+            activeTurnId: turnId,
+            lastError: null,
+            updatedAt: now,
+          },
+        },
+      ]),
+      sessionPersistence: "detached",
+    });
+    const repository = await runtime!.runPromise(
+      Effect.service(ProviderSessionRuntime.ProviderSessionRuntimeRepository),
+    );
+
+    await runtime!.runPromise(
+      repository.upsert({
+        threadId,
+        providerName: "codex",
+        providerInstanceId,
+        adapterKey: "codex",
+        runtimeMode: "full-access",
+        status: "running",
+        lastSeenAt: now,
+        resumeCursor: {
+          threadId: "provider-thread-codex-cli-observer-stale",
+        },
+        runtimePayload: {
+          activeTurnId: null,
+          importedFrom: "codex-cli",
+          codexCliImportVersion: 2,
+          codexCliUpdatedAt: 1_600_000_000,
+          sessionPersistence: "detached",
+        },
+      }),
+    );
+
+    const reaper = await runtime!.runPromise(Effect.service(ProviderSessionReaper));
+    scope = await runtime!.runPromise(Scope.make("sequential"));
+    await runtime!.runPromise(reaper.start().pipe(Scope.provide(scope)));
+    await runtime!.runPromise(drainFibers);
+
+    expect(harness.reattachSession).not.toHaveBeenCalled();
+    expect(harness.stopSession).not.toHaveBeenCalled();
+    expect(harness.dispatchedCommands).toEqual([
+      expect.objectContaining({
+        type: "thread.session.set",
+        threadId,
+        session: expect.objectContaining({
+          status: "stopped",
+          activeTurnId: null,
+          lastError:
+            "The detached provider execution is no longer present. T3 did not resume it automatically. Send a message to continue.",
+        }),
+      }),
+    ]);
+    const remaining = Option.getOrThrow(
+      await runtime!.runPromise(repository.getByThreadId({ threadId })),
+    );
+    expect(remaining.status).toBe("stopped");
+    expect(remaining.runtimePayload).toMatchObject({
+      activeTurnId: null,
+      lastRuntimeEvent: "provider.session.detached-runtime-missing-on-startup",
+    });
+  });
+
   it("repairs a legacy pending detached reattachment once without repeated state churn", async () => {
     const threadId = ThreadId.make("thread-reaper-detached-pending-retry");
     const turnId = TurnId.make("turn-reaper-detached-pending-retry");
