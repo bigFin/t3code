@@ -1495,13 +1495,15 @@ export function shouldProbeCodexCliRolloutOwner(input: {
   readonly hasDetachedMirrorSession: boolean;
   readonly observesDetachedCliSession?: boolean;
   readonly refreshesDetachedCliTranscript?: boolean;
+  readonly promotableLiveStoppedImport?: boolean;
 }): boolean {
   return (
     input.rolloutPath !== undefined &&
     (input.staleActiveTurnId !== null ||
       input.hasDetachedMirrorSession ||
       input.observesDetachedCliSession === true ||
-      input.refreshesDetachedCliTranscript === true)
+      input.refreshesDetachedCliTranscript === true ||
+      input.promotableLiveStoppedImport === true)
   );
 }
 
@@ -2778,6 +2780,19 @@ export function shouldSkipCurrentCodexCliImport(
   return isCurrentCodexCliImport(binding, listedThread) && !hasStaleSession;
 }
 
+export function isPromotableLiveStoppedCodexImport(
+  binding: ProviderRuntimeBinding | undefined,
+  listedThread: CodexListedThread,
+  nowMillis?: number,
+): boolean {
+  return (
+    isCodexCliImportedBinding(binding) &&
+    !isLiveCodexBinding(binding) &&
+    (listedThread.status.type === "active" ||
+      (nowMillis !== undefined && isRecentCodexCliActivity(listedThread.updatedAt, nowMillis)))
+  );
+}
+
 export function isRecentCodexCliActivity(updatedAt: number, nowMillis: number): boolean {
   return nowMillis - unixSecondsToMillis(updatedAt, 0) <= CODEX_CLI_LIVE_INACTIVITY_GRACE_MS;
 }
@@ -3539,7 +3554,8 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
           staleSession !== undefined || shouldInspectCurrentMirror,
         ) &&
         !observesDetachedCliSession &&
-        !refreshesDetachedCliTranscript
+        !refreshesDetachedCliTranscript &&
+        !isPromotableLiveStoppedCodexImport(existingBinding, listedThread)
       ) {
         metrics.skippedCurrentCount += 1;
         return undefined;
@@ -4007,8 +4023,6 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
         projectedThreadTranscript: preparedThreadTranscript,
         staleSession,
         detachedMirrorSession,
-        observesDetachedCliSession,
-        refreshesDetachedCliTranscript,
         inspectDetachedCliSession,
         importIsCurrent,
         importedAtMillis,
@@ -4024,6 +4038,36 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
       const staleActiveTurnId = staleSession?.activeTurnId ?? null;
       const rolloutIsOpen = rolloutPath !== undefined && openRolloutPaths.has(rolloutPath);
       const listedThreadIsRecent = isRecentCodexCliActivity(listedThread.updatedAt, nowMillis);
+      let observesDetachedCliSession = prepared.observesDetachedCliSession;
+      let refreshesDetachedCliTranscript = prepared.refreshesDetachedCliTranscript;
+      if (
+        rolloutIsOpen &&
+        isCodexCliImportedBinding(existingBinding) &&
+        !isLiveCodexBinding(existingBinding) &&
+        !observesDetachedCliSession &&
+        !refreshesDetachedCliTranscript &&
+        (listedThread.status.type === "active" || listedThreadIsRecent)
+      ) {
+        yield* directory.upsert({
+          threadId,
+          provider: existingBinding.provider,
+          providerInstanceId: existingBinding.providerInstanceId ?? target.instanceId,
+          status: "running",
+          runtimePayload: {
+            sessionPersistence: "detached",
+            lastRuntimeEvent: "codex.cli-import.promoted-live-session",
+            lastRuntimeEventAt: DateTime.formatIso(yield* DateTime.now),
+          },
+          resumeCursor: existingBinding.resumeCursor ?? null,
+        });
+        yield* Effect.logInfo("codex.cli-import.promoted-live-cli-session", {
+          threadId,
+          providerThreadId: listedThread.id,
+          rolloutPath,
+        });
+        observesDetachedCliSession = true;
+        refreshesDetachedCliTranscript = false;
+      }
       const projectedTaskLifecycle = (() => {
         const projectedSession = projectedThread?.session;
         if (projectedSession?.status === "running" && projectedSession.activeTurnId !== null) {
@@ -4734,19 +4778,26 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
             preProjectionPrepareMs +
             Math.max(0, (yield* Clock.currentTimeMillis) - projectionLookupCompletedAt);
 
+          const nowMillis = yield* Clock.currentTimeMillis;
           const openRolloutCandidates = new Set(
-            preparedImports.flatMap((prepared) =>
-              prepared.rolloutPath !== undefined &&
-              shouldProbeCodexCliRolloutOwner({
-                rolloutPath: prepared.rolloutPath,
-                staleActiveTurnId: prepared.staleSession?.activeTurnId ?? null,
-                hasDetachedMirrorSession: prepared.detachedMirrorSession !== undefined,
-                observesDetachedCliSession: prepared.inspectDetachedCliSession,
-                refreshesDetachedCliTranscript: prepared.refreshesDetachedCliTranscript,
-              })
+            preparedImports.flatMap((prepared) => {
+              const promotableLiveStoppedImport = isPromotableLiveStoppedCodexImport(
+                prepared.existingBinding,
+                prepared.listedThread,
+                nowMillis,
+              );
+              return prepared.rolloutPath !== undefined &&
+                shouldProbeCodexCliRolloutOwner({
+                  rolloutPath: prepared.rolloutPath,
+                  staleActiveTurnId: prepared.staleSession?.activeTurnId ?? null,
+                  hasDetachedMirrorSession: prepared.detachedMirrorSession !== undefined,
+                  observesDetachedCliSession: prepared.inspectDetachedCliSession,
+                  refreshesDetachedCliTranscript: prepared.refreshesDetachedCliTranscript,
+                  promotableLiveStoppedImport,
+                })
                 ? [prepared.rolloutPath]
-                : [],
-            ),
+                : [];
+            }),
           );
           const procScanStartedAt = yield* Clock.currentTimeMillis;
           const openRolloutPaths = yield* collectOpenCodexRolloutPaths(
@@ -4755,7 +4806,6 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
             openRolloutCandidates,
           );
           const procScanMs = Math.max(0, (yield* Clock.currentTimeMillis) - procScanStartedAt);
-          const nowMillis = yield* Clock.currentTimeMillis;
           const importStartedAt = yield* Clock.currentTimeMillis;
           let importedCount = 0;
           let recoveringLiveCount = 0;

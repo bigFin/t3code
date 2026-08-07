@@ -37,6 +37,7 @@ import {
   isDifferentlyKeyedCodexCliOwnerBinding,
   isImportableCodexInteractiveThread,
   isLiveCodexBinding,
+  isPromotableLiveStoppedCodexImport,
   isRecentCodexCliRolloutActivity,
   mergeCodexCliRolloutMessages,
   parseCodexRolloutTerminalEvidence,
@@ -2414,9 +2415,18 @@ describe("CodexCliSessionImporter transcript conversion", () => {
     ).toBe(true);
     expect(
       shouldProbeCodexCliRolloutOwner({
+        rolloutPath: "/tmp/rollout.jsonl",
+        staleActiveTurnId: null,
+        hasDetachedMirrorSession: false,
+        promotableLiveStoppedImport: true,
+      }),
+    ).toBe(true);
+    expect(
+      shouldProbeCodexCliRolloutOwner({
         rolloutPath: undefined,
         staleActiveTurnId: null,
-        hasDetachedMirrorSession: true,
+        hasDetachedMirrorSession: false,
+        promotableLiveStoppedImport: true,
       }),
     ).toBe(false);
   });
@@ -3280,6 +3290,46 @@ describe("CodexCliSessionImporter transcript conversion", () => {
         },
       }),
     ).toBe(true);
+  });
+
+  it("promotes a stopped CLI import whose thread is active as a live observer target", () => {
+    const baseBinding = {
+      threadId: ThreadId.make("019codex-thread"),
+      provider: ProviderDriverKind.make("codex"),
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      status: "stopped" as const,
+      runtimeMode: "full-access" as const,
+      runtimePayload: {
+        importedFrom: "codex-cli",
+        codexCliImportVersion: 2,
+        codexCliUpdatedAt: 1_700_000_002,
+      },
+    };
+    expect(
+      isPromotableLiveStoppedCodexImport(baseBinding, {
+        ...makeThread(),
+        status: { type: "active", activeFlags: [] },
+      }),
+    ).toBe(true);
+    expect(
+      isPromotableLiveStoppedCodexImport(baseBinding, {
+        ...makeThread(),
+        status: { type: "idle" },
+      }),
+    ).toBe(false);
+    expect(
+      isPromotableLiveStoppedCodexImport(
+        {
+          ...baseBinding,
+          status: "running" as const,
+          runtimePayload: {
+            importedFrom: "codex-cli",
+            codexCliImportVersion: 2,
+          },
+        },
+        { ...makeThread(), status: { type: "active", activeFlags: [] } },
+      ),
+    ).toBe(false);
   });
 
   it("skips unchanged imports when archived threads are absent from active projections", () => {
