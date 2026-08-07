@@ -29,7 +29,7 @@ import * as RpcSession from "../rpc/session.ts";
 import { safeErrorLogAttributes } from "../errors/safeLog.ts";
 import * as ConnectionWakeups from "./wakeups.ts";
 
-const RETRY_DELAYS_MS = [1_000, 2_000, 4_000, 8_000, 16_000] as const;
+const RETRY_DELAYS_MS = [3_000, 4_000, 8_000, 16_000] as const;
 const CONNECTION_ESTABLISHMENT_TIMEOUT = "15 seconds";
 // Desktop SSH preparation can include package upload, remote startup, and
 // one-time credential issuance. Those operations already have their own
@@ -244,6 +244,10 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
   const intent = yield* Ref.make(initialIntent);
   const signals = yield* Queue.unbounded<SupervisorSignal>();
   const resetRetryState = yield* Ref.make(false);
+  // Set when a foreground wake probe fails or times out: the user is actively
+  // returning to the app on a dead transport, so the follow-up reconnect skips
+  // the first backoff rung instead of sleeping.
+  const wakeProbeFailed = yield* Ref.make(false);
   const state = yield* SubscriptionRef.make<SupervisorConnectionState>(
     !initialIntent.desired
       ? availableState(initialIntent, 0)
@@ -504,6 +508,9 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
                   );
                   break;
                 }
+                if (Exit.isFailure(probeEvent.exit)) {
+                  yield* Ref.set(wakeProbeFailed, true);
+                }
                 yield* probeEvent.exit;
                 break;
               }
@@ -736,6 +743,9 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
       const outcome: AttemptOutcome = yield* Effect.scoped(
         runAttempt(attempt, nextGeneration, latestFailure, pendingRetry),
       );
+      // Consumed on every iteration so a stale marker can never leak into a
+      // later, unrelated failure.
+      const failedWakeProbe = yield* Ref.getAndSet(wakeProbeFailed, false);
       if (outcome.established) {
         generation = nextGeneration;
         if (outcome.stable) {
@@ -769,6 +779,16 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
         if (applicationActivated) {
           resetRetryLadder();
         }
+        continue;
+      }
+
+      if (failedWakeProbe) {
+        // The wake probe found a dead transport while the user is returning to
+        // the app, so reconnect immediately instead of sleeping the first
+        // backoff rung. Only this first attempt skips the ladder; if it fails
+        // too, normal backoff resumes.
+        resetRetryLadder();
+        yield* setState(connectingState(yield* Ref.get(intent), generation, 1, error));
         continue;
       }
 
