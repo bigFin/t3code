@@ -27,6 +27,8 @@ stdenv.mkDerivation {
 
   strictDeps = true;
   __structuredAttrs = true;
+  # The version-only manifest rewrite happens after dependency installation.
+  env.pnpm_config_verify_deps_before_run = "warn";
 
   pnpmDeps = fetchPnpmDeps {
     pnpm = pnpm_11;
@@ -34,7 +36,7 @@ stdenv.mkDerivation {
     inherit version;
     inherit src;
     fetcherVersion = 4;
-    hash = "sha256-cQetEr/DaI+wjvaLcyDrJfecZeyhmV9CrcR7igsEuhg=";
+    hash = "sha256-mO/LorrrnyEkvECN2mri3avcKkVAVTCKzG4Ui/5vCRo=";
   };
 
   nativeBuildInputs = [
