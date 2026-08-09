@@ -1,7 +1,10 @@
 import { describe, expect, it } from "@effect/vitest";
-import { ProviderDriverKind } from "@t3tools/contracts";
+import { ProviderDriverKind, ThreadId } from "@t3tools/contracts";
 
-import { parsePiCompatibleSession } from "./PiCompatibleSessionImporter.ts";
+import {
+  parsePiCompatibleSession,
+  piCompatibleTurnReconcileCommand,
+} from "./PiCompatibleSessionImporter.ts";
 
 const PI = ProviderDriverKind.make("piAgent");
 const OMP = ProviderDriverKind.make("omp");
@@ -44,8 +47,14 @@ describe("PiCompatibleSessionImporter", () => {
       ["user", "Fix the test"],
       ["assistant", "Fixed."],
     ]);
+    const command = parsed && piCompatibleTurnReconcileCommand(ThreadId.make("thread-pi"), parsed);
+    expect(command).toMatchObject({
+      type: "thread.turn.reconcile",
+      threadId: "thread-pi",
+      state: "completed",
+      completedAt: "2026-08-09T15:05:00.000Z",
+    });
   });
-
   it("accepts OMP title records and skips non-text tool records", () => {
     const parsed = parsePiCompatibleSession(
       [
@@ -71,5 +80,12 @@ describe("PiCompatibleSessionImporter", () => {
     expect(parsed?.title).toBe("OMP transcript");
     expect(parsed?.messages).toHaveLength(1);
     expect(parsed?.messages[0]?.text).toBe("Continue");
+    const command = parsed && piCompatibleTurnReconcileCommand(ThreadId.make("thread-omp"), parsed);
+    expect(command).toMatchObject({
+      type: "thread.turn.reconcile",
+      threadId: "thread-omp",
+      state: "interrupted",
+      completedAt: "2026-08-09T15:04:00.000Z",
+    });
   });
 });

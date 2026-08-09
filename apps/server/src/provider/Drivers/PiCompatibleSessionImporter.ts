@@ -161,6 +161,28 @@ export function parsePiCompatibleSession(
   };
 }
 
+export function piCompatibleTurnReconcileCommand(threadId: ThreadId, session: PiCompatibleSession) {
+  const latestMessage = session.messages.at(-1);
+  if (latestMessage === undefined) return undefined;
+  const state: "completed" | "interrupted" =
+    latestMessage.role === "assistant" ? "completed" : "interrupted";
+  return {
+    type: "thread.turn.reconcile" as const,
+    commandId: stableCommandId(
+      "turn",
+      threadId,
+      latestMessage.turnId,
+      state,
+      latestMessage.createdAt,
+    ),
+    threadId,
+    turnId: latestMessage.turnId,
+    state,
+    completedAt: latestMessage.createdAt,
+    createdAt: latestMessage.createdAt,
+  };
+}
+
 function sessionRoot(configured: string, defaultRoot: string): string {
   const root = configured.trim() || defaultRoot;
   const home = process.env.HOME ?? "";
@@ -267,6 +289,8 @@ const makePiCompatibleSessionImporter = (options?: { readonly scanIntervalMs?: n
               messages,
               createdAt: messages.at(-1)!.createdAt,
             });
+          const turnCommand = piCompatibleTurnReconcileCommand(threadId, imported);
+          if (turnCommand !== undefined) yield* engine.dispatch(turnCommand);
           const binding = yield* directory.getBinding(threadId);
           if (Option.isNone(binding))
             yield* directory.insertIfAbsent({
