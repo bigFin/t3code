@@ -14,14 +14,10 @@ import {
   isContextMenuPointerDown,
   isTrailingDoubleClick,
   orderItemsByPreferredIds,
-  resolveLatestCompletedThread,
-  resolveNextWorkingThread,
   resolveProjectStatusIndicator,
-  resolveSidebarV2AttentionDetail,
   resolveSidebarStageBadgeLabel,
-  resolveSidebarV2CompactAttention,
   resolveThreadRowClassName,
-  resolveSidebarV2Status,
+  resolveSidebarThreadStatus,
   resolveThreadStatusPill,
   resolveWorkingStartedAt,
   searchSidebarThreadsByTitle,
@@ -29,11 +25,11 @@ import {
   shouldNavigateAfterProjectRemoval,
   shouldClearThreadSelectionOnMouseDown,
   sortLogicalProjectsForSidebar,
-  sortSettledThreadsForSidebarV2,
+  sortSettledThreadsForSidebar,
   pinOrderKeyBetween,
   planPinnedReorder,
-  sortPinnedThreadsForSidebarV2,
-  sortThreadsForSidebarV2,
+  sortPinnedThreadsForSidebar,
+  sortThreadsForSidebar,
   sortProjectsForSidebar,
   sortScopedProjectsForSidebar,
   THREAD_JUMP_HINT_SHOW_DELAY_MS,
@@ -50,7 +46,6 @@ import {
   DEFAULT_INTERACTION_MODE,
   DEFAULT_RUNTIME_MODE,
   type Project,
-  type SidebarThreadSummary,
   type Thread,
 } from "../types";
 
@@ -248,16 +243,13 @@ describe("resolveSidebarStageBadgeLabel", () => {
 });
 
 function makeLatestTurn(overrides?: {
-  assistantMessageId?: string | null;
   completedAt?: string | null;
-  state?: OrchestrationLatestTurn["state"];
   startedAt?: string | null;
 }): OrchestrationLatestTurn {
   return {
     turnId: "turn-1" as never,
-    state: overrides?.state ?? "completed",
-    assistantMessageId:
-      overrides?.assistantMessageId !== undefined ? (overrides.assistantMessageId as never) : null,
+    state: "completed",
+    assistantMessageId: null,
     requestedAt: "2026-03-09T10:00:00.000Z",
     startedAt:
       overrides?.startedAt !== undefined ? overrides.startedAt : "2026-03-09T10:00:00.000Z",
@@ -293,22 +285,6 @@ describe("hasUnseenCompletion", () => {
         session: null,
       }),
     ).toBe(false);
-  });
-
-  it("does not treat interrupted or failed turns as completed", () => {
-    for (const state of ["interrupted", "error"] as const) {
-      expect(
-        hasUnseenCompletion({
-          hasActionableProposedPlan: false,
-          hasPendingApprovals: false,
-          hasPendingUserInput: false,
-          interactionMode: "default",
-          latestTurn: makeLatestTurn({ state }),
-          lastVisitedAt: "2026-03-09T10:04:00.000Z",
-          session: null,
-        }),
-      ).toBe(false);
-    }
   });
 });
 
@@ -651,7 +627,7 @@ describe("isContextMenuPointerDown", () => {
   });
 });
 
-describe("resolveSidebarV2Status", () => {
+describe("resolveSidebarThreadStatus", () => {
   const session = {
     threadId: ThreadId.make("thread-1"),
     status: "running" as const,
@@ -663,29 +639,21 @@ describe("resolveSidebarV2Status", () => {
     updatedAt: "2026-03-09T10:00:00.000Z",
   };
 
-  const idle = {
-    hasPendingApprovals: false,
-    hasPendingUserInput: false,
-    latestTurn: null,
-  };
-  const completed = {
-    ...idle,
-    latestTurn: makeLatestTurn(),
-  };
+  const idle = { hasPendingApprovals: false, hasPendingUserInput: false };
 
   it("prioritizes approval over a running session", () => {
-    expect(resolveSidebarV2Status({ ...completed, hasPendingApprovals: true, session })).toBe(
+    expect(resolveSidebarThreadStatus({ ...idle, hasPendingApprovals: true, session })).toBe(
       "approval",
     );
   });
 
   it("prioritizes awaiting input over a running session, below approval", () => {
-    expect(resolveSidebarV2Status({ ...completed, hasPendingUserInput: true, session })).toBe(
+    expect(resolveSidebarThreadStatus({ ...idle, hasPendingUserInput: true, session })).toBe(
       "input",
     );
     expect(
-      resolveSidebarV2Status({
-        ...completed,
+      resolveSidebarThreadStatus({
+        ...idle,
         hasPendingApprovals: true,
         hasPendingUserInput: true,
         session,
@@ -694,271 +662,38 @@ describe("resolveSidebarV2Status", () => {
   });
 
   it("reports working for running and starting sessions", () => {
-    expect(resolveSidebarV2Status({ ...completed, session })).toBe("working");
+    expect(resolveSidebarThreadStatus({ ...idle, session })).toBe("working");
     expect(
-      resolveSidebarV2Status({
-        ...completed,
+      resolveSidebarThreadStatus({
+        ...idle,
         session: { ...session, status: "starting" as const },
       }),
     ).toBe("working");
   });
 
-  it("reports retrying before a running session", () => {
+  it("reports failed only while the session status is error", () => {
     expect(
-      resolveSidebarV2Status({
-        ...completed,
-        session: { ...session, retrying: true, lastError: "Server overloaded" },
-      }),
-    ).toBe("retrying");
-  });
-
-  it("reports disconnected instead of stale in-flight work while the environment is unavailable", () => {
-    expect(
-      resolveSidebarV2Status(
-        {
-          ...completed,
-          session: { ...session, retrying: true, lastError: "Server overloaded" },
-        },
-        { environmentUnavailable: true },
-      ),
-    ).toBe("disconnected");
-    expect(
-      resolveSidebarV2Status(
-        { ...completed, hasPendingApprovals: true, session },
-        { environmentUnavailable: true },
-      ),
-    ).toBe("approval");
-    expect(
-      resolveSidebarV2Status(
-        { ...completed, hasPendingUserInput: true, session },
-        { environmentUnavailable: true },
-      ),
-    ).toBe("input");
-  });
-
-  it("reports interrupted after live work but before terminal failure", () => {
-    const interruptedTurn = makeLatestTurn({
-      state: "interrupted",
-      completedAt: "2026-03-09T10:05:00.000Z",
-    });
-    expect(
-      resolveSidebarV2Status({
+      resolveSidebarThreadStatus({
         ...idle,
-        latestTurn: interruptedTurn,
-        session: { ...session, status: "interrupted" as const },
-      }),
-    ).toBe("interrupted");
-    expect(
-      resolveSidebarV2Status({
-        ...idle,
-        latestTurn: interruptedTurn,
-        session: { ...session, status: "running" as const },
-      }),
-    ).toBe("working");
-    expect(
-      resolveSidebarV2Status({
-        ...idle,
-        latestTurn: interruptedTurn,
-        session: { ...session, status: "error" as const, lastError: "boom" },
-      }),
-    ).toBe("interrupted");
-  });
-
-  it("reports durable turn errors and live session errors", () => {
-    expect(
-      resolveSidebarV2Status({
-        ...completed,
         session: { ...session, status: "error" as const, lastError: "boom" },
       }),
     ).toBe("failed");
     expect(
-      resolveSidebarV2Status({
+      resolveSidebarThreadStatus({
         ...idle,
-        latestTurn: makeLatestTurn({ state: "error" }),
-        session: { ...session, status: "ready" as const, lastError: "persisted" },
-      }),
-    ).toBe("failed");
-    expect(
-      resolveSidebarV2Status({
-        ...idle,
-        latestTurn: null,
         session: { ...session, status: "stopped" as const, lastError: "persisted" },
       }),
     ).toBe("ready");
     expect(
-      resolveSidebarV2Status({
+      resolveSidebarThreadStatus({
         ...idle,
-        latestTurn: null,
         session: { ...session, status: "ready" as const, lastError: "persisted" },
       }),
     ).toBe("ready");
   });
 
-  it("reports a durable completed state without a live session", () => {
-    expect(
-      resolveSidebarV2Status({
-        ...completed,
-        session: null,
-      }),
-    ).toBe("completed");
-    expect(
-      resolveSidebarV2Status({
-        ...completed,
-        session: { ...session, status: "ready" as const, activeTurnId: null },
-      }),
-    ).toBe("completed");
-  });
-
-  it("does not report completion for interrupted or failed turns with completion timestamps", () => {
-    expect(
-      resolveSidebarV2Status({
-        ...idle,
-        latestTurn: makeLatestTurn({ state: "interrupted" }),
-        session: null,
-      }),
-    ).toBe("interrupted");
-    expect(
-      resolveSidebarV2Status({
-        ...idle,
-        latestTurn: makeLatestTurn({ state: "error" }),
-        session: null,
-      }),
-    ).toBe("failed");
-  });
-
   it("defaults to ready with no session", () => {
-    expect(resolveSidebarV2Status({ ...idle, latestTurn: null, session: null })).toBe("ready");
-  });
-});
-
-describe("resolveSidebarV2CompactAttention", () => {
-  it("keeps an unread completion visible after the row becomes compact", () => {
-    expect(
-      resolveSidebarV2CompactAttention({
-        isInterrupted: false,
-        isUnread: true,
-        isWoke: false,
-      }),
-    ).toBe("done");
-  });
-
-  it("prioritizes a fresh wake over an unread completion", () => {
-    expect(
-      resolveSidebarV2CompactAttention({
-        isInterrupted: false,
-        isCompleted: true,
-        isUnread: true,
-        isWoke: true,
-      }),
-    ).toBe("woke");
-  });
-
-  it("keeps durable completion visible after unread state is cleared", () => {
-    expect(
-      resolveSidebarV2CompactAttention({
-        isInterrupted: false,
-        isCompleted: true,
-        isUnread: false,
-        isWoke: false,
-      }),
-    ).toBe("completed");
-  });
-
-  it("prioritizes interrupted attention over wake and completion labels", () => {
-    expect(
-      resolveSidebarV2CompactAttention({
-        isInterrupted: true,
-        isCompleted: true,
-        isUnread: true,
-        isWoke: true,
-      }),
-    ).toBe("interrupted");
-  });
-
-  it("returns no attention state for a read compact row", () => {
-    expect(
-      resolveSidebarV2CompactAttention({
-        isInterrupted: false,
-        isUnread: false,
-        isWoke: false,
-      }),
-    ).toBeNull();
-  });
-});
-
-describe("resolveSidebarV2AttentionDetail", () => {
-  const base = {
-    hasPendingApprovals: false,
-    hasPendingUserInput: false,
-    latestTurn: makeLatestTurn({ state: "interrupted" }),
-    session: {
-      threadId: ThreadId.make("thread-1"),
-      status: "interrupted" as const,
-      providerName: "Codex",
-      providerInstanceId: ProviderInstanceId.make("codex"),
-      runtimeMode: DEFAULT_RUNTIME_MODE,
-      activeTurnId: null,
-      lastError: "Host restarted",
-      updatedAt: "2026-03-09T10:05:00.000Z",
-    },
-  };
-
-  it("labels interruption details as Interrupted rather than Error", () => {
-    expect(resolveSidebarV2AttentionDetail(base)).toEqual({
-      status: "interrupted",
-      text: "Interrupted — needs attention: Host restarted",
-    });
-    expect(resolveSidebarV2AttentionDetail({ ...base, session: null })).toEqual({
-      status: "interrupted",
-      text: "Interrupted — needs attention",
-    });
-  });
-
-  it("labels stale in-flight work as disconnected while the environment is unavailable", () => {
-    expect(
-      resolveSidebarV2AttentionDetail(
-        {
-          ...base,
-          latestTurn: null,
-          session: { ...base.session, status: "running" },
-        },
-        { environmentUnavailable: true },
-      ),
-    ).toEqual({
-      status: "disconnected",
-      text: "Disconnected — connection to this environment was lost",
-    });
-  });
-
-  it("preserves retrying priority over an interrupted latest turn", () => {
-    expect(
-      resolveSidebarV2AttentionDetail({
-        ...base,
-        session: {
-          ...base.session,
-          status: "running",
-          retrying: true,
-          lastError: "Backoff",
-        },
-      }),
-    ).toEqual({
-      status: "retrying",
-      text: "Retrying: Backoff",
-    });
-  });
-
-  it("ignores stale session errors after a durable completion", () => {
-    expect(
-      resolveSidebarV2AttentionDetail({
-        ...base,
-        latestTurn: makeLatestTurn(),
-        session: {
-          ...base.session,
-          status: "ready",
-          lastError: "Earlier transport failure",
-        },
-      }),
-    ).toBeNull();
+    expect(resolveSidebarThreadStatus({ ...idle, session: null })).toBe("ready");
   });
 });
 
@@ -982,25 +717,14 @@ describe("searchSidebarThreadsByTitle", () => {
   });
 });
 
-describe("sortThreadsForSidebarV2", () => {
-  const sortable = (input: {
-    id: string;
-    createdAt: string;
-    updatedAt?: string;
-    latestTurn?: OrchestrationLatestTurn | null;
-    latestUserMessageAt?: string | null;
-    session?: SidebarThreadSummary["session"];
-  }) => ({
+describe("sortThreadsForSidebar", () => {
+  const sortable = (input: { id: string; createdAt: string }) => ({
     id: input.id,
     createdAt: input.createdAt,
-    updatedAt: input.updatedAt ?? input.createdAt,
-    latestTurn: input.latestTurn ?? null,
-    latestUserMessageAt: input.latestUserMessageAt ?? null,
-    session: input.session ?? null,
   });
 
   it("orders by creation time, newest first, ignoring activity", () => {
-    const sorted = sortThreadsForSidebarV2([
+    const sorted = sortThreadsForSidebar([
       sortable({ id: "oldest", createdAt: "2026-03-09T08:00:00.000Z" }),
       sortable({ id: "newest", createdAt: "2026-03-09T12:00:00.000Z" }),
       sortable({ id: "middle", createdAt: "2026-03-09T10:00:00.000Z" }),
@@ -1010,246 +734,12 @@ describe("sortThreadsForSidebarV2", () => {
   });
 
   it("breaks creation-time ties by id so the order is stable", () => {
-    const sorted = sortThreadsForSidebarV2([
+    const sorted = sortThreadsForSidebar([
       sortable({ id: "b", createdAt: "2026-03-09T10:00:00.000Z" }),
       sortable({ id: "a", createdAt: "2026-03-09T10:00:00.000Z" }),
     ]);
 
     expect(sorted.map((thread) => thread.id)).toEqual(["a", "b"]);
-  });
-
-  it("orders by the latest completed assistant response when requested", () => {
-    const sorted = sortThreadsForSidebarV2(
-      [
-        sortable({
-          id: "newer-thread",
-          createdAt: "2026-03-09T12:00:00.000Z",
-          latestTurn: makeLatestTurn({
-            assistantMessageId: "message-older",
-            completedAt: "2026-03-09T12:05:00.000Z",
-          }),
-        }),
-        sortable({
-          id: "older-thread",
-          createdAt: "2026-03-09T08:00:00.000Z",
-          latestTurn: makeLatestTurn({
-            assistantMessageId: "message-newer",
-            completedAt: "2026-03-09T12:30:00.000Z",
-          }),
-        }),
-      ],
-      "last_response_at",
-    );
-
-    expect(sorted.map((thread) => thread.id)).toEqual(["older-thread", "newer-thread"]);
-  });
-
-  it("promotes the newest working, failed, completed, or user activity", () => {
-    const sorted = sortThreadsForSidebarV2(
-      [
-        sortable({
-          id: "completed",
-          createdAt: "2026-03-09T08:00:00.000Z",
-          latestTurn: makeLatestTurn({
-            assistantMessageId: "message-completed",
-            completedAt: "2026-03-09T12:30:00.000Z",
-          }),
-        }),
-        sortable({
-          id: "failed",
-          createdAt: "2026-03-09T08:00:00.000Z",
-          latestTurn: makeLatestTurn({
-            assistantMessageId: null,
-            state: "error",
-            completedAt: "2026-03-09T12:40:00.000Z",
-          }),
-          session: {
-            threadId: ThreadId.make("failed"),
-            status: "error",
-            providerName: "Codex",
-            providerInstanceId: ProviderInstanceId.make("codex"),
-            runtimeMode: DEFAULT_RUNTIME_MODE,
-            activeTurnId: null,
-            lastError: "failed",
-            updatedAt: "2026-03-09T12:40:00.000Z",
-          },
-        }),
-        sortable({
-          id: "working",
-          createdAt: "2026-03-09T08:00:00.000Z",
-          latestTurn: makeLatestTurn({
-            assistantMessageId: null,
-            state: "running",
-            startedAt: "2026-03-09T12:50:00.000Z",
-            completedAt: null,
-          }),
-          session: {
-            threadId: ThreadId.make("working"),
-            status: "running",
-            providerName: "Codex",
-            providerInstanceId: ProviderInstanceId.make("codex"),
-            runtimeMode: DEFAULT_RUNTIME_MODE,
-            activeTurnId: "turn-1" as never,
-            lastError: null,
-            updatedAt: "2026-03-09T12:50:00.000Z",
-          },
-        }),
-        sortable({
-          id: "user",
-          createdAt: "2026-03-09T08:00:00.000Z",
-          latestUserMessageAt: "2026-03-09T13:00:00.000Z",
-        }),
-      ],
-      "last_response_at",
-    );
-
-    expect(sorted.map((thread) => thread.id)).toEqual(["user", "working", "failed", "completed"]);
-  });
-
-  it("does not let an older completed response mask a newer session transition", () => {
-    const sorted = sortThreadsForSidebarV2(
-      [
-        sortable({
-          id: "newer-session",
-          createdAt: "2026-03-09T08:00:00.000Z",
-          latestTurn: makeLatestTurn({
-            assistantMessageId: "message-old",
-            completedAt: "2026-03-09T10:00:00.000Z",
-          }),
-          session: {
-            threadId: ThreadId.make("newer-session"),
-            status: "error",
-            providerName: "Codex",
-            providerInstanceId: ProviderInstanceId.make("codex"),
-            runtimeMode: DEFAULT_RUNTIME_MODE,
-            activeTurnId: null,
-            lastError: "connection failed",
-            updatedAt: "2026-03-09T12:30:00.000Z",
-          },
-        }),
-        sortable({
-          id: "newer-response",
-          createdAt: "2026-03-09T08:00:00.000Z",
-          latestTurn: makeLatestTurn({
-            assistantMessageId: "message-new",
-            completedAt: "2026-03-09T12:00:00.000Z",
-          }),
-        }),
-      ],
-      "last_response_at",
-    );
-
-    expect(sorted.map((thread) => thread.id)).toEqual(["newer-session", "newer-response"]);
-  });
-
-  it("falls back to update and creation times when no lifecycle activity exists", () => {
-    const sorted = sortThreadsForSidebarV2(
-      [
-        sortable({
-          id: "created-only",
-          createdAt: "2026-03-09T11:00:00.000Z",
-        }),
-        sortable({
-          id: "updated",
-          createdAt: "2026-03-09T08:00:00.000Z",
-          updatedAt: "2026-03-09T12:00:00.000Z",
-        }),
-      ],
-      "last_response_at",
-    );
-
-    expect(sorted.map((thread) => thread.id)).toEqual(["updated", "created-only"]);
-  });
-});
-
-describe("targeted thread navigation", () => {
-  const runningSession = {
-    threadId: ThreadId.make("thread-running"),
-    status: "running" as const,
-    providerName: "Codex",
-    providerInstanceId: ProviderInstanceId.make("codex"),
-    runtimeMode: DEFAULT_RUNTIME_MODE,
-    activeTurnId: "turn-1" as never,
-    lastError: null,
-    updatedAt: "2026-03-09T10:00:00.000Z",
-  };
-  const navigationThread = (input: {
-    id: string;
-    completedAt?: string | null;
-    assistantMessageId?: string | null;
-    state?: OrchestrationLatestTurn["state"];
-    session?: typeof runningSession | null;
-    hasPendingApprovals?: boolean;
-    hasPendingUserInput?: boolean;
-  }) => ({
-    id: input.id,
-    latestTurn:
-      input.completedAt === undefined
-        ? null
-        : makeLatestTurn({
-            assistantMessageId:
-              input.assistantMessageId !== undefined ? input.assistantMessageId : "message-1",
-            completedAt: input.completedAt,
-            ...(input.state !== undefined ? { state: input.state } : {}),
-          }),
-    session: input.session ?? null,
-    hasPendingApprovals: input.hasPendingApprovals ?? false,
-    hasPendingUserInput: input.hasPendingUserInput ?? false,
-  });
-
-  it("finds the most recently completed assistant response", () => {
-    const latest = resolveLatestCompletedThread([
-      navigationThread({
-        id: "older",
-        completedAt: "2026-03-09T10:00:00.000Z",
-      }),
-      navigationThread({
-        id: "newer",
-        completedAt: "2026-03-09T11:00:00.000Z",
-      }),
-      navigationThread({
-        id: "interrupted",
-        completedAt: "2026-03-09T12:00:00.000Z",
-        state: "interrupted",
-      }),
-      navigationThread({
-        id: "no-assistant-message",
-        assistantMessageId: null,
-        completedAt: "2026-03-09T13:00:00.000Z",
-      }),
-    ]);
-
-    expect(latest?.id).toBe("newer");
-  });
-
-  it("cycles only through working threads and wraps", () => {
-    const threads = [
-      navigationThread({ id: "working-a", session: runningSession }),
-      navigationThread({
-        id: "blocked",
-        session: runningSession,
-        hasPendingUserInput: true,
-      }),
-      navigationThread({
-        id: "working-b",
-        session: { ...runningSession, threadId: ThreadId.make("working-b") },
-      }),
-    ];
-
-    expect(
-      resolveNextWorkingThread({
-        threads,
-        currentThreadKey: "working-a",
-        getThreadKey: (thread) => thread.id,
-      })?.id,
-    ).toBe("working-b");
-    expect(
-      resolveNextWorkingThread({
-        threads,
-        currentThreadKey: "working-b",
-        getThreadKey: (thread) => thread.id,
-      })?.id,
-    ).toBe("working-a");
   });
 });
 
@@ -1350,7 +840,7 @@ describe("planPinnedReorder", () => {
   });
 });
 
-describe("sortPinnedThreadsForSidebarV2", () => {
+describe("sortPinnedThreadsForSidebar", () => {
   const pinnable = (input: { id: string; createdAt: string; pinOrderKey?: string | null }) => ({
     id: input.id,
     createdAt: input.createdAt,
@@ -1358,7 +848,7 @@ describe("sortPinnedThreadsForSidebarV2", () => {
   });
 
   it("sorts keyed threads by key ahead of keyless threads in creation order", () => {
-    const sorted = sortPinnedThreadsForSidebarV2([
+    const sorted = sortPinnedThreadsForSidebar([
       pinnable({ id: "keyless-old", createdAt: "2026-03-09T08:00:00.000Z" }),
       pinnable({ id: "second", createdAt: "2026-03-09T09:00:00.000Z", pinOrderKey: "t" }),
       pinnable({ id: "keyless-new", createdAt: "2026-03-09T12:00:00.000Z" }),
@@ -1374,7 +864,7 @@ describe("sortPinnedThreadsForSidebarV2", () => {
   });
 
   it("breaks equal keys by id so raced writes render identically everywhere", () => {
-    const sorted = sortPinnedThreadsForSidebarV2([
+    const sorted = sortPinnedThreadsForSidebar([
       pinnable({ id: "b", createdAt: "2026-03-09T10:00:00.000Z", pinOrderKey: "m" }),
       pinnable({ id: "a", createdAt: "2026-03-09T11:00:00.000Z", pinOrderKey: "m" }),
     ]);
@@ -1383,7 +873,7 @@ describe("sortPinnedThreadsForSidebarV2", () => {
   });
 });
 
-describe("sortSettledThreadsForSidebarV2", () => {
+describe("sortSettledThreadsForSidebar", () => {
   const settled = (input: {
     id: string;
     settledAt?: string | null;
@@ -1399,7 +889,7 @@ describe("sortSettledThreadsForSidebarV2", () => {
   });
 
   it("orders by settle time, most recently settled first", () => {
-    const sorted = sortSettledThreadsForSidebarV2([
+    const sorted = sortSettledThreadsForSidebar([
       settled({
         id: "settled-first",
         settledAt: "2026-03-09T10:00:00.000Z",
@@ -1417,7 +907,7 @@ describe("sortSettledThreadsForSidebarV2", () => {
   });
 
   it("falls back to last activity for auto-settled threads without a settledAt stamp", () => {
-    const sorted = sortSettledThreadsForSidebarV2([
+    const sorted = sortSettledThreadsForSidebar([
       settled({ id: "auto-old", latestUserMessageAt: "2026-03-09T08:00:00.000Z" }),
       settled({ id: "explicit", settledAt: "2026-03-09T10:00:00.000Z" }),
       settled({ id: "auto-recent", latestUserMessageAt: "2026-03-09T11:00:00.000Z" }),
@@ -1429,7 +919,7 @@ describe("sortSettledThreadsForSidebarV2", () => {
   it("counts a turn completion as activity for auto-settled threads", () => {
     // The message came in before the other thread's, but its turn finished
     // after: completion time is the real "work ended" moment.
-    const sorted = sortSettledThreadsForSidebarV2([
+    const sorted = sortSettledThreadsForSidebar([
       settled({ id: "message-only", latestUserMessageAt: "2026-03-09T10:04:00.000Z" }),
       settled({
         id: "completed-later",
@@ -1442,7 +932,7 @@ describe("sortSettledThreadsForSidebarV2", () => {
   });
 
   it("breaks timestamp ties by id so the order is stable", () => {
-    const sorted = sortSettledThreadsForSidebarV2([
+    const sorted = sortSettledThreadsForSidebar([
       settled({ id: "b", settledAt: "2026-03-09T10:00:00.000Z" }),
       settled({ id: "a", settledAt: "2026-03-09T10:00:00.000Z" }),
     ]);
@@ -1524,7 +1014,7 @@ describe("resolveThreadStatusPill", () => {
     hasPendingApprovals: false,
     hasPendingUserInput: false,
     interactionMode: "plan" as const,
-    latestTurn: makeLatestTurn(),
+    latestTurn: null,
     lastVisitedAt: undefined,
     session: {
       threadId: ThreadId.make("thread-1"),
@@ -1537,14 +1027,6 @@ describe("resolveThreadStatusPill", () => {
       updatedAt: "2026-03-09T10:00:00.000Z",
     },
   };
-
-  beforeEach(() => {
-    vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-03-09T10:17:00.000Z"));
-  });
-
-  afterEach(() => {
-    vi.restoreAllMocks();
-  });
 
   it("shows pending approval before all other statuses", () => {
     expect(
@@ -1577,84 +1059,6 @@ describe("resolveThreadStatusPill", () => {
     ).toMatchObject({ label: "Working", pulse: true });
   });
 
-  it("shows retrying while the provider handles a transient failure", () => {
-    expect(
-      resolveThreadStatusPill({
-        thread: {
-          ...baseThread,
-          session: {
-            ...baseThread.session,
-            retrying: true,
-            lastError: "Server overloaded",
-          },
-        },
-      }),
-    ).toMatchObject({ label: "Retrying", pulse: true });
-  });
-
-  it("shows disconnected instead of stale in-flight work while the environment is unavailable", () => {
-    expect(
-      resolveThreadStatusPill({
-        thread: baseThread,
-        environmentUnavailable: true,
-      }),
-    ).toMatchObject({ label: "Disconnected", pulse: false });
-    expect(
-      resolveThreadStatusPill({
-        thread: {
-          ...baseThread,
-          hasPendingApprovals: true,
-        },
-        environmentUnavailable: true,
-      }),
-    ).toMatchObject({ label: "Pending Approval", pulse: false });
-  });
-
-  it("shows capacity limited for a terminal capacity error", () => {
-    expect(
-      resolveThreadStatusPill({
-        thread: {
-          ...baseThread,
-          session: {
-            ...baseThread.session,
-            status: "error",
-            activeTurnId: null,
-            lastError: "At capacity. Please try again later.",
-          },
-        },
-      }),
-    ).toMatchObject({ label: "Capacity Limited", pulse: false });
-  });
-
-  it("shows interrupted as non-pulsing attention after live states", () => {
-    const interruptedTurn = makeLatestTurn({ state: "interrupted" });
-    expect(
-      resolveThreadStatusPill({
-        thread: {
-          ...baseThread,
-          latestTurn: interruptedTurn,
-          session: {
-            ...baseThread.session,
-            status: "interrupted",
-            activeTurnId: null,
-          },
-        },
-      }),
-    ).toMatchObject({
-      label: "Interrupted",
-      colorClass: expect.stringContaining("orange"),
-      pulse: false,
-    });
-    expect(
-      resolveThreadStatusPill({
-        thread: {
-          ...baseThread,
-          latestTurn: interruptedTurn,
-        },
-      }),
-    ).toMatchObject({ label: "Working", pulse: true });
-  });
-
   it("shows plan ready when a settled plan turn has a proposed plan ready for follow-up", () => {
     expect(
       resolveThreadStatusPill({
@@ -1672,7 +1076,7 @@ describe("resolveThreadStatusPill", () => {
     ).toMatchObject({ label: "Plan Ready", pulse: false });
   });
 
-  it("shows durable completion without a client visit marker", () => {
+  it("does not manufacture completed state without a client visit marker", () => {
     expect(
       resolveThreadStatusPill({
         thread: {
@@ -1685,20 +1089,17 @@ describe("resolveThreadStatusPill", () => {
           },
         },
       }),
-    ).toMatchObject({
-      label: "Completed 12m ago — ready for follow-up",
-      pulse: false,
-    });
+    ).toBeNull();
   });
 
-  it("keeps durable completion visible after the completion has been visited", () => {
+  it("shows completed when there is an unseen completion and no active blocker", () => {
     expect(
       resolveThreadStatusPill({
         thread: {
           ...baseThread,
           interactionMode: "default",
           latestTurn: makeLatestTurn(),
-          lastVisitedAt: "2026-03-09T10:06:00.000Z",
+          lastVisitedAt: "2026-03-09T10:04:00.000Z",
           session: {
             ...baseThread.session,
             status: "ready",
@@ -1706,31 +1107,7 @@ describe("resolveThreadStatusPill", () => {
           },
         },
       }),
-    ).toMatchObject({
-      label: "Completed 12m ago — ready for follow-up",
-      pulse: false,
-    });
-  });
-
-  it("does not show completion for interrupted or failed turns", () => {
-    expect(
-      resolveThreadStatusPill({
-        thread: {
-          ...baseThread,
-          latestTurn: makeLatestTurn({ state: "interrupted" }),
-          session: null,
-        },
-      }),
-    ).toMatchObject({ label: "Interrupted" });
-    expect(
-      resolveThreadStatusPill({
-        thread: {
-          ...baseThread,
-          latestTurn: makeLatestTurn({ state: "error" }),
-          session: null,
-        },
-      }),
-    ).toMatchObject({ label: "Error" });
+    ).toMatchObject({ label: "Completed", pulse: false });
   });
 });
 
@@ -1765,7 +1142,7 @@ describe("resolveProjectStatusIndicator", () => {
     expect(
       resolveProjectStatusIndicator([
         {
-          label: "Completed 12m ago — ready for follow-up",
+          label: "Completed",
           colorClass: "text-emerald-600",
           dotClass: "bg-emerald-500",
           pulse: false,
@@ -1790,7 +1167,7 @@ describe("resolveProjectStatusIndicator", () => {
     expect(
       resolveProjectStatusIndicator([
         {
-          label: "Completed 12m ago — ready for follow-up",
+          label: "Completed",
           colorClass: "text-emerald-600",
           dotClass: "bg-emerald-500",
           pulse: false,
@@ -1803,25 +1180,6 @@ describe("resolveProjectStatusIndicator", () => {
         },
       ]),
     ).toMatchObject({ label: "Plan Ready", dotClass: "bg-violet-500" });
-  });
-
-  it("surfaces interrupted attention ahead of lower-priority settled states", () => {
-    expect(
-      resolveProjectStatusIndicator([
-        {
-          label: "Completed 12m ago — ready for follow-up",
-          colorClass: "text-emerald-600",
-          dotClass: "bg-emerald-500",
-          pulse: false,
-        },
-        {
-          label: "Interrupted",
-          colorClass: "text-orange-700",
-          dotClass: "bg-orange-500",
-          pulse: false,
-        },
-      ]),
-    ).toMatchObject({ label: "Interrupted", dotClass: "bg-orange-500", pulse: false });
   });
 });
 

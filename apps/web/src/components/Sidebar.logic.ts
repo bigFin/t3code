@@ -1,12 +1,6 @@
 import * as React from "react";
 import type { ContextMenuItem } from "@t3tools/contracts";
-import type {
-  SidebarProjectSortOrder,
-  SidebarThreadSortOrder,
-  SidebarV2ThreadSortOrder,
-} from "@t3tools/contracts/settings";
-import { classifyThreadFailure } from "@t3tools/client-runtime/state/thread-failure";
-import { isThreadInterrupted } from "@t3tools/client-runtime/state/thread-settled";
+import type { SidebarProjectSortOrder, SidebarThreadSortOrder } from "@t3tools/contracts/settings";
 import {
   getThreadSortTimestamp,
   sortThreads,
@@ -18,7 +12,6 @@ import type { ThreadRouteTarget } from "../threadRoutes";
 import { cn } from "../lib/utils";
 import { isLatestTurnSettled } from "../session-logic";
 import { resolveServerBackedAppStageLabel } from "../branding.logic";
-import { formatRelativeTimeLabel } from "../timestampFormat";
 
 export const THREAD_SELECTION_SAFE_SELECTOR = "[data-thread-item], [data-thread-selection-safe]";
 export const THREAD_JUMP_HINT_SHOW_DELAY_MS = 100;
@@ -124,25 +117,15 @@ export function buildBulkTitleRegenerationContextMenuItem(input: {
   };
 }
 
-type CompletedReadyLabel = `Completed ${string} — ready for follow-up`;
-
-type StaticThreadStatusLabel =
-  | "Working"
-  | "Monitoring"
-  | "Connecting"
-  | "Retrying"
-  | "Disconnected"
-  | "Capacity Limited"
-  | "Interrupted"
-  | "Error"
-  | "Pending Approval"
-  | "Awaiting Input"
-  | "Plan Ready";
-
-type ThreadStatusLabel = StaticThreadStatusLabel | CompletedReadyLabel;
-
 export interface ThreadStatusPill {
-  label: ThreadStatusLabel;
+  label:
+    | "Working"
+    | "Monitoring"
+    | "Connecting"
+    | "Completed"
+    | "Pending Approval"
+    | "Awaiting Input"
+    | "Plan Ready";
   colorClass: string;
   dotClass: string;
   pulse: boolean;
@@ -151,27 +134,15 @@ export interface ThreadStatusPill {
 // Rollup order mirrors the per-thread resolver exactly: attention states,
 // then active work, then the actionable plan prompt, then passive
 // monitoring. A Monitoring sibling must never hide a Plan Ready thread.
-const THREAD_STATUS_PRIORITY: Record<StaticThreadStatusLabel, number> = {
-  Error: 8,
-  "Capacity Limited": 8,
-  Interrupted: 7,
-  Disconnected: 6,
-  "Pending Approval": 5,
-  "Awaiting Input": 4,
-  Retrying: 3,
-  Working: 3,
-  Connecting: 3,
-  "Plan Ready": 2,
-  Monitoring: 1,
+const THREAD_STATUS_PRIORITY: Record<ThreadStatusPill["label"], number> = {
+  "Pending Approval": 6,
+  "Awaiting Input": 5,
+  Working: 4,
+  Connecting: 4,
+  "Plan Ready": 3,
+  Monitoring: 2,
+  Completed: 1,
 };
-
-function isCompletedReadyLabel(label: ThreadStatusLabel): label is CompletedReadyLabel {
-  return label.startsWith("Completed ");
-}
-
-function threadStatusPriority(label: ThreadStatusLabel): number {
-  return isCompletedReadyLabel(label) ? 1 : THREAD_STATUS_PRIORITY[label];
-}
 
 type ThreadStatusInput = Pick<
   SidebarThreadSummary,
@@ -279,7 +250,7 @@ export function useThreadJumpHintVisibility(): {
 }
 
 export function hasUnseenCompletion(thread: ThreadStatusInput): boolean {
-  if (thread.latestTurn?.state !== "completed" || !thread.latestTurn.completedAt) return false;
+  if (!thread.latestTurn?.completedAt) return false;
   const completedAt = Date.parse(thread.latestTurn.completedAt);
   if (Number.isNaN(completedAt)) return false;
   if (!thread.lastVisitedAt) return false;
@@ -287,29 +258,6 @@ export function hasUnseenCompletion(thread: ThreadStatusInput): boolean {
   const lastVisitedAt = Date.parse(thread.lastVisitedAt);
   if (Number.isNaN(lastVisitedAt)) return true;
   return completedAt > lastVisitedAt;
-}
-
-type DurableCompletionInput = Pick<SidebarThreadSummary, "latestTurn">;
-
-function resolveDurableCompletionAt(thread: DurableCompletionInput): string | null {
-  const turn = thread.latestTurn;
-  if (
-    turn?.state !== "completed" ||
-    turn.completedAt === null ||
-    Number.isNaN(Date.parse(turn.completedAt))
-  ) {
-    return null;
-  }
-  return turn.completedAt;
-}
-
-export function resolveCompletedReadyLabel(
-  thread: DurableCompletionInput,
-): CompletedReadyLabel | null {
-  const completedAt = resolveDurableCompletionAt(thread);
-  if (completedAt === null) return null;
-  const relative = formatRelativeTimeLabel(completedAt);
-  return relative === "" ? null : `Completed ${relative} — ready for follow-up`;
 }
 
 export function shouldClearThreadSelectionOnMouseDown(target: HTMLElement | null): boolean {
@@ -475,62 +423,39 @@ export function resolveThreadRowClassName(input: {
   );
 }
 
-// ── Sidebar v2 status model ─────────────────────────────────────────
-// Nine visual states: color is reserved for "act now" (approval/input),
-// "in motion" (working/retrying), and terminal attention
-// (interrupted/failed). A durable completed state keeps the last successful
-// turn visible after restart or reconnect. Ready remains the unlabeled resting
-// state when there is no completed turn to describe.
-// Unread completion is tracked separately: it describes whether a completed
+// ── Sidebar thread status model ─────────────────────────────────────
+// Five visual states, three colors: color is reserved for "act now"
+// (approval), "in motion" (working), and "broken" (failed). Ready is the
+// unlabeled resting state — the agent stopped and is waiting on the user,
+// whether it finished, asked a question, or proposed a plan.
+// Unread completion is tracked separately: it describes whether a ready
 // thread needs attention, not what the thread is currently doing.
-export type SidebarV2Status =
+export type SidebarThreadStatus =
   | "approval"
   | "input"
-  | "disconnected"
-  | "retrying"
   | "working"
   | "monitoring"
-  | "interrupted"
   | "failed"
-  | "completed"
   | "ready";
-export type SidebarV2CompactAttention = "interrupted" | "woke" | "completed" | "done" | null;
 
-type SidebarV2StatusInput = Pick<
+type SidebarThreadStatusInput = Pick<
   SidebarThreadSummary,
-  "hasPendingApprovals" | "hasPendingUserInput" | "latestTurn" | "session" | "backgroundLiveness"
+  "hasPendingApprovals" | "hasPendingUserInput" | "session" | "backgroundLiveness"
 >;
 
-export function resolveSidebarV2Status(
-  thread: SidebarV2StatusInput,
-  options: { readonly environmentUnavailable?: boolean } = {},
-): SidebarV2Status {
+export function resolveSidebarThreadStatus(thread: SidebarThreadStatusInput): SidebarThreadStatus {
   if (thread.hasPendingApprovals) {
     return "approval";
   }
   if (thread.hasPendingUserInput) {
     return "input";
   }
-  if (
-    options.environmentUnavailable === true &&
-    (thread.session?.retrying === true ||
-      thread.session?.status === "running" ||
-      thread.session?.status === "starting")
-  ) {
-    return "disconnected";
-  }
-  if (thread.session?.retrying === true) {
-    return "retrying";
-  }
   if (thread.session?.status === "running" || thread.session?.status === "starting") {
     return "working";
   }
-  if (isThreadInterrupted(thread)) {
-    return "interrupted";
-  }
   // A failed session outranks lingering background liveness: the user must
   // see the failure, not a stale Working (review finding).
-  if (thread.session?.status === "error" || thread.latestTurn?.state === "error") {
+  if (thread.session?.status === "error") {
     return "failed";
   }
   // Background work outlives the turn: fleets read as working; monitoring
@@ -541,60 +466,7 @@ export function resolveSidebarV2Status(
   if (thread.backgroundLiveness === "monitoring") {
     return "monitoring";
   }
-  if (resolveDurableCompletionAt(thread) !== null) {
-    return "completed";
-  }
   return "ready";
-}
-
-export function resolveSidebarV2AttentionDetail(
-  thread: SidebarV2StatusInput,
-  options: { readonly environmentUnavailable?: boolean } = {},
-): {
-  status: "disconnected" | "retrying" | "interrupted" | "failed";
-  text: string;
-} | null {
-  const status = resolveSidebarV2Status(thread, options);
-  if (status === "disconnected") {
-    return {
-      status,
-      text: "Disconnected — connection to this environment was lost",
-    };
-  }
-  if (status === "retrying") {
-    return {
-      status,
-      text: thread.session?.lastError ? `Retrying: ${thread.session.lastError}` : "Retrying",
-    };
-  }
-  if (status === "interrupted") {
-    return {
-      status,
-      text: thread.session?.lastError
-        ? `Interrupted — needs attention: ${thread.session.lastError}`
-        : "Interrupted — needs attention",
-    };
-  }
-  if (status === "failed" && thread.session?.lastError) {
-    return {
-      status: "failed",
-      text: `${classifyThreadFailure(thread.session.lastError) === "capacity" ? "Capacity limited — needs attention" : "Error — needs attention"}: ${thread.session.lastError}`,
-    };
-  }
-  return null;
-}
-
-export function resolveSidebarV2CompactAttention(input: {
-  isInterrupted: boolean;
-  isCompleted?: boolean;
-  isUnread: boolean;
-  isWoke: boolean;
-}): SidebarV2CompactAttention {
-  if (input.isInterrupted) return "interrupted";
-  if (input.isWoke) return "woke";
-  if (input.isCompleted) return "completed";
-  if (input.isUnread) return "done";
-  return null;
 }
 
 type LatestCompletedThreadInput = {
@@ -633,13 +505,13 @@ export function resolveLatestCompletedThread<T extends LatestCompletedThreadInpu
   return latestThread;
 }
 
-export function resolveNextWorkingThread<T extends SidebarV2StatusInput>(input: {
+export function resolveNextWorkingThread<T extends SidebarThreadStatusInput>(input: {
   threads: readonly T[];
   currentThreadKey: string | null;
   getThreadKey: (thread: T) => string;
 }): T | null {
   const workingThreads = input.threads.filter(
-    (thread) => resolveSidebarV2Status(thread) === "working",
+    (thread) => resolveSidebarThreadStatus(thread) === "working",
   );
   if (workingThreads.length === 0) return null;
 
@@ -683,52 +555,17 @@ export function firstValidTimestamp(
   return null;
 }
 
-type SidebarV2SortInput = Pick<
-  SidebarThreadSummary,
-  "createdAt" | "latestTurn" | "latestUserMessageAt" | "session" | "updatedAt"
-> & { readonly id: string };
-
-function latestValidTimestampMs(...candidates: ReadonlyArray<string | null | undefined>): number {
-  let latestMs = 0;
-  for (const candidate of candidates) {
-    if (candidate == null) continue;
-    const parsed = Date.parse(candidate);
-    if (!Number.isNaN(parsed) && parsed > latestMs) {
-      latestMs = parsed;
-    }
-  }
-  return latestMs;
-}
-
-function resolveSidebarV2SortTimestampMs(
-  thread: SidebarV2SortInput,
-  sortOrder: SidebarV2ThreadSortOrder,
-): number {
-  if (sortOrder === "last_response_at") {
-    return latestValidTimestampMs(
-      thread.latestUserMessageAt,
-      thread.latestTurn?.requestedAt,
-      thread.latestTurn?.startedAt,
-      thread.latestTurn?.completedAt,
-      thread.session?.updatedAt,
-      thread.updatedAt,
-      thread.createdAt,
-    );
-  }
-  return parseTimestampMs(thread.createdAt);
-}
-
-// The default v2 sort is static creation order: activity does not reorder
-// cards. The opt-in activity sort keeps its persisted legacy value but
-// promotes every meaningful turn/session transition, not only completions.
-export function sortThreadsForSidebarV2<T extends SidebarV2SortInput>(
-  threads: readonly T[],
-  sortOrder: SidebarV2ThreadSortOrder = "created_at",
-): T[] {
+// Sidebar sort: static creation order, newest thread on top. Activity NEVER
+// reorders the list — a row holds its position from open until settled, so
+// the screen only moves at lifecycle transitions. Status (including pending
+// approval) is carried by each card's edge strip, not by position.
+export function sortThreadsForSidebar<
+  T extends { readonly id: string; readonly createdAt: string },
+>(threads: readonly T[]): T[] {
   return [...threads].toSorted(
     (left, right) =>
-      resolveSidebarV2SortTimestampMs(right, sortOrder) -
-        resolveSidebarV2SortTimestampMs(left, sortOrder) || left.id.localeCompare(right.id),
+      parseTimestampMs(right.createdAt) - parseTimestampMs(left.createdAt) ||
+      left.id.localeCompare(right.id),
   );
 }
 
@@ -739,7 +576,7 @@ export {
   pinOrderKeyBetween,
   planPinnedReorder,
 } from "@t3tools/client-runtime/state/thread-sort";
-export { sortPinnedThreadsByOrderKey as sortPinnedThreadsForSidebarV2 } from "@t3tools/client-runtime/state/thread-sort";
+export { sortPinnedThreadsByOrderKey as sortPinnedThreadsForSidebar } from "@t3tools/client-runtime/state/thread-sort";
 
 /**
  * Search the already-ordered sidebar thread collection by title only.
@@ -788,7 +625,7 @@ export function resolveSettledTimestamp(thread: SettledTimestampInput): string |
 
 // Settled rows are history, so they order by when the work ENDED, not when
 // the thread was created or last touched.
-export function sortSettledThreadsForSidebarV2<
+export function sortSettledThreadsForSidebar<
   T extends SettledTimestampInput & { readonly id: string },
 >(threads: readonly T[]): T[] {
   const timestampMs = (thread: T) => {
@@ -824,9 +661,8 @@ export function formatWorkingDurationLabel(elapsedMs: number): string {
 
 export function resolveThreadStatusPill(input: {
   thread: ThreadStatusInput;
-  environmentUnavailable?: boolean;
 }): ThreadStatusPill | null {
-  const { environmentUnavailable = false, thread } = input;
+  const { thread } = input;
 
   if (thread.hasPendingApprovals) {
     return {
@@ -846,29 +682,6 @@ export function resolveThreadStatusPill(input: {
     };
   }
 
-  if (
-    environmentUnavailable &&
-    (thread.session?.retrying === true ||
-      thread.session?.status === "running" ||
-      thread.session?.status === "starting")
-  ) {
-    return {
-      label: "Disconnected",
-      colorClass: "text-amber-700 dark:text-amber-300/90",
-      dotClass: "bg-amber-500 dark:bg-amber-300/90",
-      pulse: false,
-    };
-  }
-
-  if (thread.session?.retrying === true) {
-    return {
-      label: "Retrying",
-      colorClass: "text-amber-700 dark:text-amber-300/90",
-      dotClass: "bg-amber-500 dark:bg-amber-300/90",
-      pulse: true,
-    };
-  }
-
   if (thread.session?.status === "running") {
     return {
       label: "Working",
@@ -884,25 +697,6 @@ export function resolveThreadStatusPill(input: {
       colorClass: "text-sky-600 dark:text-sky-300/80",
       dotClass: "bg-sky-500 dark:bg-sky-300/80",
       pulse: true,
-    };
-  }
-
-  if (isThreadInterrupted(thread)) {
-    return {
-      label: "Interrupted",
-      colorClass: "text-orange-700 dark:text-orange-300/90",
-      dotClass: "bg-orange-500 dark:bg-orange-300/90",
-      pulse: false,
-    };
-  }
-
-  if (thread.session?.status === "error" || thread.latestTurn?.state === "error") {
-    const capacityLimited = classifyThreadFailure(thread.session?.lastError) === "capacity";
-    return {
-      label: capacityLimited ? "Capacity Limited" : "Error",
-      colorClass: "text-red-700 dark:text-red-300/90",
-      dotClass: "bg-red-500 dark:bg-red-300/90",
-      pulse: false,
     };
   }
 
@@ -944,10 +738,9 @@ export function resolveThreadStatusPill(input: {
     };
   }
 
-  const completedReadyLabel = resolveCompletedReadyLabel(thread);
-  if (completedReadyLabel !== null) {
+  if (hasUnseenCompletion(thread)) {
     return {
-      label: completedReadyLabel,
+      label: "Completed",
       colorClass: "text-emerald-600 dark:text-emerald-300/90",
       dotClass: "bg-emerald-500 dark:bg-emerald-300/90",
       pulse: false,
@@ -966,7 +759,7 @@ export function resolveProjectStatusIndicator(
     if (status === null) continue;
     if (
       highestPriorityStatus === null ||
-      threadStatusPriority(status.label) > threadStatusPriority(highestPriorityStatus.label)
+      THREAD_STATUS_PRIORITY[status.label] > THREAD_STATUS_PRIORITY[highestPriorityStatus.label]
     ) {
       highestPriorityStatus = status;
     }
