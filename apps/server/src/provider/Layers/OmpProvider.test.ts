@@ -31,6 +31,7 @@ const modelCatalog = JSON.stringify({
       id: "fast-model",
       selector: "local/fast-model",
       name: "Fast model",
+      thinking: null,
     },
   ],
 });

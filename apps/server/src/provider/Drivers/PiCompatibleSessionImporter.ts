@@ -36,6 +36,11 @@ const OMP_DRIVER = ProviderDriverKind.make("omp");
 type UnknownRecord = Record<string, unknown>;
 const decodeUnknownJson = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
 const encodeUnknownJson = Schema.encodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
+const ImportedRuntimePayload = Schema.Struct({
+  importedFrom: Schema.String,
+  importedTitle: Schema.optionalKey(Schema.String),
+});
+const decodeImportedRuntimePayload = Schema.decodeUnknownOption(ImportedRuntimePayload);
 
 export interface PiCompatibleImportedMessage {
   readonly messageId: MessageId;
@@ -304,8 +309,34 @@ const makePiCompatibleSessionImporter = (options?: { readonly scanIntervalMs?: n
                 sessionId: imported.id,
                 sessionFile: sourcePath,
               },
-              runtimePayload: { cwd, importedFrom: driver === OMP_DRIVER ? "omp" : "pi" },
+              runtimePayload: {
+                cwd,
+                importedFrom: driver === OMP_DRIVER ? "omp" : "pi",
+                ...(imported.title === undefined ? {} : { importedTitle: imported.title }),
+              },
             });
+          else if (imported.title !== undefined) {
+            const payload = decodeImportedRuntimePayload(binding.value.runtimePayload);
+            if (Option.isSome(payload) && payload.value.importedFrom === driver) {
+              const thread = (yield* snapshots.getThreadShellsByIds([threadId])).get(threadId);
+              const previousImportedTitle = payload.value.importedTitle;
+              if (
+                thread !== undefined &&
+                thread.title !== imported.title &&
+                (previousImportedTitle === undefined || thread.title === previousImportedTitle)
+              )
+                yield* engine.dispatch({
+                  type: "thread.meta.update",
+                  commandId: stableCommandId("title", threadId, stableTextHash(imported.title)),
+                  threadId,
+                  title: imported.title,
+                });
+              if (previousImportedTitle !== imported.title)
+                yield* directory.mergeRuntimePayload(threadId, {
+                  importedTitle: imported.title,
+                });
+            }
+          }
         }
       }
     });

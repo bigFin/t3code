@@ -30,7 +30,7 @@ const OmpModel = Schema.Struct({
   id: TrimmedNonEmptyString,
   selector: TrimmedNonEmptyString,
   name: TrimmedNonEmptyString,
-  thinking: Schema.optionalKey(Schema.Array(TrimmedNonEmptyString)),
+  thinking: Schema.optionalKey(Schema.NullOr(Schema.Array(TrimmedNonEmptyString))),
 });
 type OmpModel = typeof OmpModel.Type;
 
