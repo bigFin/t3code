@@ -170,6 +170,11 @@ The desktop main process owns this because it can spawn SSH, manage prompts, wri
 and clean up forwards. The renderer connects through the forwarded URL like any other environment and
 needs no SSH-specific RPC path.
 
+Application features stay transport-neutral: they target the ordinary environment HTTP/WebSocket
+contract and must not add an SSH-specific implementation. If a feature fails only through SSH,
+treat that as a remote server version, capability, or connection-lifecycle problem rather than
+adding a parallel RPC path.
+
 Failure handling is explicit: SSH auth failure surfaces before an environment is saved, remote launch
 failure includes launcher output where available, forwarded-port failure leaves the environment
 disconnected rather than falling back to an unrelated endpoint, and reconnect restores the SSH bridge

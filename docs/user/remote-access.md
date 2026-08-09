@@ -136,6 +136,10 @@ After setup, the renderer connects to a local forwarded HTTP/WebSocket endpoint.
 
 SSH launch is a desktop feature because it needs local process and SSH access. Once the environment is paired and saved, it uses the same environment list and connection model as direct LAN, Tailscale, HTTPS, or future tunnel-backed environments.
 
+The SSH environment belongs to the desktop that owns the local port forward. Mobile and other
+clients cannot inherit that tunnel. To use the same host from a phone, run T3 Code as a persistent
+server on the host and pair it through T3 Connect, Tailscale, or another reachable HTTPS endpoint.
+
 #### SSH Launch Troubleshooting
 
 The desktop SSH launcher connects with a non-interactive `sh` session, writes a small launcher script under `~/.t3/ssh-launch/<host-key>/`, starts or reuses a remote T3 server, and forwards the remote loopback port back to your desktop.
