@@ -41,12 +41,13 @@ import {
   type PiRpcClient,
   type PiRpcEvent,
   type PiRpcResponse,
+  type PiRpcApprovalFlag,
   type PiRuntimeError,
 } from "../piRuntime.ts";
 import type { PiAdapterShape } from "../Services/PiAdapter.ts";
 import type { EventNdjsonLogger } from "./EventNdjsonLogger.ts";
 
-const PROVIDER = ProviderDriverKind.make("piAgent");
+const DEFAULT_PROVIDER = ProviderDriverKind.make("piAgent");
 const PI_RESUME_VERSION = 1 as const;
 
 const PiModel = Schema.Struct({
@@ -150,6 +151,10 @@ export interface PiAdapterLiveOptions {
   readonly environment?: NodeJS.ProcessEnv;
   readonly instanceId?: ProviderInstanceId;
   readonly nativeEventLogger?: EventNdjsonLogger;
+  /** Override Pi's legacy approval flag for compatible RPC providers. */
+  readonly rpcApprovalFlag?: PiRpcApprovalFlag;
+  /** Runtime provider identity; defaults to the Pi Agent driver. */
+  readonly provider?: ProviderDriverKind;
 }
 
 function parseModelSlug(
@@ -222,7 +227,8 @@ function errorDetail(error: PiRuntimeError): string {
 
 export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOptions) {
   return Effect.gen(function* () {
-    const boundInstanceId = options?.instanceId ?? ProviderInstanceId.make("piAgent");
+    const PROVIDER = options?.provider ?? DEFAULT_PROVIDER;
+    const boundInstanceId = options?.instanceId ?? ProviderInstanceId.make(PROVIDER);
     const runtime = yield* PiRuntime;
     const crypto = yield* Crypto.Crypto;
     const fileSystem = yield* FileSystem.FileSystem;
@@ -834,6 +840,7 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
                 ? { sessionDir: expandHomePath(piSettings.sessionDir.trim()) }
                 : {}),
               ...(resume?.sessionFile ? { resumeSessionFile: resume.sessionFile } : {}),
+              ...(options?.rpcApprovalFlag ? { approvalFlag: options.rpcApprovalFlag } : {}),
             })
             .pipe(
               Effect.provideService(Scope.Scope, sessionScope),

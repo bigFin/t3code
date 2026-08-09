@@ -11,6 +11,7 @@ import { beforeEach } from "vite-plus/test";
 
 import {
   PiSettings,
+  OmpSettings,
   ProviderDriverKind,
   ProviderInstanceId,
   type ProviderRuntimeEvent,
@@ -27,6 +28,7 @@ import {
 } from "../piRuntime.ts";
 import type { PiAdapterShape } from "../Services/PiAdapter.ts";
 import { makePiAdapter } from "./PiAdapter.ts";
+import { makeOmpAdapter } from "./OmpAdapter.ts";
 
 class PiAdapter extends Context.Service<PiAdapter, PiAdapterShape>()(
   "t3/provider/Layers/PiAdapter.test/PiAdapter",
@@ -128,6 +130,22 @@ const piSettings = Schema.decodeSync(PiSettings)({
 const instanceId = ProviderInstanceId.make("piAgent");
 
 const PiAdapterTestLayer = Layer.effect(PiAdapter, makePiAdapter(piSettings, { instanceId })).pipe(
+  Layer.provideMerge(Layer.succeed(PiRuntime, PiRuntimeTestDouble)),
+  Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
+  Layer.provideMerge(NodeServices.layer),
+);
+
+const ompSettings = Schema.decodeSync(OmpSettings)({
+  enabled: true,
+  binaryPath: "fake-omp",
+  sessionDir: "~/.omp/agent/sessions",
+  customModels: [],
+});
+const ompInstanceId = ProviderInstanceId.make("omp");
+const OmpAdapterTestLayer = Layer.effect(
+  PiAdapter,
+  makeOmpAdapter(ompSettings, { instanceId: ompInstanceId }),
+).pipe(
   Layer.provideMerge(Layer.succeed(PiRuntime, PiRuntimeTestDouble)),
   Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
   Layer.provideMerge(NodeServices.layer),
@@ -350,6 +368,27 @@ it.layer(PiAdapterTestLayer)("PiAdapter", (it) => {
           stopReason: "stop",
           usage: { input: 10, output: 2 },
         },
+      });
+    }),
+  );
+});
+
+it.layer(OmpAdapterTestLayer)("OmpAdapter", (it) => {
+  it.effect("uses OMP's approval flag and provider identity for shared RPC sessions", () =>
+    Effect.gen(function* () {
+      const adapter = yield* PiAdapter;
+      const session = yield* adapter.startSession({
+        provider: ProviderDriverKind.make("omp"),
+        threadId: threadId("omp-session"),
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+      });
+
+      expect(session.provider).toBe(ProviderDriverKind.make("omp"));
+      expect(session.providerInstanceId).toBe(ompInstanceId);
+      expect(runtimeMock.startInputs[0]).toMatchObject({
+        binaryPath: "fake-omp",
+        approvalFlag: "--auto-approve",
       });
     }),
   );

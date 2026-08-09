@@ -47,6 +47,8 @@ export interface PiRpcExit {
   readonly stderr: string;
 }
 
+export type PiRpcApprovalFlag = "--approve" | "--auto-approve";
+
 export interface PiRpcClient {
   readonly request: (
     command: Readonly<Record<string, unknown>> & { readonly type: string },
@@ -73,6 +75,7 @@ export interface PiRuntimeShape {
     readonly sessionDir?: string | undefined;
     readonly resumeSessionFile?: string | undefined;
     readonly noSession?: boolean | undefined;
+    readonly approvalFlag?: PiRpcApprovalFlag | undefined;
   }) => Effect.Effect<PiRpcClient, PiRuntimeError, Scope.Scope>;
 }
 
@@ -188,8 +191,7 @@ export const makePiRuntime = Effect.fn("makePiRuntime")(function* () {
 
   const startRpc: PiRuntimeShape["startRpc"] = Effect.fn("PiRuntime.startRpc")(function* (input) {
     const scope = yield* Scope.Scope;
-    // RPC mode has no TUI where Pi can ask whether to trust project-local resources.
-    const args = ["--mode", "rpc", "--approve"];
+    const args = ["--mode", "rpc", input.approvalFlag ?? "--approve"];
     if (input.sessionDir) {
       args.push("--session-dir", input.sessionDir);
     }

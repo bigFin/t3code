@@ -429,6 +429,7 @@ it.effect(
         Layer.provide(Layer.succeed(ProviderAdapterRegistry.ProviderAdapterRegistry, registry)),
         Layer.provide(directoryLayer),
         Layer.provide(defaultServerSettingsLayer),
+        Layer.provide(serverConfigTestLayer),
         Layer.provideMerge(AnalyticsService.layerTest),
         Layer.provide(
           Layer.succeed(
@@ -524,6 +525,7 @@ it.effect("ProviderServiceLive marks a successful detached reattachment in runti
       Layer.provide(Layer.succeed(ProviderAdapterRegistry.ProviderAdapterRegistry, registry)),
       Layer.provide(directoryLayer),
       Layer.provide(defaultServerSettingsLayer),
+      Layer.provide(serverConfigTestLayer),
       Layer.provideMerge(AnalyticsService.layerTest),
       Layer.provide(
         Layer.succeed(
@@ -604,6 +606,7 @@ it.effect("ProviderServiceLive reattaches a detached session before explicit sto
       Layer.provide(Layer.succeed(ProviderAdapterRegistry.ProviderAdapterRegistry, registry)),
       Layer.provide(directoryLayer),
       Layer.provide(defaultServerSettingsLayer),
+      Layer.provide(serverConfigTestLayer),
       Layer.provideMerge(AnalyticsService.layerTest),
       Layer.provide(
         Layer.succeed(
@@ -703,6 +706,7 @@ it.effect("ProviderServiceLive preserves MCP credentials when detached reattachm
       Layer.provide(Layer.succeed(ProviderAdapterRegistry.ProviderAdapterRegistry, registry)),
       Layer.provide(directoryLayer),
       Layer.provide(defaultServerSettingsLayer),
+      Layer.provide(serverConfigTestLayer),
       Layer.provideMerge(AnalyticsService.layerTest),
       Layer.provide(
         Layer.succeed(
@@ -782,6 +786,7 @@ it.effect(
         Layer.provide(Layer.succeed(ProviderAdapterRegistry.ProviderAdapterRegistry, registry)),
         Layer.provide(directoryLayer),
         Layer.provide(defaultServerSettingsLayer),
+        Layer.provide(serverConfigTestLayer),
         Layer.provideMerge(AnalyticsService.layerTest),
         Layer.provide(
           Layer.succeed(
@@ -860,6 +865,7 @@ it.effect(
         Layer.provide(Layer.succeed(ProviderAdapterRegistry.ProviderAdapterRegistry, registry)),
         Layer.provide(directoryLayer),
         Layer.provide(defaultServerSettingsLayer),
+        Layer.provide(serverConfigTestLayer),
         Layer.provideMerge(AnalyticsService.layerTest),
         Layer.provide(
           Layer.succeed(
@@ -970,6 +976,7 @@ it.effect("ProviderServiceLive does not revoke or persist stopped when detached 
       Layer.provide(Layer.succeed(ProviderAdapterRegistry.ProviderAdapterRegistry, registry)),
       Layer.provide(directoryLayer),
       Layer.provide(defaultServerSettingsLayer),
+      Layer.provide(serverConfigTestLayer),
       Layer.provideMerge(AnalyticsService.layerTest),
       Layer.provide(
         Layer.succeed(

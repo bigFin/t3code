@@ -204,6 +204,43 @@ describe("PiSettings", () => {
   });
 });
 
+describe("OmpSettings", () => {
+  it("defaults to the installed OMP command with persistent sessions enabled", () => {
+    const settings = decodeServerSettings({}).providers.omp;
+
+    expect(settings).toEqual({
+      enabled: true,
+      binaryPath: "omp",
+      sessionDir: "",
+      customModels: [],
+    });
+  });
+
+  it("trims OMP paths in full settings and patches", () => {
+    const settings = decodeServerSettings({
+      providers: {
+        omp: {
+          binaryPath: "  /opt/bin/omp  ",
+          sessionDir: "  ~/.omp/agent/sessions  ",
+        },
+      },
+    });
+    const patch = decodeServerSettingsPatch({
+      providers: {
+        omp: {
+          binaryPath: "  /srv/bin/omp  ",
+          sessionDir: "  /srv/omp-sessions  ",
+        },
+      },
+    });
+
+    expect(settings.providers.omp.binaryPath).toBe("/opt/bin/omp");
+    expect(settings.providers.omp.sessionDir).toBe("~/.omp/agent/sessions");
+    expect(patch.providers?.omp?.binaryPath).toBe("/srv/bin/omp");
+    expect(patch.providers?.omp?.sessionDir).toBe("/srv/omp-sessions");
+  });
+});
+
 describe("ServerSettings worktree defaults", () => {
   it("defaults start-from-origin on for legacy configs", () => {
     expect(decodeServerSettings({}).newWorktreesStartFromOrigin).toBe(true);

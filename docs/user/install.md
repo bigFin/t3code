@@ -52,6 +52,7 @@ to use, then authenticate it.
 | Claude     | [Claude Code](https://claude.com/product/claude-code) | `claude`       | `claude auth login`     |
 | Cursor     | [Cursor CLI](https://cursor.com/cli)                  | `cursor-agent` | `agent login`           |
 | Grok Build | [Grok Build CLI](https://x.ai/cli)                    | `grok`         | `grok login`            |
+| Oh My Pi   | [Oh My Pi](https://omp.sh)                            | `omp`          | `omp auth-broker login` |
 | OpenCode   | [OpenCode](https://opencode.ai)                       | `opencode`     | `opencode auth login`   |
 | Pi         | [Pi](https://pi.dev)                                  | `pi`           | Run `pi`, then `/login` |
 
@@ -61,12 +62,13 @@ T3 Code looks for, but authenticate with `agent login`, not `cursor-agent login`
 Run the login command on the machine running the T3 Code server, not on the device you browse
 from.
 
-Codex, OpenCode, and Pi report their model catalogs to T3 Code at runtime. Models added through a
-Codex catalog, an OpenCode provider, or Pi's model configuration appear in the model picker without
-being copied into T3 Code settings.
+Codex, Oh My Pi, OpenCode, and Pi report their model catalogs to T3 Code at runtime. Models added
+through a Codex catalog, an Oh My Pi or OpenCode provider, or Pi's model configuration appear in
+the model picker without being copied into T3 Code settings.
 
-Pi sessions are process-bound. T3 Code stores Pi's session file and can resume the conversation
-after a server restart, but an active Pi turn does not continue while the T3 Code server is offline.
+Pi and Oh My Pi sessions are process-bound. T3 Code stores their session file and can resume the
+conversation after a server restart, but an active turn does not continue while the T3 Code server
+is offline.
 
 ### Binary Discovery
 

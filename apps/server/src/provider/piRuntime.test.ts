@@ -73,6 +73,22 @@ describe("Pi RPC framing", () => {
       expect(error.operation).toBe("decode-response");
     }),
   );
+
+  it.effect("preserves Oh My Pi's RPC ready frame", () =>
+    Effect.gen(function* () {
+      const event = yield* parsePiRpcLine(
+        '{"type":"ready","protocolVersion":1,"supportedProtocolVersions":[1,2],"maxFrameBytes":1048576,"maxReassembledFrameBytes":67108864}',
+      );
+
+      expect(event).toEqual({
+        type: "ready",
+        protocolVersion: 1,
+        supportedProtocolVersions: [1, 2],
+        maxFrameBytes: 1_048_576,
+        maxReassembledFrameBytes: 67_108_864,
+      });
+    }),
+  );
 });
 
 describe("Pi RPC transport", () => {
