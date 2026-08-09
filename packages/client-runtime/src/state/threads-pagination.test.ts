@@ -135,6 +135,12 @@ const makeHarness = Effect.fn("TestThreadPagination.makeHarness")(function* (opt
   readonly initialResponse?: LoaderResponse;
   /** Cached snapshot returned by the cache store (simulates a warm cache). */
   readonly cached?: OrchestrationThreadDetailSnapshot;
+  /**
+   * Whether the session advertises the resume-completion marker. When set,
+   * events arriving before the synchronized marker are folded into a replay
+   * buffer and applied on the marker.
+   */
+  readonly resumeCompletionMarker?: boolean;
 }) {
   const inputs = yield* Queue.unbounded<OrchestrationThreadStreamItem>();
   const observed = yield* Queue.unbounded<EnvironmentThreadState>();
@@ -155,6 +161,7 @@ const makeHarness = Effect.fn("TestThreadPagination.makeHarness")(function* (opt
     client,
     initialConfig: Effect.succeed({
       threadSnapshotPagination: options?.paginationCapability !== false,
+      ...(options?.resumeCompletionMarker ? { threadResumeCompletionMarker: true as const } : {}),
     } as never),
     ready: Effect.void,
     probe: Effect.void,
@@ -298,6 +305,33 @@ describe("thread pagination state", () => {
       expect(windows[0]?.turnLimit).toBe(INITIAL_THREAD_USER_TURN_LIMIT);
       const subscribeInput = yield* Ref.get(harness.lastSubscribeInput);
       expect(subscribeInput?.turnLimit).toBe(INITIAL_THREAD_USER_TURN_LIMIT);
+    }),
+  );
+
+  it.effect("keeps the page window when the synchronized marker applies a buffered replay", () =>
+    Effect.gen(function* () {
+      // Reproduces the resume-session crash: with the completion marker set,
+      // pre-marker events fold into a replay buffer, and the synchronized
+      // item applies the buffered thread. That apply must not clobber the
+      // page window with `undefined`.
+      const harness = yield* makeHarness({
+        resumeCompletionMarker: true,
+        initialResponse: Option.some(WINDOWED_SNAPSHOT),
+      });
+      yield* harness.awaitState((value) => Option.isSome(value.page));
+      yield* Queue.offer(harness.inputs, titleEvent("replay title", 11));
+      yield* Queue.offer(harness.inputs, { kind: "synchronized" });
+      const state = yield* harness.awaitState((value) =>
+        Option.match(value.data, {
+          onNone: () => false,
+          onSome: (thread) => thread.title === "replay title",
+        }),
+      );
+      expect(Option.getOrThrow(state.page)).toEqual({
+        beforeCursor: "cursor-1",
+        hasMore: true,
+        loadingOlder: false,
+      });
     }),
   );
 

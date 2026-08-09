@@ -336,7 +336,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
           return;
         }
         if (Option.isSome(pending.value.data)) {
-          yield* setThread(pending.value.data.value);
+          yield* setThread(pending.value.data.value, "keep");
           return;
         }
       }
