@@ -225,6 +225,31 @@ function errorDetail(error: PiRuntimeError): string {
   return error.detail.trim() || error.message;
 }
 
+export const isPiSessionFileOpen = Effect.fn("PiAdapter.isPiSessionFileOpen")(function* (
+  fileSystem: FileSystem.FileSystem,
+  path: Path.Path,
+  sessionFile: string,
+  options?: { readonly procRoot?: string; readonly currentProcessId?: string },
+): Effect.fn.Return<boolean> {
+  const expected = path.resolve(sessionFile);
+  const procRoot = options?.procRoot ?? "/proc";
+  const currentProcessId = options?.currentProcessId ?? String(process.pid);
+  const processes = yield* fileSystem.readDirectory(procRoot).pipe(Effect.orElseSucceed(() => []));
+  for (const processId of processes) {
+    if (!/^\d+$/u.test(processId) || processId === currentProcessId) continue;
+    const descriptors = yield* fileSystem
+      .readDirectory(path.join(procRoot, processId, "fd"))
+      .pipe(Effect.orElseSucceed(() => []));
+    for (const descriptor of descriptors) {
+      const target = yield* fileSystem
+        .readLink(path.join(procRoot, processId, "fd", descriptor))
+        .pipe(Effect.option);
+      if (Option.isSome(target) && path.resolve(target.value) === expected) return true;
+    }
+  }
+  return false;
+});
+
 export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOptions) {
   return Effect.gen(function* () {
     const PROVIDER = options?.provider ?? DEFAULT_PROVIDER;
@@ -825,6 +850,16 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
 
           const cwd = path.resolve(input.cwd.trim());
           const resume = parseResumeCursor(input.resumeCursor);
+          if (
+            resume?.sessionFile &&
+            (yield* isPiSessionFileOpen(fileSystem, path, resume.sessionFile))
+          ) {
+            return yield* new ProviderAdapterValidationError({
+              provider: PROVIDER,
+              operation: "startSession",
+              issue: "This session is still open in another Pi-compatible process.",
+            });
+          }
           const sessionScope = yield* Scope.make("sequential");
           let transferred = false;
           yield* Effect.addFinalizer(() =>

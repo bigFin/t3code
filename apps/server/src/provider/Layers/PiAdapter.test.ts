@@ -3,9 +3,11 @@ import { expect, it } from "@effect/vitest";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
+import * as Path from "effect/Path";
 import * as Stream from "effect/Stream";
 import { beforeEach } from "vite-plus/test";
 
@@ -27,7 +29,7 @@ import {
   type PiRuntimeShape,
 } from "../piRuntime.ts";
 import type { PiAdapterShape } from "../Services/PiAdapter.ts";
-import { makePiAdapter } from "./PiAdapter.ts";
+import { isPiSessionFileOpen, makePiAdapter } from "./PiAdapter.ts";
 import { makeOmpAdapter } from "./OmpAdapter.ts";
 
 class PiAdapter extends Context.Service<PiAdapter, PiAdapterShape>()(
@@ -157,6 +159,33 @@ beforeEach(() => {
 
 const threadId = (value: string) => ThreadId.make(value);
 const piProvider = ProviderDriverKind.make("piAgent");
+
+it.effect("detects a Pi-compatible session file held by another process", () =>
+  Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const root = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-pi-session-owner-" });
+    const sessionFile = path.join(root, "session.jsonl");
+    const procRoot = path.join(root, "proc");
+    const descriptorRoot = path.join(procRoot, "42", "fd");
+    yield* fileSystem.writeFileString(sessionFile, "");
+    yield* fileSystem.makeDirectory(descriptorRoot, { recursive: true });
+    yield* fileSystem.symlink(sessionFile, path.join(descriptorRoot, "7"));
+
+    expect(
+      yield* isPiSessionFileOpen(fileSystem, path, sessionFile, {
+        procRoot,
+        currentProcessId: "1",
+      }),
+    ).toBe(true);
+    expect(
+      yield* isPiSessionFileOpen(fileSystem, path, sessionFile, {
+        procRoot,
+        currentProcessId: "42",
+      }),
+    ).toBe(false);
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
 
 it.layer(PiAdapterTestLayer)("PiAdapter", (it) => {
   it.effect("starts and resumes Pi RPC sessions from the durable session file", () =>

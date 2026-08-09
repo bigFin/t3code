@@ -33,6 +33,7 @@ import * as ServerSettings from "./serverSettings.ts";
 import * as AnalyticsService from "./telemetry/AnalyticsService.ts";
 import * as ServerEnvironment from "./environment/ServerEnvironment.ts";
 import * as CodexCliSessionImporter from "./provider/Services/CodexCliSessionImporter.ts";
+import * as PiCompatibleSessionImporter from "./provider/Services/PiCompatibleSessionImporter.ts";
 import * as EnvironmentAuth from "./auth/EnvironmentAuth.ts";
 import * as ProviderSessionReaper from "./provider/Services/ProviderSessionReaper.ts";
 import { forkParked } from "./serverActivation.ts";
@@ -304,6 +305,8 @@ export const make = (options?: StartupOptions) =>
     const orchestrationReactor = yield* OrchestrationReactor.OrchestrationReactor;
     const providerSessionReaper = yield* ProviderSessionReaper.ProviderSessionReaper;
     const codexCliSessionImporter = yield* CodexCliSessionImporter.CodexCliSessionImporter;
+    const piCompatibleSessionImporter =
+      yield* PiCompatibleSessionImporter.PiCompatibleSessionImporter;
     const lifecycleEvents = yield* ServerLifecycleEvents.ServerLifecycleEvents;
     const serverSettings = yield* ServerSettings.ServerSettingsService;
     const serverEnvironment = yield* ServerEnvironment.ServerEnvironment;
@@ -354,6 +357,7 @@ export const make = (options?: StartupOptions) =>
           yield* orchestrationReactor.start().pipe(Scope.provide(reactorScope));
           yield* providerSessionReaper.start().pipe(Scope.provide(reactorScope));
           yield* codexCliSessionImporter.start().pipe(Scope.provide(reactorScope));
+          yield* piCompatibleSessionImporter.start().pipe(Scope.provide(reactorScope));
         }),
       );
 

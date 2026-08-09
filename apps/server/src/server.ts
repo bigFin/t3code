@@ -31,6 +31,7 @@ import * as ProviderEventLoggers from "./provider/Layers/ProviderEventLoggers.ts
 import { ProviderServiceLive } from "./provider/Layers/ProviderService.ts";
 import { ProviderSessionReaperLive } from "./provider/Layers/ProviderSessionReaper.ts";
 import { CodexCliSessionImporterLive } from "./provider/Drivers/CodexCliSessionImporter.ts";
+import { PiCompatibleSessionImporterLive } from "./provider/Drivers/PiCompatibleSessionImporter.ts";
 import * as OpenCodeRuntime from "./provider/opencodeRuntime.ts";
 import * as PiRuntime from "./provider/piRuntime.ts";
 import * as CheckpointDiffQuery from "./checkpointing/CheckpointDiffQuery.ts";
@@ -363,6 +364,7 @@ const CloudManagedEndpointRuntimeLive = Layer.mergeAll(
 const ProviderRuntimeLayerLive = Layer.mergeAll(
   ProviderSessionReaperLive,
   CodexCliSessionImporterLive,
+  PiCompatibleSessionImporterLive,
 ).pipe(Layer.provideMerge(ProviderLayerLive), Layer.provideMerge(OrchestrationLayerLive));
 
 const ProviderCliRuntimesLive = Layer.mergeAll(

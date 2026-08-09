@@ -70,6 +70,10 @@ Pi and Oh My Pi sessions are process-bound. T3 Code stores their session file an
 conversation after a server restart, but an active turn does not continue while the T3 Code server
 is offline.
 
+T3 Code also discovers existing Pi and Oh My Pi transcripts from their configured session
+directory (by default `~/.pi/agent/sessions` and `~/.omp/agent/sessions`). Imported conversations
+remain stopped until you resume them, so T3 Code never competes with an active CLI session.
+
 ### Binary Discovery
 
 Each provider CLI must be on the server's `PATH`, or have an explicit binary path set in
