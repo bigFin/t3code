@@ -7,14 +7,14 @@
  * @module state/usage
  */
 import { useAtomValue } from "@effect/atom-react";
+import { readEnvironmentUsageQueryState } from "@t3tools/client-runtime/state/usage";
 import {
   USAGE_CONTRACT_VERSION,
   type EnvironmentId,
   type UsageSummary,
   type UsageSummaryInput,
 } from "@t3tools/contracts";
-import * as Option from "effect/Option";
-import { AsyncResult, Atom } from "effect/unstable/reactivity";
+import { Atom } from "effect/unstable/reactivity";
 import { useCallback, useMemo } from "react";
 
 import { mergeUsage, type EnvironmentUsage, type MergedUsage } from "@t3tools/shared/usageMerge";
@@ -44,13 +44,13 @@ const usageByWindowAtom = Atom.family((windowKey: string) =>
 
     const statuses: EnvironmentUsageStatus[] = [];
     for (const [environmentId, presentation] of presentations) {
-      const result = get(serverEnvironment.usageSummary({ environmentId, input }));
+      const query = readEnvironmentUsageQueryState(presentation.connection, () =>
+        get(serverEnvironment.usageSummary({ environmentId, input })),
+      );
       statuses.push({
         environmentId,
         label: presentation.entry.target.label,
-        isPending: result.waiting,
-        error: result._tag === "Failure" ? "This environment could not report usage." : null,
-        summary: Option.getOrNull(AsyncResult.value(result)),
+        ...query,
       });
     }
     return statuses;
