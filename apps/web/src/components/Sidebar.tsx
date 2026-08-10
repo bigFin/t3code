@@ -49,12 +49,12 @@ import {
   FolderIcon,
   FolderPlusIcon,
   GitBranchIcon,
-  EllipsisIcon,
   MessageSquareIcon,
   PinIcon,
   PlusIcon,
   SearchIcon,
   ServerIcon,
+  SettingsIcon,
   SquarePenIcon,
   TerminalIcon,
   Undo2Icon,
@@ -145,6 +145,7 @@ import {
 } from "./Sidebar.logic";
 import { resolveLocalCheckoutBranchMismatch } from "./BranchToolbar.logic";
 import {
+  ThreadWorktreeIndicator,
   prStatusIndicator,
   resolveThreadPr,
   settledPrHoverColorClass,
@@ -754,6 +755,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
   // the user visits the thread.
   wokeAt: string | null;
   isActive: boolean;
+  openPullRequestsInRightPanel: boolean;
   jumpLabel: string | null;
   currentEnvironmentId: string | null;
   environmentLabel: string | null;
@@ -796,6 +798,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
     onUnsettle,
     onUnsnooze,
     onUnpin,
+    openPullRequestsInRightPanel,
     renamingTitle,
     thread,
     variant,
@@ -1083,9 +1086,17 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
   }, [showSnoozeButton]);
   const handlePrClick = useCallback(
     (event: ReactMouseEvent<HTMLElement>) => {
-      if (pr?.url) openPrLink(event, pr.url);
+      if (!pr?.url) return;
+      const openedInRightPanel = openPrLink(
+        event,
+        pr.url,
+        openPullRequestsInRightPanel ? threadRef : undefined,
+      );
+      if (openedInRightPanel && openPullRequestsInRightPanel && !props.isActive) {
+        onThreadActivate(threadRef);
+      }
     },
-    [openPrLink, pr],
+    [onThreadActivate, openPrLink, openPullRequestsInRightPanel, pr, props.isActive, threadRef],
   );
 
   // All sidebar rows share one surface model. Live threads used to look
@@ -1497,7 +1508,10 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
                   working, but it truncated to a half-sentence and dropped the
                   branch, so the row lost its most stable identifier. */}
               {thread.branch ? (
-                <span className="min-w-0 flex-1 truncate whitespace-nowrap">{thread.branch}</span>
+                <>
+                  <ThreadWorktreeIndicator thread={thread} />
+                  <span className="min-w-0 flex-1 truncate whitespace-nowrap">{thread.branch}</span>
+                </>
               ) : (
                 <span className="flex-1" />
               )}
@@ -1962,7 +1976,7 @@ export default function Sidebar() {
     clearSelection();
   }, [clearSelection, projectScopeKey]);
 
-  const handleProjectActions = useCallback(
+  const handleProjectSettings = useCallback(
     (event: ReactMouseEvent<HTMLButtonElement>, projectGroup: SidebarProjectSnapshot) => {
       event.preventDefault();
       event.stopPropagation();
@@ -1971,7 +1985,7 @@ export default function Sidebar() {
         setOpenMobile(false);
       }
       void router.navigate({
-        to: "/settings/projects/$projectKey",
+        to: "/projects/$projectKey",
         params: { projectKey: projectGroup.projectKey },
       });
     },
@@ -2935,6 +2949,7 @@ export default function Sidebar() {
               `Delete ${count} thread${count === 1 ? "" : "s"}?`,
               "This permanently clears conversation history for these threads.",
             ].join("\n"),
+            { variant: "destructive" },
           ),
         );
         if (confirmed._tag === "Failure" || !confirmed.value) return;
@@ -3179,6 +3194,7 @@ export default function Sidebar() {
                     `Delete thread "${thread.title}"?`,
                     "This permanently clears conversation history for this thread.",
                   ].join("\n"),
+                  { variant: "destructive" },
                 ),
               );
               if (confirmed._tag === "Failure" || !confirmed.value) return;
@@ -3466,15 +3482,15 @@ export default function Sidebar() {
                             <span className="min-w-0 truncate text-sm">{project.displayName}</span>
                             <button
                               type="button"
-                              aria-label={`Project actions for ${project.displayName}`}
-                              title={`Project actions for ${project.displayName}`}
+                              aria-label={`Project settings for ${project.displayName}`}
+                              title={`Project settings for ${project.displayName}`}
                               className="ml-auto inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-md text-icon-muted outline-none transition-colors hover:bg-accent hover:text-foreground focus-visible:bg-accent focus-visible:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
                               onPointerDown={(event) => event.stopPropagation()}
                               onClick={(event) => {
-                                void handleProjectActions(event, project);
+                                void handleProjectSettings(event, project);
                               }}
                             >
-                              <EllipsisIcon className="size-3.5" />
+                              <SettingsIcon className="size-3.5" />
                             </button>
                           </MenuRadioItem>
                         );
@@ -3645,6 +3661,7 @@ export default function Sidebar() {
                         // rows resolve to null on their own.
                         wokeAt={threadWokeAt(thread, { now: snoozeNow })}
                         isActive={routeThreadKey === threadKey}
+                        openPullRequestsInRightPanel={routeThreadRef !== null}
                         jumpLabel={showJumpHints ? (jumpLabelByKey.get(threadKey) ?? null) : null}
                         currentEnvironmentId={primaryEnvironmentId}
                         environmentLabel={environmentLabelById.get(thread.environmentId) ?? null}
