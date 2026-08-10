@@ -3,6 +3,7 @@ import { ProviderDriverKind, ThreadId } from "@t3tools/contracts";
 
 import {
   parsePiCompatibleSession,
+  piCompatibleSubagentActivities,
   piCompatibleTurnReconcileCommand,
 } from "./PiCompatibleSessionImporter.ts";
 
@@ -116,5 +117,59 @@ describe("PiCompatibleSessionImporter", () => {
       state: "interrupted",
       completedAt: "2026-08-09T15:04:00.000Z",
     });
+  });
+  it("maps OMP child sessions to subagent activities", () => {
+    const parsed = parsePiCompatibleSession(
+      [
+        JSON.stringify({
+          ...JSON.parse(session),
+          id: "child-session",
+          parentSession: "/tmp/parent.jsonl",
+        }),
+        JSON.stringify({ type: "title", title: "Review the importer" }),
+        JSON.stringify({
+          type: "message",
+          id: "user-1",
+          timestamp: "2026-08-09T15:04:00.000Z",
+          message: { role: "user", content: [{ type: "text", text: "Review this importer" }] },
+        }),
+        JSON.stringify({
+          type: "message",
+          id: "assistant-1",
+          timestamp: "2026-08-09T15:05:00.000Z",
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: `${"Found one issue. ".repeat(20)}\nDetails` }],
+          },
+        }),
+      ].join("\n"),
+      OMP,
+      "/tmp/child.jsonl",
+    );
+
+    expect(parsed?.parentSession).toBe("/tmp/parent.jsonl");
+    const activities = parsed && piCompatibleSubagentActivities(parsed);
+    expect(activities).toMatchObject([
+      {
+        kind: "task.started",
+        payload: {
+          taskType: "subagent",
+          agentKind: "agent",
+          title: "Review the importer",
+          timelineBypass: true,
+        },
+      },
+      {
+        kind: "task.completed",
+        payload: {
+          status: "completed",
+          title: "Review the importer",
+          timelineBypass: true,
+        },
+      },
+    ]);
+    const completedPayload = activities?.[1]?.payload as { readonly summary?: string } | undefined;
+    expect(completedPayload?.summary).toHaveLength(180);
+    expect(completedPayload?.summary).not.toContain("\n");
   });
 });

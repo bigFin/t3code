@@ -2,13 +2,16 @@ import {
   CommandId,
   DEFAULT_MODEL,
   DEFAULT_PROVIDER_INTERACTION_MODE,
+  EventId,
   MessageId,
   ModelSelection,
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
+  RuntimeTaskId,
   ThreadId,
   TurnId,
+  type OrchestrationThreadActivity,
 } from "@t3tools/contracts";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -31,7 +34,6 @@ import {
 } from "../Services/PiCompatibleSessionImporter.ts";
 
 const SCAN_INTERVAL_MS = 60_000;
-const PI_DRIVER = ProviderDriverKind.make("piAgent");
 const OMP_DRIVER = ProviderDriverKind.make("omp");
 type UnknownRecord = Record<string, unknown>;
 const decodeUnknownJson = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
@@ -39,6 +41,8 @@ const encodeUnknownJson = Schema.encodeUnknownSync(Schema.fromJsonString(Schema.
 const ImportedRuntimePayload = Schema.Struct({
   importedFrom: Schema.String,
   importedTitle: Schema.optionalKey(Schema.String),
+  hiddenFromSidebar: Schema.optionalKey(Schema.Boolean),
+  importedAsSubagent: Schema.optionalKey(Schema.Boolean),
 });
 const decodeImportedRuntimePayload = Schema.decodeUnknownOption(ImportedRuntimePayload);
 
@@ -54,6 +58,7 @@ export interface PiCompatibleSession {
   readonly id: string;
   readonly cwd: string;
   readonly title: string | undefined;
+  readonly parentSession: string | undefined;
   readonly createdAt: string;
   readonly messages: ReadonlyArray<PiCompatibleImportedMessage>;
 }
@@ -108,20 +113,23 @@ function textFromContent(content: unknown): string | undefined {
   return text || undefined;
 }
 
+const conciseLine = (text: string, maxLength: number): string | undefined => {
+  const firstLine = text
+    .split(/\r?\n/u)
+    .map((line) => line.replace(/\s+/gu, " ").trim())
+    .find(Boolean);
+  if (firstLine === undefined) return undefined;
+  if (firstLine.length <= maxLength) return firstLine;
+  return `${firstLine.slice(0, maxLength - 3).trimEnd()}...`;
+};
+
 const IMPORTED_TITLE_MAX_LENGTH = 120;
 
 function titleFromFirstUserMessage(
   messages: ReadonlyArray<PiCompatibleImportedMessage>,
 ): string | undefined {
   const text = messages.find((message) => message.role === "user")?.text;
-  if (text === undefined) return undefined;
-  const firstLine = text
-    .split(/\r?\n/u)
-    .map((line) => line.replace(/\s+/gu, " ").trim())
-    .find(Boolean);
-  if (firstLine === undefined) return undefined;
-  if (firstLine.length <= IMPORTED_TITLE_MAX_LENGTH) return firstLine;
-  return `${firstLine.slice(0, IMPORTED_TITLE_MAX_LENGTH - 3).trimEnd()}...`;
+  return text === undefined ? undefined : conciseLine(text, IMPORTED_TITLE_MAX_LENGTH);
 }
 
 /** Parses Pi v3 and OMP v3 JSONL transcripts. Unknown record types are ignored. */
@@ -176,10 +184,54 @@ export function parsePiCompatibleSession(
   return {
     id,
     cwd,
+    parentSession: stringValue(session?.parentSession),
     title: title ?? stringValue(session?.title) ?? titleFromFirstUserMessage(messages),
     createdAt: isoTimestamp(session?.timestamp, updatedAt),
     messages,
   };
+}
+
+export function piCompatibleSubagentActivities(
+  session: PiCompatibleSession,
+): ReadonlyArray<OrchestrationThreadActivity> {
+  const title = session.title ?? "Subagent";
+  const taskId = RuntimeTaskId.make(`omp:${stableTextHash(session.id)}`);
+  const latestMessage = session.messages.at(-1);
+  const completedAt = latestMessage?.createdAt ?? session.createdAt;
+  const resultSummary =
+    latestMessage?.role === "assistant" ? conciseLine(latestMessage.text, 180) : undefined;
+  const linkage = {
+    taskId,
+    taskType: "subagent",
+    agentKind: "agent",
+    title,
+    role: "subagent",
+    timelineBypass: true,
+  } as const;
+  return [
+    {
+      id: EventId.make(`omp-subagent-started:${stableTextHash(session.id)}`),
+      tone: "info",
+      kind: "task.started",
+      summary: `${title} started`,
+      payload: { ...linkage, description: title },
+      turnId: null,
+      createdAt: session.createdAt,
+    },
+    {
+      id: EventId.make(`omp-subagent-completed:${stableTextHash(session.id)}`),
+      tone: latestMessage?.role === "assistant" ? "info" : "error",
+      kind: "task.completed",
+      summary: `${title} ${latestMessage?.role === "assistant" ? "completed" : "stopped"}`,
+      payload: {
+        ...linkage,
+        status: latestMessage?.role === "assistant" ? "completed" : "stopped",
+        ...(resultSummary === undefined ? {} : { summary: resultSummary }),
+      },
+      turnId: null,
+      createdAt: completedAt,
+    },
+  ];
 }
 
 export function piCompatibleTurnReconcileCommand(threadId: ThreadId, session: PiCompatibleSession) {
@@ -242,124 +294,198 @@ const makePiCompatibleSessionImporter = (options?: { readonly scanIntervalMs?: n
     const path = yield* Path.Path;
     const scanIntervalMs = options?.scanIntervalMs ?? SCAN_INTERVAL_MS;
 
+    const archiveThreadIfVisible = Effect.fn("PiCompatibleSessionImporter.archiveThreadIfVisible")(
+      function* (threadId: ThreadId) {
+        const thread = (yield* snapshots.getThreadShellsByIds([threadId])).get(threadId);
+        if (thread === undefined || thread.archivedAt !== null) return;
+        yield* engine.dispatch({
+          type: "thread.archive",
+          commandId: stableCommandId("archive", threadId),
+          threadId,
+        });
+      },
+    );
+
+    const archiveLegacyPiImports = Effect.fn("PiCompatibleSessionImporter.archiveLegacyPiImports")(
+      function* () {
+        for (const binding of yield* directory.listBindings()) {
+          const payload = decodeImportedRuntimePayload(binding.runtimePayload);
+          if (
+            Option.isSome(payload) &&
+            payload.value.importedFrom === "pi" &&
+            payload.value.hiddenFromSidebar !== true
+          ) {
+            yield* archiveThreadIfVisible(binding.threadId);
+            yield* directory.mergeRuntimePayload(binding.threadId, { hiddenFromSidebar: true });
+          }
+        }
+      },
+    );
+
+    const importTopLevelSession = Effect.fn("PiCompatibleSessionImporter.importTopLevelSession")(
+      function* (
+        sourcePath: string,
+        imported: PiCompatibleSession,
+        instanceId: ProviderInstanceId,
+      ) {
+        const cwd = path.resolve(imported.cwd);
+        const threadId = stableThreadId(OMP_DRIVER, imported.id);
+        const modelSelection = { instanceId, model: DEFAULT_MODEL } satisfies ModelSelection;
+        const project = yield* snapshots.getActiveProjectByWorkspaceRoot(cwd);
+        const projectId = Option.match(project, {
+          onSome: (value) => value.id,
+          onNone: () => stableProjectId(cwd),
+        });
+        if (Option.isNone(project))
+          yield* engine.dispatch({
+            type: "project.create",
+            commandId: stableCommandId("project", projectId),
+            projectId,
+            title: path.basename(cwd) || "Oh My Pi",
+            workspaceRoot: cwd,
+            defaultModelSelection: modelSelection,
+            createdAt: imported.createdAt,
+          });
+        const transcript = yield* snapshots.getThreadTranscriptById(threadId);
+        if (Option.isNone(transcript))
+          yield* engine.dispatch({
+            type: "thread.create",
+            commandId: stableCommandId("thread", threadId),
+            threadId,
+            projectId,
+            title: imported.title ?? "Imported session",
+            modelSelection,
+            runtimeMode: "full-access",
+            interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+            branch: null,
+            worktreePath: null,
+            createdAt: imported.createdAt,
+          });
+        const known = new Set(
+          Option.getOrUndefined(transcript)?.messages.map((message) => message.id) ?? [],
+        );
+        const messages = imported.messages.filter((message) => !known.has(message.messageId));
+        if (messages.length > 0)
+          yield* engine.dispatch({
+            type: "thread.messages.import",
+            commandId: stableCommandId(
+              "messages",
+              threadId,
+              stableTextHash(encodeUnknownJson(messages)),
+            ),
+            threadId,
+            messages,
+            createdAt: messages.at(-1)!.createdAt,
+          });
+        const turnCommand = piCompatibleTurnReconcileCommand(threadId, imported);
+        if (turnCommand !== undefined) yield* engine.dispatch(turnCommand);
+        const binding = yield* directory.getBinding(threadId);
+        if (Option.isNone(binding))
+          yield* directory.insertIfAbsent({
+            threadId,
+            provider: OMP_DRIVER,
+            providerInstanceId: instanceId,
+            status: "stopped",
+            runtimeMode: "full-access",
+            resumeCursor: {
+              schemaVersion: 1,
+              sessionId: imported.id,
+              sessionFile: sourcePath,
+            },
+            runtimePayload: {
+              cwd,
+              importedFrom: "omp",
+              ...(imported.title === undefined ? {} : { importedTitle: imported.title }),
+            },
+          });
+        else if (imported.title !== undefined) {
+          const payload = decodeImportedRuntimePayload(binding.value.runtimePayload);
+          if (Option.isSome(payload) && payload.value.importedFrom === "omp") {
+            const thread = (yield* snapshots.getThreadShellsByIds([threadId])).get(threadId);
+            const previousImportedTitle = payload.value.importedTitle;
+            if (
+              thread !== undefined &&
+              thread.title !== imported.title &&
+              (previousImportedTitle === undefined
+                ? thread.title === "Imported session"
+                : thread.title === previousImportedTitle)
+            )
+              yield* engine.dispatch({
+                type: "thread.meta.update",
+                commandId: stableCommandId("title", threadId, stableTextHash(imported.title)),
+                threadId,
+                title: imported.title,
+              });
+            if (previousImportedTitle !== imported.title)
+              yield* directory.mergeRuntimePayload(threadId, {
+                importedTitle: imported.title,
+              });
+          }
+        }
+      },
+    );
+
+    const importSubagentSession = Effect.fn("PiCompatibleSessionImporter.importSubagentSession")(
+      function* (imported: PiCompatibleSession, parent: PiCompatibleSession) {
+        const childThreadId = stableThreadId(OMP_DRIVER, imported.id);
+        const childBinding = yield* directory.getBinding(childThreadId);
+        if (Option.isSome(childBinding)) {
+          const payload = decodeImportedRuntimePayload(childBinding.value.runtimePayload);
+          if (
+            Option.isSome(payload) &&
+            payload.value.importedFrom === "omp" &&
+            payload.value.importedAsSubagent !== true
+          ) {
+            yield* archiveThreadIfVisible(childThreadId);
+            yield* directory.mergeRuntimePayload(childThreadId, { importedAsSubagent: true });
+          }
+        }
+        const parentThreadId = stableThreadId(OMP_DRIVER, parent.id);
+        if (Option.isNone(yield* snapshots.getThreadTranscriptById(parentThreadId))) return;
+        const activities = piCompatibleSubagentActivities(imported);
+        yield* engine.dispatch({
+          type: "thread.activities.import",
+          commandId: stableCommandId("subagent", parentThreadId, stableTextHash(imported.id)),
+          threadId: parentThreadId,
+          activities,
+          createdAt: activities.at(-1)!.createdAt,
+        });
+      },
+    );
+
     const scan = Effect.fn("PiCompatibleSessionImporter.scan")(function* () {
+      yield* archiveLegacyPiImports();
       const settings = yield* settingsService.getSettings;
       for (const [rawInstanceId, entry] of Object.entries(
         deriveProviderInstanceConfigMap(settings),
       )) {
-        const driver = entry.driver;
-        if ((driver !== PI_DRIVER && driver !== OMP_DRIVER) || entry.enabled === false) continue;
-        const importedFrom = driver === OMP_DRIVER ? "omp" : "pi";
+        if (entry.driver !== OMP_DRIVER || entry.enabled === false) continue;
         const config = (entry.config ?? {}) as UnknownRecord;
         if (config.enabled === false) continue;
-        const root = sessionRoot(
-          stringValue(config.sessionDir) ?? "",
-          driver === OMP_DRIVER ? "~/.omp/agent/sessions" : "~/.pi/agent/sessions",
-        );
-        const instanceId = ProviderInstanceId.make(rawInstanceId);
+        const root = sessionRoot(stringValue(config.sessionDir) ?? "", "~/.omp/agent/sessions");
+        const parsed: Array<{ sourcePath: string; session: PiCompatibleSession }> = [];
         for (const sourcePath of yield* listSessionFiles(fileSystem, path, root)) {
           const contents = yield* fileSystem.readFileString(sourcePath).pipe(Effect.option);
           if (Option.isNone(contents)) continue;
-          const imported = parsePiCompatibleSession(contents.value, driver, sourcePath);
-          if (
-            imported === undefined ||
-            !imported.messages.some((message) => message.role === "user")
-          )
-            continue;
-          const cwd = path.resolve(imported.cwd);
-          const threadId = stableThreadId(driver, imported.id);
-          const modelSelection = { instanceId, model: DEFAULT_MODEL } satisfies ModelSelection;
-          const project = yield* snapshots.getActiveProjectByWorkspaceRoot(cwd);
-          const projectId = Option.match(project, {
-            onSome: (value) => value.id,
-            onNone: () => stableProjectId(cwd),
-          });
-          if (Option.isNone(project))
-            yield* engine.dispatch({
-              type: "project.create",
-              commandId: stableCommandId("project", projectId),
-              projectId,
-              title: path.basename(cwd) || (driver === OMP_DRIVER ? "Oh My Pi" : "Pi Agent"),
-              workspaceRoot: cwd,
-              defaultModelSelection: modelSelection,
-              createdAt: imported.createdAt,
-            });
-          const transcript = yield* snapshots.getThreadTranscriptById(threadId);
-          if (Option.isNone(transcript))
-            yield* engine.dispatch({
-              type: "thread.create",
-              commandId: stableCommandId("thread", threadId),
-              threadId,
-              projectId,
-              title: imported.title ?? "Imported session",
-              modelSelection,
-              runtimeMode: "full-access",
-              interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
-              branch: null,
-              worktreePath: null,
-              createdAt: imported.createdAt,
-            });
-          const known = new Set(
-            Option.getOrUndefined(transcript)?.messages.map((message) => message.id) ?? [],
+          const session = parsePiCompatibleSession(contents.value, OMP_DRIVER, sourcePath);
+          if (session !== undefined && session.messages.some((message) => message.role === "user"))
+            parsed.push({ sourcePath, session });
+        }
+        const byPath = new Map(
+          parsed.map(({ sourcePath, session }) => [path.resolve(sourcePath), session] as const),
+        );
+        const instanceId = ProviderInstanceId.make(rawInstanceId);
+        for (const item of parsed)
+          if (item.session.parentSession === undefined)
+            yield* importTopLevelSession(item.sourcePath, item.session, instanceId);
+        for (const item of parsed) {
+          if (item.session.parentSession === undefined) continue;
+          const parentPath = path.resolve(
+            path.dirname(item.sourcePath),
+            item.session.parentSession,
           );
-          const messages = imported.messages.filter((message) => !known.has(message.messageId));
-          if (messages.length > 0)
-            yield* engine.dispatch({
-              type: "thread.messages.import",
-              commandId: stableCommandId(
-                "messages",
-                threadId,
-                stableTextHash(encodeUnknownJson(messages)),
-              ),
-              threadId,
-              messages,
-              createdAt: messages.at(-1)!.createdAt,
-            });
-          const turnCommand = piCompatibleTurnReconcileCommand(threadId, imported);
-          if (turnCommand !== undefined) yield* engine.dispatch(turnCommand);
-          const binding = yield* directory.getBinding(threadId);
-          if (Option.isNone(binding))
-            yield* directory.insertIfAbsent({
-              threadId,
-              provider: driver,
-              providerInstanceId: instanceId,
-              status: "stopped",
-              runtimeMode: "full-access",
-              resumeCursor: {
-                schemaVersion: 1,
-                sessionId: imported.id,
-                sessionFile: sourcePath,
-              },
-              runtimePayload: {
-                cwd,
-                importedFrom,
-                ...(imported.title === undefined ? {} : { importedTitle: imported.title }),
-              },
-            });
-          else if (imported.title !== undefined) {
-            const payload = decodeImportedRuntimePayload(binding.value.runtimePayload);
-            if (Option.isSome(payload) && payload.value.importedFrom === importedFrom) {
-              const thread = (yield* snapshots.getThreadShellsByIds([threadId])).get(threadId);
-              const previousImportedTitle = payload.value.importedTitle;
-              if (
-                thread !== undefined &&
-                thread.title !== imported.title &&
-                (previousImportedTitle === undefined
-                  ? thread.title === "Imported session"
-                  : thread.title === previousImportedTitle)
-              )
-                yield* engine.dispatch({
-                  type: "thread.meta.update",
-                  commandId: stableCommandId("title", threadId, stableTextHash(imported.title)),
-                  threadId,
-                  title: imported.title,
-                });
-              if (previousImportedTitle !== imported.title)
-                yield* directory.mergeRuntimePayload(threadId, {
-                  importedTitle: imported.title,
-                });
-            }
-          }
+          const parent = byPath.get(parentPath);
+          if (parent !== undefined) yield* importSubagentSession(item.session, parent);
         }
       }
     });
