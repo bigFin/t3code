@@ -108,6 +108,22 @@ function textFromContent(content: unknown): string | undefined {
   return text || undefined;
 }
 
+const IMPORTED_TITLE_MAX_LENGTH = 120;
+
+function titleFromFirstUserMessage(
+  messages: ReadonlyArray<PiCompatibleImportedMessage>,
+): string | undefined {
+  const text = messages.find((message) => message.role === "user")?.text;
+  if (text === undefined) return undefined;
+  const firstLine = text
+    .split(/\r?\n/u)
+    .map((line) => line.replace(/\s+/gu, " ").trim())
+    .find(Boolean);
+  if (firstLine === undefined) return undefined;
+  if (firstLine.length <= IMPORTED_TITLE_MAX_LENGTH) return firstLine;
+  return `${firstLine.slice(0, IMPORTED_TITLE_MAX_LENGTH - 3).trimEnd()}...`;
+}
+
 /** Parses Pi v3 and OMP v3 JSONL transcripts. Unknown record types are ignored. */
 export function parsePiCompatibleSession(
   contents: string,
@@ -160,7 +176,7 @@ export function parsePiCompatibleSession(
   return {
     id,
     cwd,
-    title: title ?? stringValue(session?.title),
+    title: title ?? stringValue(session?.title) ?? titleFromFirstUserMessage(messages),
     createdAt: isoTimestamp(session?.timestamp, updatedAt),
     messages,
   };
@@ -233,6 +249,7 @@ const makePiCompatibleSessionImporter = (options?: { readonly scanIntervalMs?: n
       )) {
         const driver = entry.driver;
         if ((driver !== PI_DRIVER && driver !== OMP_DRIVER) || entry.enabled === false) continue;
+        const importedFrom = driver === OMP_DRIVER ? "omp" : "pi";
         const config = (entry.config ?? {}) as UnknownRecord;
         if (config.enabled === false) continue;
         const root = sessionRoot(
@@ -244,7 +261,11 @@ const makePiCompatibleSessionImporter = (options?: { readonly scanIntervalMs?: n
           const contents = yield* fileSystem.readFileString(sourcePath).pipe(Effect.option);
           if (Option.isNone(contents)) continue;
           const imported = parsePiCompatibleSession(contents.value, driver, sourcePath);
-          if (imported === undefined || imported.messages.length === 0) continue;
+          if (
+            imported === undefined ||
+            !imported.messages.some((message) => message.role === "user")
+          )
+            continue;
           const cwd = path.resolve(imported.cwd);
           const threadId = stableThreadId(driver, imported.id);
           const modelSelection = { instanceId, model: DEFAULT_MODEL } satisfies ModelSelection;
@@ -311,19 +332,21 @@ const makePiCompatibleSessionImporter = (options?: { readonly scanIntervalMs?: n
               },
               runtimePayload: {
                 cwd,
-                importedFrom: driver === OMP_DRIVER ? "omp" : "pi",
+                importedFrom,
                 ...(imported.title === undefined ? {} : { importedTitle: imported.title }),
               },
             });
           else if (imported.title !== undefined) {
             const payload = decodeImportedRuntimePayload(binding.value.runtimePayload);
-            if (Option.isSome(payload) && payload.value.importedFrom === driver) {
+            if (Option.isSome(payload) && payload.value.importedFrom === importedFrom) {
               const thread = (yield* snapshots.getThreadShellsByIds([threadId])).get(threadId);
               const previousImportedTitle = payload.value.importedTitle;
               if (
                 thread !== undefined &&
                 thread.title !== imported.title &&
-                (previousImportedTitle === undefined || thread.title === previousImportedTitle)
+                (previousImportedTitle === undefined
+                  ? thread.title === "Imported session"
+                  : thread.title === previousImportedTitle)
               )
                 yield* engine.dispatch({
                   type: "thread.meta.update",

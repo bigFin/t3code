@@ -42,6 +42,7 @@ describe("PiCompatibleSessionImporter", () => {
     expect(parsed).toMatchObject({
       id: "019fe70c-c446-7000-bf0a-907e165a996f",
       cwd: "/work/project",
+      title: "Fix the test",
     });
     expect(parsed?.messages.map((message) => [message.role, message.text])).toEqual([
       ["user", "Fix the test"],
@@ -54,6 +55,34 @@ describe("PiCompatibleSessionImporter", () => {
       state: "completed",
       completedAt: "2026-08-09T15:05:00.000Z",
     });
+  });
+  it("keeps inferred sidebar titles concise and single-line", () => {
+    const parsed = parsePiCompatibleSession(
+      [
+        session,
+        JSON.stringify({
+          type: "message",
+          id: "user-1",
+          timestamp: "2026-08-09T15:04:00.000Z",
+          message: {
+            role: "user",
+            content: [
+              {
+                type: "text",
+                text: `${"A request with   extra spacing ".repeat(8)}\nSupporting details`,
+              },
+            ],
+          },
+        }),
+      ].join("\n"),
+      PI,
+      "/tmp/pi.jsonl",
+    );
+
+    expect(parsed?.title).toHaveLength(120);
+    expect(parsed?.title).not.toContain("\n");
+    expect(parsed?.title).not.toContain("  ");
+    expect(parsed?.title).toMatch(/\.\.\.$/u);
   });
   it("accepts OMP title records and skips non-text tool records", () => {
     const parsed = parsePiCompatibleSession(
