@@ -1930,6 +1930,17 @@ export const makeCodexSessionRuntime = (
         cwd: opened.cwd,
         model: opened.model,
         resumeCursor: { threadId: providerThreadId },
+        nativeSession: {
+          id: providerThreadId,
+          ownership: "t3",
+          supportsConcurrentAttach: false,
+          cli: {
+            command: options.binaryPath,
+            args: ["resume", providerThreadId, "-C", opened.cwd],
+            cwd: opened.cwd,
+            ...(options.homePath ? { env: { CODEX_HOME: options.homePath } } : {}),
+          },
+        },
         ...(recoveredState.activeTurnId
           ? { activeTurnId: recoveredState.activeTurnId }
           : { activeTurnId: undefined }),

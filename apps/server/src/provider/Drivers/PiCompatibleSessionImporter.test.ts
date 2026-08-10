@@ -1,10 +1,11 @@
 import { describe, expect, it } from "@effect/vitest";
-import { ProviderDriverKind, ThreadId } from "@t3tools/contracts";
+import { ProviderDriverKind, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
 
 import {
   parsePiCompatibleSession,
   piCompatibleSubagentActivities,
   piCompatibleTurnReconcileCommand,
+  resolvePiCompatibleObservedSession,
 } from "./PiCompatibleSessionImporter.ts";
 
 const PI = ProviderDriverKind.make("piAgent");
@@ -117,6 +118,67 @@ describe("PiCompatibleSessionImporter", () => {
       state: "interrupted",
       completedAt: "2026-08-09T15:04:00.000Z",
     });
+  });
+  it("marks open OMP transcripts as externally owned native sessions", () => {
+    const parsed = parsePiCompatibleSession(
+      [
+        session,
+        JSON.stringify({
+          type: "message",
+          id: "user-1",
+          timestamp: "2026-08-09T15:04:00.000Z",
+          message: { role: "user", content: [{ type: "text", text: "Keep working" }] },
+        }),
+      ].join("\n"),
+      OMP,
+      "/tmp/omp.jsonl",
+    );
+    expect(parsed).toBeDefined();
+
+    const observed = resolvePiCompatibleObservedSession({
+      currentSession: null,
+      threadId: ThreadId.make("thread-omp"),
+      imported: parsed!,
+      sourcePath: "/tmp/omp.jsonl",
+      instanceId: ProviderInstanceId.make("omp"),
+      driver: OMP,
+      isOpen: true,
+      binaryPath: "omp",
+      sessionDir: undefined,
+      observedAt: "2026-08-09T15:05:00.000Z",
+    });
+
+    expect(observed).toMatchObject({
+      status: "ready",
+      nativeSession: {
+        id: "019fe70c-c446-7000-bf0a-907e165a996f",
+        path: "/tmp/omp.jsonl",
+        ownership: "external",
+        supportsConcurrentAttach: false,
+        cli: {
+          command: "omp",
+          args: ["--resume", "/tmp/omp.jsonl"],
+          cwd: "/work/project",
+        },
+      },
+    });
+    expect(
+      resolvePiCompatibleObservedSession({
+        currentSession: {
+          ...observed!,
+          nativeSession: { ...observed!.nativeSession!, ownership: "t3" },
+        },
+        threadId: ThreadId.make("thread-omp"),
+        imported: parsed!,
+        sourcePath: "/tmp/omp.jsonl",
+        instanceId: ProviderInstanceId.make("omp"),
+        driver: OMP,
+        isOpen: true,
+        binaryPath: "omp",
+        sessionDir: undefined,
+        observedAt: "2026-08-09T15:06:00.000Z",
+      }),
+    ).toBeUndefined();
   });
   it("maps OMP child sessions to subagent activities", () => {
     const parsed = parsePiCompatibleSession(

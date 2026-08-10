@@ -11,6 +11,7 @@ import {
 import {
   ChatAttachment,
   ModelSelection,
+  NativeSessionReference,
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
   PROVIDER_SEND_TURN_MAX_INPUT_CHARS,
   ProviderApprovalDecision,
@@ -48,6 +49,7 @@ export const ProviderSession = Schema.Struct({
   updatedAt: IsoDateTime,
   lastError: Schema.optional(TrimmedNonEmptyString),
   /** The provider is retrying the active turn after a transient failure. */
+  nativeSession: Schema.optional(NativeSessionReference),
   retrying: Schema.optional(Schema.Boolean),
 });
 export type ProviderSession = typeof ProviderSession.Type;

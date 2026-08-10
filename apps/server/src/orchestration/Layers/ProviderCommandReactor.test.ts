@@ -3144,4 +3144,68 @@ describe("ProviderCommandReactor", () => {
     expect(thread?.session?.providerInstanceId).toBe(ProviderInstanceId.make("codex_work"));
     expect(thread?.session?.activeTurnId).toBeNull();
   });
+  it("marks a released native session after stopping provider ownership", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+
+    await harness.runEffect(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-set-for-release"),
+        threadId: ThreadId.make("thread-1"),
+        session: {
+          threadId: ThreadId.make("thread-1"),
+          status: "ready",
+          providerName: "omp",
+          providerInstanceId: ProviderInstanceId.make("omp"),
+          runtimeMode: "full-access",
+          activeTurnId: null,
+          lastError: null,
+          nativeSession: {
+            id: "omp-session-1",
+            ownership: "t3",
+            supportsConcurrentAttach: false,
+            cli: { command: "omp", args: ["--resume", "omp-session-1"] },
+          },
+          updatedAt: now,
+        },
+        createdAt: now,
+      }),
+    );
+
+    await harness.drain();
+    const events = await harness.runEffect(harness.engine.readEvents(0).pipe(Stream.runCollect));
+    expect(
+      Array.from(events).find((event) => event.type === "thread.session-set")?.payload,
+    ).toMatchObject({
+      session: { nativeSession: { id: "omp-session-1" } },
+    });
+    expect(
+      (await harness.readModel()).threads.find((entry) => entry.id === ThreadId.make("thread-1"))
+        ?.session?.nativeSession,
+    ).toBeDefined();
+
+    await harness.runEffect(
+      harness.engine.dispatch({
+        type: "thread.session.stop",
+        commandId: CommandId.make("cmd-session-release"),
+        threadId: ThreadId.make("thread-1"),
+        releaseToCli: true,
+        createdAt: now,
+      }),
+    );
+
+    await harness.drain();
+    await waitFor(() => harness.stopSession.mock.calls.length === 1);
+    const readModel = await harness.readModel();
+    const session = readModel.threads.find(
+      (entry) => entry.id === ThreadId.make("thread-1"),
+    )?.session;
+    expect(session?.status).toBe("stopped");
+    expect(session?.nativeSession).toMatchObject({
+      id: "omp-session-1",
+      ownership: "released",
+      supportsConcurrentAttach: false,
+    });
+  });
 });

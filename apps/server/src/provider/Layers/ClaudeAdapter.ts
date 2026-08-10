@@ -1749,6 +1749,23 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     context.session = {
       ...context.session,
       resumeCursor,
+      ...(context.resumeSessionId
+        ? {
+            nativeSession: {
+              id: context.resumeSessionId,
+              ownership: "t3" as const,
+              supportsConcurrentAttach: false,
+              cli: {
+                command: claudeSettings.binaryPath,
+                args: ["--resume", context.resumeSessionId],
+                ...(context.session.cwd ? { cwd: context.session.cwd } : {}),
+                ...(claudeSettings.homePath
+                  ? { env: { CLAUDE_CONFIG_DIR: claudeSettings.homePath } }
+                  : {}),
+              },
+            },
+          }
+        : {}),
       updatedAt: yield* nowIso,
     };
   });
@@ -4193,6 +4210,23 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           ...(resumeState?.resumeSessionAt ? { resumeSessionAt: resumeState.resumeSessionAt } : {}),
           turnCount: resumeState?.turnCount ?? 0,
         },
+        ...(sessionId
+          ? {
+              nativeSession: {
+                id: sessionId,
+                ownership: "t3" as const,
+                supportsConcurrentAttach: false,
+                cli: {
+                  command: claudeSettings.binaryPath,
+                  args: ["--resume", sessionId],
+                  ...(input.cwd ? { cwd: input.cwd } : {}),
+                  ...(claudeSettings.homePath
+                    ? { env: { CLAUDE_CONFIG_DIR: claudeSettings.homePath } }
+                    : {}),
+                },
+              },
+            }
+          : {}),
         createdAt: startedAt,
         updatedAt: startedAt,
       };

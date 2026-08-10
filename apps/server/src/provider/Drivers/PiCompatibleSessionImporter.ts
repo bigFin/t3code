@@ -12,6 +12,7 @@ import {
   ThreadId,
   TurnId,
   type OrchestrationThreadActivity,
+  type OrchestrationSession,
 } from "@t3tools/contracts";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -27,6 +28,7 @@ import { ProjectionSnapshotQuery } from "../../orchestration/Services/Projection
 import { forkParked } from "../../serverActivation.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { deriveProviderInstanceConfigMap } from "../Layers/ProviderInstanceRegistryHydration.ts";
+import { listOpenProcessFiles } from "../piSessionFiles.ts";
 import { ProviderSessionDirectory } from "../Services/ProviderSessionDirectory.ts";
 import {
   PiCompatibleSessionImporter,
@@ -35,6 +37,7 @@ import {
 
 const SCAN_INTERVAL_MS = 60_000;
 const OMP_DRIVER = ProviderDriverKind.make("omp");
+const PI_DRIVER = ProviderDriverKind.make("piAgent");
 type UnknownRecord = Record<string, unknown>;
 const decodeUnknownJson = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
 const encodeUnknownJson = Schema.encodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
@@ -233,6 +236,60 @@ export function piCompatibleSubagentActivities(
     },
   ];
 }
+export function resolvePiCompatibleObservedSession(input: {
+  readonly currentSession: OrchestrationSession | null | undefined;
+  readonly threadId: ThreadId;
+  readonly imported: PiCompatibleSession;
+  readonly sourcePath: string;
+  readonly instanceId: ProviderInstanceId;
+  readonly driver: ProviderDriverKind;
+  readonly isOpen: boolean;
+  readonly binaryPath: string;
+  readonly sessionDir: string | undefined;
+  readonly observedAt: string;
+}): OrchestrationSession | undefined {
+  const currentNativeSession = input.currentSession?.nativeSession;
+  if (
+    currentNativeSession?.ownership === "t3" ||
+    (currentNativeSession?.ownership === "released" && !input.isOpen)
+  )
+    return undefined;
+
+  const desiredStatus = input.isOpen ? "ready" : "stopped";
+  if (
+    input.currentSession?.status === desiredStatus &&
+    currentNativeSession?.ownership === "external" &&
+    currentNativeSession.id === input.imported.id &&
+    currentNativeSession.path === input.sourcePath
+  )
+    return undefined;
+
+  return {
+    threadId: input.threadId,
+    status: desiredStatus,
+    providerName: input.driver,
+    providerInstanceId: input.instanceId,
+    runtimeMode: "full-access",
+    activeTurnId: null,
+    lastError: null,
+    nativeSession: {
+      id: input.imported.id,
+      path: input.sourcePath,
+      ownership: "external",
+      supportsConcurrentAttach: false,
+      cli: {
+        command: input.binaryPath,
+        args: [
+          ...(input.driver === OMP_DRIVER ? ["--resume"] : ["--session"]),
+          input.sourcePath,
+          ...(input.sessionDir === undefined ? [] : ["--session-dir", input.sessionDir]),
+        ],
+        cwd: input.imported.cwd,
+      },
+    },
+    updatedAt: input.observedAt,
+  };
+}
 
 export function piCompatibleTurnReconcileCommand(threadId: ThreadId, session: PiCompatibleSession) {
   const latestMessage = session.messages.at(-1);
@@ -306,30 +363,18 @@ const makePiCompatibleSessionImporter = (options?: { readonly scanIntervalMs?: n
       },
     );
 
-    const archiveLegacyPiImports = Effect.fn("PiCompatibleSessionImporter.archiveLegacyPiImports")(
-      function* () {
-        for (const binding of yield* directory.listBindings()) {
-          const payload = decodeImportedRuntimePayload(binding.runtimePayload);
-          if (
-            Option.isSome(payload) &&
-            payload.value.importedFrom === "pi" &&
-            payload.value.hiddenFromSidebar !== true
-          ) {
-            yield* archiveThreadIfVisible(binding.threadId);
-            yield* directory.mergeRuntimePayload(binding.threadId, { hiddenFromSidebar: true });
-          }
-        }
-      },
-    );
-
     const importTopLevelSession = Effect.fn("PiCompatibleSessionImporter.importTopLevelSession")(
       function* (
         sourcePath: string,
         imported: PiCompatibleSession,
         instanceId: ProviderInstanceId,
+        driver: ProviderDriverKind,
+        isOpen: boolean,
+        binaryPath: string,
+        sessionDir: string | undefined,
       ) {
         const cwd = path.resolve(imported.cwd);
-        const threadId = stableThreadId(OMP_DRIVER, imported.id);
+        const threadId = stableThreadId(driver, imported.id);
         const modelSelection = { instanceId, model: DEFAULT_MODEL } satisfies ModelSelection;
         const project = yield* snapshots.getActiveProjectByWorkspaceRoot(cwd);
         const projectId = Option.match(project, {
@@ -341,7 +386,7 @@ const makePiCompatibleSessionImporter = (options?: { readonly scanIntervalMs?: n
             type: "project.create",
             commandId: stableCommandId("project", projectId),
             projectId,
-            title: path.basename(cwd) || "Oh My Pi",
+            title: path.basename(cwd) || (driver === OMP_DRIVER ? "Oh My Pi" : "Pi Agent"),
             workspaceRoot: cwd,
             defaultModelSelection: modelSelection,
             createdAt: imported.createdAt,
@@ -383,7 +428,7 @@ const makePiCompatibleSessionImporter = (options?: { readonly scanIntervalMs?: n
         if (Option.isNone(binding))
           yield* directory.insertIfAbsent({
             threadId,
-            provider: OMP_DRIVER,
+            provider: driver,
             providerInstanceId: instanceId,
             status: "stopped",
             runtimeMode: "full-access",
@@ -394,13 +439,13 @@ const makePiCompatibleSessionImporter = (options?: { readonly scanIntervalMs?: n
             },
             runtimePayload: {
               cwd,
-              importedFrom: "omp",
+              importedFrom: driver,
               ...(imported.title === undefined ? {} : { importedTitle: imported.title }),
             },
           });
         else if (imported.title !== undefined) {
           const payload = decodeImportedRuntimePayload(binding.value.runtimePayload);
-          if (Option.isSome(payload) && payload.value.importedFrom === "omp") {
+          if (Option.isSome(payload) && payload.value.importedFrom === driver) {
             const thread = (yield* snapshots.getThreadShellsByIds([threadId])).get(threadId);
             const previousImportedTitle = payload.value.importedTitle;
             if (
@@ -422,25 +467,51 @@ const makePiCompatibleSessionImporter = (options?: { readonly scanIntervalMs?: n
               });
           }
         }
+        const observedAt = DateTime.formatIso(yield* DateTime.now);
+        const currentThread = (yield* snapshots.getThreadShellsByIds([threadId])).get(threadId);
+        const observedSession = resolvePiCompatibleObservedSession({
+          currentSession: currentThread?.session,
+          threadId,
+          imported: { ...imported, cwd },
+          sourcePath,
+          instanceId,
+          driver,
+          isOpen,
+          binaryPath,
+          sessionDir,
+          observedAt,
+        });
+        if (observedSession !== undefined)
+          yield* engine.dispatch({
+            type: "thread.session.set",
+            commandId: stableCommandId("native-session", threadId, observedAt),
+            threadId,
+            session: observedSession,
+            createdAt: observedAt,
+          });
       },
     );
 
     const importSubagentSession = Effect.fn("PiCompatibleSessionImporter.importSubagentSession")(
-      function* (imported: PiCompatibleSession, parent: PiCompatibleSession) {
-        const childThreadId = stableThreadId(OMP_DRIVER, imported.id);
+      function* (
+        imported: PiCompatibleSession,
+        parent: PiCompatibleSession,
+        driver: ProviderDriverKind,
+      ) {
+        const childThreadId = stableThreadId(driver, imported.id);
         const childBinding = yield* directory.getBinding(childThreadId);
         if (Option.isSome(childBinding)) {
           const payload = decodeImportedRuntimePayload(childBinding.value.runtimePayload);
           if (
             Option.isSome(payload) &&
-            payload.value.importedFrom === "omp" &&
+            payload.value.importedFrom === driver &&
             payload.value.importedAsSubagent !== true
           ) {
             yield* archiveThreadIfVisible(childThreadId);
             yield* directory.mergeRuntimePayload(childThreadId, { importedAsSubagent: true });
           }
         }
-        const parentThreadId = stableThreadId(OMP_DRIVER, parent.id);
+        const parentThreadId = stableThreadId(driver, parent.id);
         if (Option.isNone(yield* snapshots.getThreadTranscriptById(parentThreadId))) return;
         const activities = piCompatibleSubagentActivities(imported);
         yield* engine.dispatch({
@@ -454,20 +525,25 @@ const makePiCompatibleSessionImporter = (options?: { readonly scanIntervalMs?: n
     );
 
     const scan = Effect.fn("PiCompatibleSessionImporter.scan")(function* () {
-      yield* archiveLegacyPiImports();
+      const openFiles = yield* listOpenProcessFiles(fileSystem, path);
       const settings = yield* settingsService.getSettings;
       for (const [rawInstanceId, entry] of Object.entries(
         deriveProviderInstanceConfigMap(settings),
       )) {
-        if (entry.driver !== OMP_DRIVER || entry.enabled === false) continue;
+        const driver = entry.driver;
+        if ((driver !== OMP_DRIVER && driver !== PI_DRIVER) || entry.enabled === false) continue;
         const config = (entry.config ?? {}) as UnknownRecord;
         if (config.enabled === false) continue;
-        const root = sessionRoot(stringValue(config.sessionDir) ?? "", "~/.omp/agent/sessions");
+        const defaultRoot =
+          driver === OMP_DRIVER ? "~/.omp/agent/sessions" : "~/.pi/agent/sessions";
+        const root = sessionRoot(stringValue(config.sessionDir) ?? "", defaultRoot);
+        const configuredSessionDir = stringValue(config.sessionDir);
+        const binaryPath = stringValue(config.binaryPath) ?? (driver === OMP_DRIVER ? "omp" : "pi");
         const parsed: Array<{ sourcePath: string; session: PiCompatibleSession }> = [];
         for (const sourcePath of yield* listSessionFiles(fileSystem, path, root)) {
           const contents = yield* fileSystem.readFileString(sourcePath).pipe(Effect.option);
           if (Option.isNone(contents)) continue;
-          const session = parsePiCompatibleSession(contents.value, OMP_DRIVER, sourcePath);
+          const session = parsePiCompatibleSession(contents.value, driver, sourcePath);
           if (session !== undefined && session.messages.some((message) => message.role === "user"))
             parsed.push({ sourcePath, session });
         }
@@ -477,7 +553,17 @@ const makePiCompatibleSessionImporter = (options?: { readonly scanIntervalMs?: n
         const instanceId = ProviderInstanceId.make(rawInstanceId);
         for (const item of parsed)
           if (item.session.parentSession === undefined)
-            yield* importTopLevelSession(item.sourcePath, item.session, instanceId);
+            yield* importTopLevelSession(
+              item.sourcePath,
+              item.session,
+              instanceId,
+              driver,
+              openFiles.has(path.resolve(item.sourcePath)),
+              binaryPath,
+              configuredSessionDir === undefined
+                ? undefined
+                : sessionRoot(configuredSessionDir, defaultRoot),
+            );
         for (const item of parsed) {
           if (item.session.parentSession === undefined) continue;
           const parentPath = path.resolve(
@@ -485,7 +571,7 @@ const makePiCompatibleSessionImporter = (options?: { readonly scanIntervalMs?: n
             item.session.parentSession,
           );
           const parent = byPath.get(parentPath);
-          if (parent !== undefined) yield* importSubagentSession(item.session, parent);
+          if (parent !== undefined) yield* importSubagentSession(item.session, parent, driver);
         }
       }
     });

@@ -44,6 +44,7 @@ import {
   type PiRpcApprovalFlag,
   type PiRuntimeError,
 } from "../piRuntime.ts";
+import { isPiSessionFileOpen } from "../piSessionFiles.ts";
 import type { PiAdapterShape } from "../Services/PiAdapter.ts";
 import type { EventNdjsonLogger } from "./EventNdjsonLogger.ts";
 
@@ -225,31 +226,6 @@ function errorDetail(error: PiRuntimeError): string {
   return error.detail.trim() || error.message;
 }
 
-export const isPiSessionFileOpen = Effect.fn("PiAdapter.isPiSessionFileOpen")(function* (
-  fileSystem: FileSystem.FileSystem,
-  path: Path.Path,
-  sessionFile: string,
-  options?: { readonly procRoot?: string; readonly currentProcessId?: string },
-): Effect.fn.Return<boolean> {
-  const expected = path.resolve(sessionFile);
-  const procRoot = options?.procRoot ?? "/proc";
-  const currentProcessId = options?.currentProcessId ?? String(process.pid);
-  const processes = yield* fileSystem.readDirectory(procRoot).pipe(Effect.orElseSucceed(() => []));
-  for (const processId of processes) {
-    if (!/^\d+$/u.test(processId) || processId === currentProcessId) continue;
-    const descriptors = yield* fileSystem
-      .readDirectory(path.join(procRoot, processId, "fd"))
-      .pipe(Effect.orElseSucceed(() => []));
-    for (const descriptor of descriptors) {
-      const target = yield* fileSystem
-        .readLink(path.join(procRoot, processId, "fd", descriptor))
-        .pipe(Effect.option);
-      if (Option.isSome(target) && path.resolve(target.value) === expected) return true;
-    }
-  }
-  return false;
-});
-
 export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOptions) {
   return Effect.gen(function* () {
     const PROVIDER = options?.provider ?? DEFAULT_PROVIDER;
@@ -260,6 +236,7 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
     const path = yield* Path.Path;
     const serverConfig = yield* ServerConfig;
     const sessions = new Map<ThreadId, PiSessionContext>();
+    const externallyOwnedSessions = new Map<ThreadId, ProviderSession>();
     const threadLocksRef = yield* SynchronizedRef.make(new Map<string, Semaphore.Semaphore>());
     const runtimeEvents = yield* PubSub.unbounded<ProviderRuntimeEvent>();
 
@@ -847,6 +824,7 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
           if (existing && !existing.stopped) {
             yield* stopSessionInternal(existing, false);
           }
+          externallyOwnedSessions.delete(input.threadId);
 
           const cwd = path.resolve(input.cwd.trim());
           const resume = parseResumeCursor(input.resumeCursor);
@@ -854,11 +832,36 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
             resume?.sessionFile &&
             (yield* isPiSessionFileOpen(fileSystem, path, resume.sessionFile))
           ) {
-            return yield* new ProviderAdapterValidationError({
+            const createdAt = yield* nowIso;
+            const nativeId = resume.sessionId;
+            const session: ProviderSession = {
               provider: PROVIDER,
-              operation: "startSession",
-              issue: "This session is still open in another Pi-compatible process.",
-            });
+              providerInstanceId: boundInstanceId,
+              status: "ready",
+              runtimeMode: input.runtimeMode,
+              cwd,
+              threadId: input.threadId,
+              resumeCursor: resume,
+              nativeSession: {
+                id: nativeId,
+                path: resume.sessionFile,
+                ownership: "external",
+                supportsConcurrentAttach: false,
+                cli: {
+                  command: piSettings.binaryPath,
+                  args: [
+                    ...(PROVIDER === "omp" ? ["--resume"] : ["--session"]),
+                    resume.sessionFile,
+                    ...(piSettings.sessionDir ? ["--session-dir", piSettings.sessionDir] : []),
+                  ],
+                  cwd,
+                },
+              },
+              createdAt,
+              updatedAt: createdAt,
+            };
+            externallyOwnedSessions.set(input.threadId, session);
+            return session;
           }
           const sessionScope = yield* Scope.make("sequential");
           let transferred = false;
@@ -905,6 +908,21 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
             ...(model ? { model } : {}),
             threadId: input.threadId,
             resumeCursor,
+            nativeSession: {
+              id: state.sessionId,
+              ...(resumeCursor.sessionFile ? { path: resumeCursor.sessionFile } : {}),
+              ownership: "t3",
+              supportsConcurrentAttach: false,
+              cli: {
+                command: piSettings.binaryPath,
+                args: [
+                  ...(PROVIDER === "omp" ? ["--resume"] : ["--session"]),
+                  resumeCursor.sessionFile ?? state.sessionId,
+                  ...(piSettings.sessionDir ? ["--session-dir", piSettings.sessionDir] : []),
+                ],
+                cwd,
+              },
+            },
             createdAt,
             updatedAt: createdAt,
           };
@@ -956,6 +974,14 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
       withThreadLock(
         input.threadId,
         Effect.gen(function* () {
+          if (externallyOwnedSessions.has(input.threadId)) {
+            return yield* new ProviderAdapterValidationError({
+              provider: PROVIDER,
+              operation: "sendTurn",
+              issue:
+                "This native session is controlled by another CLI. T3 is observing it read-only.",
+            });
+          }
           const ctx = yield* requireSession(input.threadId);
           const text = input.input?.trim();
           const images = yield* Effect.forEach(input.attachments ?? [], (attachment) =>
@@ -1146,22 +1172,31 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
       withThreadLock(
         threadId,
         Effect.gen(function* () {
+          if (externallyOwnedSessions.delete(threadId)) {
+            return;
+          }
           const ctx = yield* requireSession(threadId);
           yield* stopSessionInternal(ctx, true);
         }),
       );
 
     const listSessions: PiAdapterShape["listSessions"] = () =>
-      Effect.sync(() => [...sessions.values()].map((ctx) => ({ ...ctx.session })));
+      Effect.sync(() => [
+        ...[...sessions.values()].map((ctx) => ({ ...ctx.session })),
+        ...externallyOwnedSessions.values(),
+      ]);
 
     const hasSession: PiAdapterShape["hasSession"] = (threadId) =>
       Effect.sync(() => {
         const ctx = sessions.get(threadId);
-        return ctx !== undefined && !ctx.stopped;
+        return (ctx !== undefined && !ctx.stopped) || externallyOwnedSessions.has(threadId);
       });
 
     const readThread: PiAdapterShape["readThread"] = Effect.fn("PiAdapter.readThread")(
       function* (threadId) {
+        if (externallyOwnedSessions.has(threadId)) {
+          return { threadId, turns: [] };
+        }
         const ctx = yield* requireSession(threadId);
         const data = yield* requestRpc(threadId, ctx.rpc, { type: "get_messages" });
         const decoded = decodePiMessagesDataExit(data);
@@ -1215,11 +1250,14 @@ export function makePiAdapter(piSettings: PiSettings, options?: PiAdapterLiveOpt
       });
 
     const stopAll: PiAdapterShape["stopAll"] = () =>
-      Effect.forEach(
-        [...sessions.values()],
-        (ctx) => stopSessionInternal(ctx, false).pipe(Effect.ignore),
-        { concurrency: "unbounded", discard: true },
-      );
+      Effect.gen(function* () {
+        externallyOwnedSessions.clear();
+        yield* Effect.forEach(
+          [...sessions.values()],
+          (ctx) => stopSessionInternal(ctx, false).pipe(Effect.ignore),
+          { concurrency: "unbounded", discard: true },
+        );
+      });
 
     yield* Effect.addFinalizer(() =>
       stopAll().pipe(Effect.andThen(PubSub.shutdown(runtimeEvents)), Effect.ignore),

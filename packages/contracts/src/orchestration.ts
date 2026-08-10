@@ -281,6 +281,24 @@ export const OrchestrationSessionStatus = Schema.Literals([
   "error",
 ]);
 export type OrchestrationSessionStatus = typeof OrchestrationSessionStatus.Type;
+export const NativeSessionOwnership = Schema.Literals(["t3", "external", "released"]);
+export type NativeSessionOwnership = typeof NativeSessionOwnership.Type;
+export const NativeSessionCliLaunch = Schema.Struct({
+  command: TrimmedNonEmptyString,
+  args: Schema.Array(Schema.String),
+  cwd: Schema.optional(TrimmedNonEmptyString),
+  env: Schema.optional(Schema.Record(TrimmedNonEmptyString, Schema.String)),
+});
+export type NativeSessionCliLaunch = typeof NativeSessionCliLaunch.Type;
+
+export const NativeSessionReference = Schema.Struct({
+  id: Schema.optional(TrimmedNonEmptyString),
+  path: Schema.optional(TrimmedNonEmptyString),
+  ownership: NativeSessionOwnership,
+  supportsConcurrentAttach: Schema.Boolean,
+  cli: Schema.optional(NativeSessionCliLaunch),
+});
+export type NativeSessionReference = typeof NativeSessionReference.Type;
 
 export const OrchestrationSession = Schema.Struct({
   threadId: ThreadId,
@@ -292,6 +310,7 @@ export const OrchestrationSession = Schema.Struct({
   lastError: Schema.NullOr(TrimmedNonEmptyString),
   /** The provider is retrying the active turn after a transient failure. */
   retrying: Schema.optional(Schema.Boolean),
+  nativeSession: Schema.optional(NativeSessionReference),
   updatedAt: IsoDateTime,
 });
 export type OrchestrationSession = typeof OrchestrationSession.Type;
@@ -886,6 +905,7 @@ const ThreadCheckpointRevertCommand = Schema.Struct({
 
 const ThreadSessionStopCommand = Schema.Struct({
   type: Schema.Literal("thread.session.stop"),
+  releaseToCli: Schema.optional(Schema.Boolean),
   commandId: CommandId,
   threadId: ThreadId,
   createdAt: IsoDateTime,
@@ -1349,6 +1369,7 @@ export const ThreadRevertedPayload = Schema.Struct({
 export const ThreadSessionStopRequestedPayload = Schema.Struct({
   threadId: ThreadId,
   createdAt: IsoDateTime,
+  releaseToCli: Schema.optional(Schema.Boolean),
 });
 
 export const ThreadSessionSetPayload = Schema.Struct({

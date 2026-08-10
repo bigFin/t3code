@@ -12,6 +12,7 @@ import {
   type ChangeRequestStateLike,
 } from "@t3tools/client-runtime/state/thread-settled";
 import type { ScopedThreadRef } from "@t3tools/contracts";
+import { formatNativeSessionCliCommand } from "@t3tools/shared/nativeSessionCli";
 import { useCallback } from "react";
 
 import { resolveSnoozePresets, snoozeWakeDescription } from "../components/Sidebar.snooze";
@@ -27,6 +28,7 @@ import {
   readEnvironmentSupportsSettlement,
   readEnvironmentSupportsSnooze,
   readEnvironmentSupportsTitleRegeneration,
+  readEnvironmentPlatform,
   readThreadShell,
 } from "../state/entities";
 import { readLocalApi } from "../localApi";
@@ -77,6 +79,9 @@ export function useThreadActionMenu(input: {
   const updateThreadMetadata = useAtomCommand(threadEnvironment.updateMetadata, {
     reportFailure: false,
   });
+  const stopThreadSession = useAtomCommand(threadEnvironment.stopSession, {
+    reportFailure: false,
+  });
   const handleNewThread = useNewThreadHandler();
   const markThreadUnread = useUiStateStore((s) => s.markThreadUnread);
   const autoSettleAfterDays = useClientSettings((s) => s.sidebarAutoSettleAfterDays);
@@ -94,6 +99,15 @@ export function useThreadActionMenu(input: {
       toastManager.add({ type: "success", title: "Branch copied", description: branch });
     },
     onError: (error) => failureToast("Failed to copy branch", error),
+  });
+  const { copyToClipboard: copyNativeSessionToClipboard } = useCopyToClipboard<{
+    label: string;
+  }>({
+    target: "native session",
+    onCopy: ({ label }) => {
+      toastManager.add({ type: "success", title: `${label} copied` });
+    },
+    onError: (error) => failureToast("Failed to copy native session", error),
   });
 
   const openMenu = useCallback(
@@ -131,6 +145,13 @@ export function useThreadActionMenu(input: {
           isSnoozed: supports.snooze && effectiveSnoozed(thread, { now: now.toISOString() }),
           canSnoozeNow: canSnooze(thread, { now: now.toISOString() }),
           isRegeneratingTitle,
+          nativeSession: thread.session?.nativeSession
+            ? {
+                ...(thread.session.nativeSession.id ? { id: thread.session.nativeSession.id } : {}),
+                ownership: thread.session.nativeSession.ownership,
+                hasCliLaunch: thread.session.nativeSession.cli !== undefined,
+              }
+            : undefined,
           supports,
           snoozePresets,
         });
@@ -219,6 +240,36 @@ export function useThreadActionMenu(input: {
               }),
             );
             return;
+          case "release-to-cli": {
+            const nativeSession = thread.session?.nativeSession;
+            if (!nativeSession?.cli) return;
+            if (nativeSession.ownership === "t3") {
+              const released = await stopThreadSession({
+                environmentId: threadRef.environmentId,
+                input: { threadId: threadRef.threadId, releaseToCli: true },
+              });
+              if (released._tag === "Failure") {
+                if (!isAtomCommandInterrupted(released)) {
+                  failureToast(
+                    "Failed to release native session",
+                    squashAtomCommandFailure(released),
+                  );
+                }
+                return;
+              }
+            }
+            const command = formatNativeSessionCliCommand(
+              nativeSession.cli,
+              readEnvironmentPlatform(threadRef.environmentId),
+            );
+            copyNativeSessionToClipboard(command, { label: "CLI resume command" });
+            return;
+          }
+          case "copy-native-session-id": {
+            const nativeId = thread.session?.nativeSession?.id;
+            if (nativeId) copyNativeSessionToClipboard(nativeId, { label: "Native session ID" });
+            return;
+          }
           case "mark-unread":
             markThreadUnread(scopedThreadKey(threadRef), thread.latestTurn?.completedAt);
             return;
@@ -277,6 +328,7 @@ export function useThreadActionMenu(input: {
       changeRequestState,
       confirmThreadDelete,
       copyBranchToClipboard,
+      copyNativeSessionToClipboard,
       copyPathToClipboard,
       deleteThread,
       handleNewThread,
@@ -292,6 +344,7 @@ export function useThreadActionMenu(input: {
       unsettleThread,
       unsnoozeThread,
       updateThreadMetadata,
+      stopThreadSession,
     ],
   );
 

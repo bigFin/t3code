@@ -162,6 +162,13 @@ export const haveProvidersChanged = (
   previousProviders: ReadonlyArray<ServerProvider>,
   nextProviders: ReadonlyArray<ServerProvider>,
 ): boolean => !Equal.equals(previousProviders, nextProviders);
+const interopCapabilitiesForDriver = (driver: ProviderDriverKind) => ({
+  cliHandoff: ["codex", "claudeAgent", "cursor", "grok", "opencode", "piAgent", "omp"].includes(
+    driver,
+  ),
+  externalSessionDiscovery: ["codex", "omp", "piAgent"].includes(driver),
+  concurrentAttach: false,
+});
 
 const correlateSnapshotWithSource = (
   source: ProviderSnapshotSource,
@@ -181,7 +188,10 @@ const correlateSnapshotWithSource = (
       ),
     );
   }
-  return Effect.succeed(snapshot);
+  return Effect.succeed({
+    ...snapshot,
+    interop: interopCapabilitiesForDriver(source.driverKind),
+  });
 };
 
 /**

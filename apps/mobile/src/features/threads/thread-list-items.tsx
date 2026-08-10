@@ -410,11 +410,6 @@ export const PendingTaskListRow = memo(function PendingTaskListRow(props: {
 
 /* ─── Thread row ─────────────────────────────────────────────────────── */
 
-const THREAD_ROW_MENU_ACTIONS: MenuAction[] = [
-  { id: "archive", title: "Archive", image: "archivebox" },
-  { id: "delete", title: "Delete", image: "trash", attributes: { destructive: true } },
-];
-
 export const ThreadListRow = memo(function ThreadListRow(props: {
   readonly variant: ThreadListVariant;
   readonly thread: EnvironmentThreadShell;
@@ -430,6 +425,8 @@ export const ThreadListRow = memo(function ThreadListRow(props: {
   readonly onSelectThread: (thread: EnvironmentThreadShell) => void;
   readonly onArchiveThread: (thread: EnvironmentThreadShell) => void;
   readonly onDeleteThread: (thread: EnvironmentThreadShell) => void;
+  readonly onReleaseThreadToCli: (thread: EnvironmentThreadShell) => void;
+  readonly onCopyNativeSessionId: (thread: EnvironmentThreadShell) => void;
   readonly onSwipeableWillOpen: (methods: SwipeableMethods) => void;
   readonly onSwipeableClose: (methods: SwipeableMethods) => void;
   readonly simultaneousSwipeGesture?: ComponentProps<
@@ -471,6 +468,28 @@ export const ThreadListRow = memo(function ThreadListRow(props: {
 
   const handleDelete = useCallback(() => onDeleteThread(thread), [onDeleteThread, thread]);
   const handleArchive = useCallback(() => onArchiveThread(thread), [onArchiveThread, thread]);
+  const menuActions = useMemo<MenuAction[]>(
+    () => [
+      ...(thread.session?.nativeSession?.cli
+        ? [
+            {
+              id: "release-to-cli",
+              title:
+                thread.session.nativeSession.ownership === "t3"
+                  ? "Release to CLI"
+                  : "Copy CLI resume command",
+              image: "terminal",
+            },
+          ]
+        : []),
+      ...(thread.session?.nativeSession?.id
+        ? [{ id: "copy-native-session-id", title: "Copy native session ID", image: "doc.on.doc" }]
+        : []),
+      { id: "archive", title: "Archive", image: "archivebox" },
+      { id: "delete", title: "Delete", image: "trash", attributes: { destructive: true } },
+    ],
+    [thread.session?.nativeSession],
+  );
   const primaryAction = useMemo(
     () => ({
       accessibilityLabel: `Archive ${thread.title}`,
@@ -484,8 +503,10 @@ export const ThreadListRow = memo(function ThreadListRow(props: {
     ({ nativeEvent }: { readonly nativeEvent: { readonly event: string } }) => {
       if (nativeEvent.event === "archive") handleArchive();
       if (nativeEvent.event === "delete") handleDelete();
+      if (nativeEvent.event === "release-to-cli") props.onReleaseThreadToCli(thread);
+      if (nativeEvent.event === "copy-native-session-id") props.onCopyNativeSessionId(thread);
     },
-    [handleArchive, handleDelete],
+    [handleArchive, handleDelete, props.onCopyNativeSessionId, props.onReleaseThreadToCli, thread],
   );
 
   const statusPill = effectiveStatus ? (
@@ -674,7 +695,7 @@ export const ThreadListRow = memo(function ThreadListRow(props: {
         // ControlPillMenu injects onLongPress into the row and anchors the
         // token-styled dropdown to it; taps and swipes are untouched.
         <ControlPillMenu
-          actions={THREAD_ROW_MENU_ACTIONS}
+          actions={menuActions}
           onPressAction={handleMenuAction}
           shouldOpenOnLongPress
         >

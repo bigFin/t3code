@@ -7,7 +7,7 @@ orchestration layer does not know which one is behind a thread.
 
 ## Built-in drivers
 
-[`builtInDrivers.ts`][drivers] exports `BUILT_IN_DRIVERS` with six entries:
+[`builtInDrivers.ts`][drivers] exports `BUILT_IN_DRIVERS` with seven entries:
 
 | Driver kind   | Driver source                           |
 | ------------- | --------------------------------------- |
@@ -15,6 +15,7 @@ orchestration layer does not know which one is behind a thread.
 | `claudeAgent` | [`Drivers/ClaudeDriver.ts`][claude]     |
 | `cursor`      | [`Drivers/CursorDriver.ts`][cursor]     |
 | `grok`        | [`Drivers/GrokDriver.ts`][grok]         |
+| `omp`         | [`Drivers/OmpDriver.ts`][omp]           |
 | `opencode`    | [`Drivers/OpenCodeDriver.ts`][opencode] |
 | `piAgent`     | [`Drivers/PiDriver.ts`][pi]             |
 
@@ -24,9 +25,11 @@ adapter in a child scope. Adapter implementations live beside them in
 [`ProviderAdapter.ts`][adapter]. Read the driver plus its adapter to see how a specific agent's
 transport, config, and event shapes are mapped.
 
-Pi runs one scoped JSONL RPC process per active session. Its persisted session file supports
-conversation resume, but the execution itself is process-bound and does not survive the owning T3
-server process.
+Pi and Oh My Pi run one scoped JSONL RPC process per active session. Their persisted session files
+support conversation resume, but execution remains process-bound. T3 records each runtime's native
+session identity and ownership. **Release to CLI** stops only T3's adapter process, preserves the
+native session, and copies the provider's resume command; a later message may take ownership again.
+Sessions discovered from CLI history remain externally owned and are never stopped by T3.
 
 ## Registry and routing
 
@@ -184,6 +187,7 @@ server process without killing provider hosts that intentionally continue in the
 [cursor]: ../../apps/server/src/provider/Drivers/CursorDriver.ts
 [grok]: ../../apps/server/src/provider/Drivers/GrokDriver.ts
 [opencode]: ../../apps/server/src/provider/Drivers/OpenCodeDriver.ts
+[omp]: ../../apps/server/src/provider/Drivers/OmpDriver.ts
 [pi]: ../../apps/server/src/provider/Drivers/PiDriver.ts
 [adapter]: ../../apps/server/src/provider/Services/ProviderAdapter.ts
 [instances]: ../../apps/server/src/provider/Services/ProviderInstanceRegistry.ts

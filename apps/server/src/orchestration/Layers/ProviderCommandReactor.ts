@@ -658,6 +658,9 @@ const make = Effect.gen(function* () {
             activeTurnId: null,
             lastError: session.lastError ?? null,
             retrying: false,
+            ...(session.nativeSession !== undefined
+              ? { nativeSession: session.nativeSession }
+              : {}),
             updatedAt: session.updatedAt,
           },
           createdAt,
@@ -1347,6 +1350,14 @@ const make = Effect.gen(function* () {
         activeTurnId: null,
         lastError: thread.session?.lastError ?? null,
         retrying: false,
+        ...(thread.session?.nativeSession
+          ? {
+              nativeSession: {
+                ...thread.session.nativeSession,
+                ...(event.payload.releaseToCli === true ? { ownership: "released" as const } : {}),
+              },
+            }
+          : {}),
         updatedAt: now,
       },
       createdAt: now,

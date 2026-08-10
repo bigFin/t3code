@@ -34,6 +34,7 @@ import { NATIVE_LIQUID_GLASS_SUPPORTED } from "../../native/native-glass";
 import { mobilePreferencesAtom, updateMobilePreferencesAtom } from "../../state/preferences";
 import { useThreadSearch } from "../../state/queries";
 import { useThreadListV2Enabled } from "../threads/use-thread-list-v2-enabled";
+import { useNativeSessionActions } from "../threads/use-native-session-actions";
 import { environmentServerConfigsAtom } from "../../state/server";
 import type { PendingNewTask } from "../../state/use-pending-new-tasks";
 import {
@@ -579,6 +580,7 @@ export function HomeScreen(props: HomeScreenProps) {
   // Threads on servers without the settlement capability never classify as
   // settled (the user could neither un-settle nor pin them).
   const serverConfigs = useAtomValue(environmentServerConfigsAtom);
+  const { releaseThreadToCli, copyNativeSessionId } = useNativeSessionActions();
   const settlementEnvironmentIds = useMemo(() => {
     const supported = new Set<EnvironmentId>();
     for (const [environmentId, config] of serverConfigs) {
@@ -810,6 +812,8 @@ export function HomeScreen(props: HomeScreenProps) {
           searchQuery={props.searchQuery}
           onSelectThread={props.onSelectThread}
           onDeleteThread={handleDeleteThread}
+          onReleaseThreadToCli={releaseThreadToCli}
+          onCopyNativeSessionId={copyNativeSessionId}
           onArchiveThread={props.onArchiveThread}
           settlementSupported={settlementEnvironmentIds.has(thread.environmentId)}
           onSettleThread={handleSettleThread}
@@ -967,6 +971,8 @@ export function HomeScreen(props: HomeScreenProps) {
               searchQuery={props.searchQuery}
               onArchiveThread={props.onArchiveThread}
               onDeleteThread={props.onDeleteThread}
+              onReleaseThreadToCli={releaseThreadToCli}
+              onCopyNativeSessionId={copyNativeSessionId}
               onSelectThread={props.onSelectThread}
               onSwipeableClose={handleSwipeableClose}
               onSwipeableWillOpen={handleSwipeableWillOpen}

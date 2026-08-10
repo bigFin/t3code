@@ -763,6 +763,16 @@ export function makeCursorAdapter(
               schemaVersion: CURSOR_RESUME_VERSION,
               sessionId: started.sessionId,
             },
+            nativeSession: {
+              id: started.sessionId,
+              ownership: "t3",
+              supportsConcurrentAttach: false,
+              cli: {
+                command: effectiveCursorSettings.binaryPath,
+                args: ["--resume", started.sessionId],
+                cwd,
+              },
+            },
             createdAt: now,
             updatedAt: now,
           };

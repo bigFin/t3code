@@ -31,6 +31,7 @@ import { useThemeColor } from "../../lib/useThemeColor";
 import { useProjects, useThreadShells } from "../../state/entities";
 import { useThreadSearch } from "../../state/queries";
 import { useThreadListV2Enabled } from "./use-thread-list-v2-enabled";
+import { useNativeSessionActions } from "./use-native-session-actions";
 import { environmentServerConfigsAtom } from "../../state/server";
 import { usePendingNewTasks } from "../../state/use-pending-new-tasks";
 import { useWorkspaceState } from "../../state/workspace";
@@ -469,6 +470,7 @@ function ThreadNavigationSidebarPane(
   // Threads on servers without the settlement capability never classify as
   // settled (the user could neither un-settle nor pin them).
   const serverConfigs = useAtomValue(environmentServerConfigsAtom);
+  const { releaseThreadToCli, copyNativeSessionId } = useNativeSessionActions();
   const settlementEnvironmentIds = useMemo(() => {
     const supported = new Set<EnvironmentId>();
     for (const [environmentId, config] of serverConfigs) {
@@ -930,6 +932,8 @@ function ThreadNavigationSidebarPane(
                       (thread.session?.providerInstanceId ?? thread.modelSelection.instanceId),
                   )?.driver ?? null
               }
+              onReleaseThreadToCli={releaseThreadToCli}
+              onCopyNativeSessionId={copyNativeSessionId}
               environmentLabel={
                 Object.keys(savedConnectionsById).length > 1
                   ? (savedConnectionsById[thread.environmentId]?.environmentLabel ?? null)
@@ -1067,6 +1071,8 @@ function ThreadNavigationSidebarPane(
               fullSwipeWidth={props.width - 20}
               onArchiveThread={archiveThread}
               onDeleteThread={confirmDeleteThread}
+              onReleaseThreadToCli={releaseThreadToCli}
+              onCopyNativeSessionId={copyNativeSessionId}
               onSelectThread={handleSelectThread}
               onSwipeableClose={handleSwipeableClose}
               onSwipeableWillOpen={handleSwipeableWillOpen}

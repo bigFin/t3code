@@ -24,6 +24,11 @@ We wanted something performant, remote-ready, and truly open. If we ever go the 
 > - OpenCode: install [OpenCode](https://opencode.ai) and run `opencode auth login`
 > - Pi: install [Pi](https://pi.dev), run `pi`, then use `/login`
 
+T3 keeps each provider's native session identity. Use **Release to CLI** from a thread's action menu
+to stop T3's adapter process and copy the provider's resume command; sending another message in T3
+takes ownership again. T3 also discovers existing top-level Codex, Oh My Pi, and Pi sessions.
+Externally owned sessions stay visible without T3 stopping their CLI process.
+
 ### Try it out (install-free)
 
 The easiest way to test T3 Code is to run the server in your terminal (requires Node.js 22.16+, 23.11+, or 24.10+):

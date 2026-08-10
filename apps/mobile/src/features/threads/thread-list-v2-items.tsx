@@ -351,6 +351,8 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
   readonly onArchiveThread: (thread: EnvironmentThreadShell) => void;
   readonly onPinThread: (thread: EnvironmentThreadShell) => void;
   readonly onUnpinThread: (thread: EnvironmentThreadShell) => void;
+  readonly onReleaseThreadToCli: (thread: EnvironmentThreadShell) => void;
+  readonly onCopyNativeSessionId: (thread: EnvironmentThreadShell) => void;
   /** False on environments whose server predates thread.settle/unsettle:
       swipe + menu fall back to Archive instead of failing on use. */
   readonly settlementSupported: boolean;
@@ -467,6 +469,32 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
     () => (swipeActions.secondary === "snooze" ? resolveSnoozePresets(new Date()) : ([] as const)),
     [props.snoozePresetMinute, swipeActions.secondary],
   );
+  const nativeSessionMenuActions = useMemo<MenuAction[]>(
+    () => [
+      ...(thread.session?.nativeSession?.cli
+        ? [
+            {
+              id: "release-to-cli",
+              title:
+                thread.session.nativeSession.ownership === "t3"
+                  ? "Release to CLI"
+                  : "Copy CLI resume command",
+              image: "terminal",
+            } satisfies MenuAction,
+          ]
+        : []),
+      ...(thread.session?.nativeSession?.id
+        ? [
+            {
+              id: "copy-native-session-id",
+              title: "Copy native session ID",
+              image: "doc.on.doc",
+            } satisfies MenuAction,
+          ]
+        : []),
+    ],
+    [thread.session?.nativeSession],
+  );
   const snoozePresetActions = useMemo<MenuAction[]>(
     () =>
       snoozePresets.map((preset) => ({
@@ -530,6 +558,29 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
     () => [CARD_MENU_ACTIONS[0]!, ...pinMenuItem, ...CARD_MENU_ACTIONS.slice(1)],
     [pinMenuItem],
   );
+  const menuActions = useMemo(
+    () => [
+      ...nativeSessionMenuActions,
+      ...(snoozedRow
+        ? SNOOZED_MENU_ACTIONS
+        : !props.settlementSupported
+          ? LEGACY_MENU_ACTIONS
+          : canUnsettle
+            ? SLIM_MENU_ACTIONS
+            : swipeActions.secondary === "snooze"
+              ? snoozableCardMenuActions
+              : cardMenuActions),
+    ],
+    [
+      canUnsettle,
+      cardMenuActions,
+      nativeSessionMenuActions,
+      props.settlementSupported,
+      snoozableCardMenuActions,
+      snoozedRow,
+      swipeActions.secondary,
+    ],
+  );
   const handleMenuAction = useCallback(
     ({ nativeEvent }: { readonly nativeEvent: { readonly event: string } }) => {
       if (nativeEvent.event === "settle") handleSettle();
@@ -541,6 +592,8 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
       if (nativeEvent.event === "move-pin-down") handleMovePinnedDown();
       if (nativeEvent.event === "archive") handleArchive();
       if (nativeEvent.event === "delete") handleDelete();
+      if (nativeEvent.event === "release-to-cli") props.onReleaseThreadToCli(thread);
+      if (nativeEvent.event === "copy-native-session-id") props.onCopyNativeSessionId(thread);
       const snoozeSelection = resolveThreadListV2SnoozeMenuSelection({
         event: nativeEvent.event,
         displayedPresets: snoozePresets,
@@ -563,6 +616,9 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
       handleUnpin,
       handleUnsettle,
       handleUnsnooze,
+      props.onCopyNativeSessionId,
+      props.onReleaseThreadToCli,
+      thread,
       snoozePresets,
     ],
   );
@@ -903,17 +959,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
       >
         {(close) => (
           <ControlPillMenu
-            actions={
-              snoozedRow
-                ? SNOOZED_MENU_ACTIONS
-                : !props.settlementSupported
-                  ? LEGACY_MENU_ACTIONS
-                  : canUnsettle
-                    ? SLIM_MENU_ACTIONS
-                    : swipeActions.secondary === "snooze"
-                      ? snoozableCardMenuActions
-                      : cardMenuActions
-            }
+            actions={menuActions}
             onPressAction={handleMenuAction}
             shouldOpenOnLongPress
           >

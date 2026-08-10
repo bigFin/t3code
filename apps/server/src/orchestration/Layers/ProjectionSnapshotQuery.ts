@@ -5,6 +5,7 @@ import {
   IsoDateTime,
   MessageId,
   NonNegativeInt,
+  NativeSessionReference,
   OrchestrationCheckpointFile,
   OrchestrationProposedPlanId,
   OrchestrationReadModel,
@@ -101,6 +102,7 @@ const ProjectionThreadActivityDbRowSchema = ProjectionThreadActivity.mapFields(
 const ProjectionThreadSessionDbRowSchema = Schema.Struct({
   ...ProjectionThreadSession.fields,
   retrying: Schema.Number,
+  nativeSession: Schema.NullOr(Schema.fromJsonString(NativeSessionReference)),
 });
 const ProjectionCheckpointDbRowSchema = ProjectionCheckpoint.mapFields(
   Struct.assign({
@@ -321,6 +323,7 @@ function mapSessionRow(
     activeTurnId: row.activeTurnId,
     lastError: row.lastError,
     ...(row.retrying ? { retrying: true } : {}),
+    ...(row.nativeSession !== null ? { nativeSession: row.nativeSession } : {}),
     updatedAt: row.updatedAt,
   };
 }
@@ -668,6 +671,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           active_turn_id AS "activeTurnId",
           last_error AS "lastError",
           retrying,
+          native_session_json AS "nativeSession",
           updated_at AS "updatedAt"
         FROM projection_thread_sessions
         ORDER BY thread_id ASC
@@ -690,6 +694,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           sessions.active_turn_id AS "activeTurnId",
           sessions.last_error AS "lastError",
           sessions.retrying,
+          sessions.native_session_json AS "nativeSession",
           sessions.updated_at AS "updatedAt"
         FROM projection_thread_sessions sessions
         INNER JOIN projection_threads threads
@@ -716,6 +721,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           sessions.active_turn_id AS "activeTurnId",
           sessions.last_error AS "lastError",
           sessions.retrying,
+          sessions.native_session_json AS "nativeSession",
           sessions.updated_at AS "updatedAt"
         FROM projection_thread_sessions sessions
         INNER JOIN projection_threads threads
@@ -1058,6 +1064,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           snoozed_until AS "snoozedUntil",
           snoozed_at AS "snoozedAt",
           pinned_at AS "pinnedAt",
+          pin_order_key AS "pinOrderKey",
           title_regeneration_request_id AS "titleRegenerationRequestId",
           title_regeneration_started_at AS "titleRegenerationStartedAt",
           latest_user_message_at AS "latestUserMessageAt",
@@ -1165,6 +1172,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           active_turn_id AS "activeTurnId",
           last_error AS "lastError",
           retrying,
+          native_session_json AS "nativeSession",
           updated_at AS "updatedAt"
         FROM projection_thread_sessions
         WHERE thread_id = ${threadId}
@@ -1186,6 +1194,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           sessions.active_turn_id AS "activeTurnId",
           sessions.last_error AS "lastError",
           sessions.retrying,
+          sessions.native_session_json AS "nativeSession",
           sessions.updated_at AS "updatedAt"
         FROM projection_thread_sessions sessions
         INNER JOIN projection_threads threads
@@ -1704,19 +1713,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
 
               for (const row of sessionRows) {
                 updatedAt = maxIso(updatedAt, row.updatedAt);
-                sessionsByThread.set(row.threadId, {
-                  threadId: row.threadId,
-                  status: row.status,
-                  providerName: row.providerName,
-                  ...(row.providerInstanceId !== null
-                    ? { providerInstanceId: row.providerInstanceId }
-                    : {}),
-                  runtimeMode: row.runtimeMode,
-                  activeTurnId: row.activeTurnId,
-                  lastError: row.lastError,
-                  ...(row.retrying ? { retrying: true } : {}),
-                  updatedAt: row.updatedAt,
-                });
+                sessionsByThread.set(row.threadId, mapSessionRow(row));
               }
 
               const repositoryIdentities = yield* resolveRepositoryIdentitiesForProjects(

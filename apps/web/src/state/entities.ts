@@ -221,6 +221,13 @@ export function readProject(ref: ScopedProjectRef): EnvironmentProject | null {
 export function readThreadShell(ref: ScopedThreadRef): EnvironmentThreadShell | null {
   return appAtomRegistry.get(environmentThreadShells.threadShellAtom(ref));
 }
+export function readEnvironmentPlatform(
+  environmentId: EnvironmentId,
+): "win32" | "darwin" | "linux" {
+  const os = appAtomRegistry.get(environmentServerConfigsAtom).get(environmentId)?.environment
+    .platform.os;
+  return os === "windows" ? "win32" : os === "darwin" ? "darwin" : "linux";
+}
 
 /** Whether the environment's server understands thread.settle/unsettle.
     False for pre-settlement servers (capability defaults false on decode),

@@ -43,6 +43,10 @@
       "types": "./src/shell.ts",
       "import": "./src/shell.ts"
     },
+    "./nativeSessionCli": {
+      "types": "./src/nativeSessionCli.ts",
+      "import": "./src/nativeSessionCli.ts"
+    },
     "./semver": {
       "types": "./src/semver.ts",
       "import": "./src/semver.ts"

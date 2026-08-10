@@ -73,6 +73,16 @@ process.env.T3CODE_CURSOR_ENABLED = "1";
 
 const encoder = new TextEncoder();
 const TEST_EPOCH = DateTime.makeUnsafe("1970-01-01T00:00:00.000Z");
+const codexInterop = {
+  cliHandoff: true,
+  externalSessionDiscovery: true,
+  concurrentAttach: false,
+} as const;
+const cursorInterop = {
+  cliHandoff: true,
+  externalSessionDiscovery: false,
+  concurrentAttach: false,
+} as const;
 
 const TestHttpClientLive = Layer.succeed(
   HttpClient.HttpClient,
@@ -994,7 +1004,9 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
           ).pipe(Scope.provide(scope));
           yield* Effect.gen(function* () {
             const registry = yield* ProviderRegistry.ProviderRegistry;
-            assert.deepStrictEqual(yield* registry.getProviders, [initialProvider]);
+            assert.deepStrictEqual(yield* registry.getProviders, [
+              { ...initialProvider, interop: codexInterop },
+            ]);
             assert.strictEqual(yield* Ref.get(refreshCalls), 0);
           }).pipe(Effect.provide(runtimeServices));
         }),
@@ -1176,6 +1188,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
             assert.deepStrictEqual(cachedProvider, {
               ...refreshedProvider,
               models: [...initialProvider.models],
+              interop: cursorInterop,
             });
           }).pipe(Effect.provide(runtimeServices));
         }),
@@ -1388,11 +1401,10 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
           yield* Effect.gen(function* () {
             const registry = yield* ProviderRegistry.ProviderRegistry;
 
-            assert.deepStrictEqual(yield* registry.getProviders, [cachedProvider]);
-            assert.deepStrictEqual(yield* registry.refresh(codexDriver), [cachedProvider]);
-            assert.deepStrictEqual(yield* registry.refreshInstance(codexInstanceId), [
-              cachedProvider,
-            ]);
+            const expected = { ...cachedProvider, interop: codexInterop };
+            assert.deepStrictEqual(yield* registry.getProviders, [expected]);
+            assert.deepStrictEqual(yield* registry.refresh(codexDriver), [expected]);
+            assert.deepStrictEqual(yield* registry.refreshInstance(codexInstanceId), [expected]);
           }).pipe(Effect.provide(runtimeServices));
         }),
       );
@@ -1495,7 +1507,9 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
 
           yield* Effect.gen(function* () {
             const registry = yield* ProviderRegistry.ProviderRegistry;
-            assert.deepStrictEqual(yield* registry.getProviders, [codexProvider]);
+            assert.deepStrictEqual(yield* registry.getProviders, [
+              { ...codexProvider, interop: codexInterop },
+            ]);
 
             yield* Ref.set(failNextList, true);
             yield* PubSub.publish(changes, undefined);
@@ -1723,7 +1737,10 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
             );
             assert.strictEqual(initialCodex?.status, "error");
             assert.strictEqual(initialCodex?.installed, false);
-            assert.deepStrictEqual(spawnedCommands, [firstMissing]);
+            assert.deepStrictEqual(
+              spawnedCommands.filter((command) => command !== "omp"),
+              [firstMissing],
+            );
 
             // Drive a settings change. The Hydration layer's
             // `SettingsWatcherLive` consumes this via `streamChanges`,
@@ -1761,7 +1778,10 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
             });
 
             const reprobedCodex = refreshed.find((provider) => provider.instanceId === "codex");
-            assert.deepStrictEqual(spawnedCommands, [firstMissing, secondMissing]);
+            assert.deepStrictEqual(
+              spawnedCommands.filter((command) => command !== "omp"),
+              [firstMissing, secondMissing],
+            );
             assert.strictEqual(reprobedCodex?.status, "error");
             assert.strictEqual(reprobedCodex?.installed, false);
           }).pipe(Effect.provide(runtimeServices));
@@ -1921,6 +1941,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
                 "codex",
                 "cursor",
                 "grok",
+                "omp",
                 "opencode",
                 "piAgent",
               ]);

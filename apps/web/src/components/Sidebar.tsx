@@ -29,6 +29,7 @@ import {
   scopedThreadKey,
 } from "@t3tools/client-runtime/environment";
 import type { ScopedThreadRef } from "@t3tools/contracts";
+import { formatNativeSessionCliCommand } from "@t3tools/shared/nativeSessionCli";
 import type {
   SidebarProjectSortOrder,
   SidebarThreadSortOrder,
@@ -1673,6 +1674,9 @@ export default function Sidebar() {
   const updateThreadMetadata = useAtomCommand(threadEnvironment.updateMetadata, {
     reportFailure: false,
   });
+  const stopThreadSession = useAtomCommand(threadEnvironment.stopSession, {
+    reportFailure: false,
+  });
   const { copyToClipboard: copyPathToClipboard } = useCopyToClipboard<{ path: string }>({
     onCopy: ({ path }) => {
       toastManager.add({
@@ -1705,6 +1709,23 @@ export default function Sidebar() {
         stackedThreadToast({
           type: "error",
           title: "Failed to copy branch",
+          description: error instanceof Error ? error.message : "An error occurred.",
+        }),
+      );
+    },
+  });
+  const { copyToClipboard: copyNativeSessionToClipboard } = useCopyToClipboard<{
+    label: string;
+  }>({
+    target: "native session",
+    onCopy: ({ label }) => {
+      toastManager.add({ type: "success", title: `${label} copied` });
+    },
+    onError: (error) => {
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: "Failed to copy native session",
           description: error instanceof Error ? error.message : "An error occurred.",
         }),
       );
@@ -2992,6 +3013,15 @@ export default function Sidebar() {
                 pinning: supportsPinning,
                 titleRegeneration: supportsTitleRegeneration,
               },
+              nativeSession: thread.session?.nativeSession
+                ? {
+                    ...(thread.session.nativeSession.id
+                      ? { id: thread.session.nativeSession.id }
+                      : {}),
+                    ownership: thread.session.nativeSession.ownership,
+                    hasCliLaunch: thread.session.nativeSession.cli !== undefined,
+                  }
+                : undefined,
               snoozePresets,
             }),
             position,
@@ -3065,6 +3095,39 @@ export default function Sidebar() {
             }
             return;
           }
+          case "release-to-cli": {
+            const nativeSession = thread.session?.nativeSession;
+            if (!nativeSession?.cli) return;
+            if (nativeSession.ownership === "t3") {
+              const released = await stopThreadSession({
+                environmentId: threadRef.environmentId,
+                input: { threadId: threadRef.threadId, releaseToCli: true },
+              });
+              if (released._tag === "Failure" && !isAtomCommandInterrupted(released)) {
+                const error = squashAtomCommandFailure(released);
+                toastManager.add(
+                  stackedThreadToast({
+                    type: "error",
+                    title: "Failed to release native session",
+                    description: error instanceof Error ? error.message : "An error occurred.",
+                  }),
+                );
+                return;
+              }
+            }
+            const os = serverConfigs.get(thread.environmentId)?.environment.platform.os;
+            const platform = os === "windows" ? "win32" : os === "darwin" ? "darwin" : "linux";
+            const command = formatNativeSessionCliCommand(nativeSession.cli, platform);
+            copyNativeSessionToClipboard(command, { label: "CLI resume command" });
+            return;
+          }
+          case "copy-native-session-id": {
+            const nativeId = thread.session?.nativeSession?.id;
+            if (nativeId) {
+              copyNativeSessionToClipboard(nativeId, { label: "Native session ID" });
+            }
+            return;
+          }
           case "mark-unread":
             markThreadUnread(threadKey, thread.latestTurn?.completedAt);
             return;
@@ -3126,6 +3189,7 @@ export default function Sidebar() {
       attemptUnsnooze,
       confirmThreadDelete,
       copyBranchToClipboard,
+      copyNativeSessionToClipboard,
       copyPathToClipboard,
       deleteThread,
       handleMultiSelectContextMenu,
@@ -3133,6 +3197,7 @@ export default function Sidebar() {
       projectCwdByKey,
       serverConfigs,
       startThreadRename,
+      stopThreadSession,
       updateThreadMetadata,
       timestampFormat,
     ],

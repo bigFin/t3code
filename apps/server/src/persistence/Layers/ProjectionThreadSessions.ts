@@ -4,6 +4,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import { NativeSessionReference } from "@t3tools/contracts";
 
 import { toPersistenceSqlError } from "../Errors.ts";
 
@@ -18,6 +19,7 @@ import {
 const ProjectionThreadSessionDbRowSchema = Schema.Struct({
   ...ProjectionThreadSession.fields,
   retrying: Schema.Number,
+  nativeSession: Schema.NullOr(Schema.fromJsonString(NativeSessionReference)),
 });
 
 function toProjectionThreadSession(
@@ -45,6 +47,7 @@ const makeProjectionThreadSessionRepository = Effect.gen(function* () {
           active_turn_id,
           last_error,
           retrying,
+          native_session_json,
           updated_at
         )
         VALUES (
@@ -56,6 +59,7 @@ const makeProjectionThreadSessionRepository = Effect.gen(function* () {
           ${row.activeTurnId},
           ${row.lastError},
           ${row.retrying ? 1 : 0},
+          ${row.nativeSession === null ? null : JSON.stringify(row.nativeSession)},
           ${row.updatedAt}
         )
         ON CONFLICT (thread_id)
@@ -67,6 +71,7 @@ const makeProjectionThreadSessionRepository = Effect.gen(function* () {
           active_turn_id = excluded.active_turn_id,
           last_error = excluded.last_error,
           retrying = excluded.retrying,
+          native_session_json = excluded.native_session_json,
           updated_at = excluded.updated_at
       `,
   });
@@ -85,6 +90,7 @@ const makeProjectionThreadSessionRepository = Effect.gen(function* () {
           active_turn_id AS "activeTurnId",
           last_error AS "lastError",
           retrying,
+          native_session_json AS "nativeSession",
           updated_at AS "updatedAt"
         FROM projection_thread_sessions
         WHERE thread_id = ${threadId}

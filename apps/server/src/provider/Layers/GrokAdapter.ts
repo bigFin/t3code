@@ -759,6 +759,16 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
               schemaVersion: GROK_RESUME_VERSION,
               sessionId: started.sessionId,
             },
+            nativeSession: {
+              id: started.sessionId,
+              ownership: "t3",
+              supportsConcurrentAttach: false,
+              cli: {
+                command: grokSettings.binaryPath,
+                args: ["--resume", started.sessionId],
+                cwd,
+              },
+            },
             createdAt: now,
             updatedAt: now,
           };

@@ -177,6 +177,12 @@ export const ServerProviderUpdateState = Schema.Struct({
   output: Schema.NullOr(Schema.String.check(Schema.isMaxLength(10_000))),
 });
 export type ServerProviderUpdateState = typeof ServerProviderUpdateState.Type;
+export const ProviderInteropCapabilities = Schema.Struct({
+  cliHandoff: Schema.Boolean,
+  externalSessionDiscovery: Schema.Boolean,
+  concurrentAttach: Schema.Boolean,
+});
+export type ProviderInteropCapabilities = typeof ProviderInteropCapabilities.Type;
 
 export const ServerProvider = Schema.Struct({
   // Routing key for the configured instance this snapshot represents. This
@@ -191,6 +197,7 @@ export const ServerProvider = Schema.Struct({
   continuation: Schema.optional(ServerProviderContinuation),
   showInteractionModeToggle: Schema.optional(Schema.Boolean),
   requiresNewThreadForModelChange: Schema.optional(Schema.Boolean),
+  interop: Schema.optional(ProviderInteropCapabilities),
   enabled: Schema.Boolean,
   installed: Schema.Boolean,
   version: Schema.NullOr(TrimmedNonEmptyString),

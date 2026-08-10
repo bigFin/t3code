@@ -9,6 +9,7 @@ const baseState: ThreadActionMenuState = {
   isSnoozed: false,
   canSnoozeNow: true,
   isRegeneratingTitle: false,
+  nativeSession: undefined,
   supports: { settlement: true, snooze: true, pinning: true, titleRegeneration: true },
   snoozePresets: [
     { id: "hour", label: "In 1 hour", whenLabel: "3:00 PM", snoozedUntil: "2026-08-07T15:00:00Z" },
@@ -57,6 +58,19 @@ describe("buildThreadActionMenuItems", () => {
       (candidate) => candidate.id === "regenerate-title",
     );
     expect(item).toMatchObject({ label: "Regenerating…", disabled: true });
+  });
+  it("offers native handoff only when the provider supplied a CLI launch", () => {
+    expect(
+      ids({
+        ...baseState,
+        nativeSession: {
+          id: "native-session",
+          ownership: "t3",
+          hasCliLaunch: true,
+        },
+      }),
+    ).toEqual(expect.arrayContaining(["release-to-cli", "copy-native-session-id"]));
+    expect(ids(baseState)).not.toContain("release-to-cli");
   });
 
   it("marks delete as destructive and keeps it last", () => {

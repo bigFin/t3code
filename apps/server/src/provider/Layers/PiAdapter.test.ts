@@ -9,6 +9,7 @@ import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as Path from "effect/Path";
 import * as Stream from "effect/Stream";
+import { ChildProcess } from "effect/unstable/process";
 import { beforeEach } from "vite-plus/test";
 
 import {
@@ -29,7 +30,8 @@ import {
   type PiRuntimeShape,
 } from "../piRuntime.ts";
 import type { PiAdapterShape } from "../Services/PiAdapter.ts";
-import { isPiSessionFileOpen, makePiAdapter } from "./PiAdapter.ts";
+import { isPiSessionFileOpen } from "../piSessionFiles.ts";
+import { makePiAdapter } from "./PiAdapter.ts";
 import { makeOmpAdapter } from "./OmpAdapter.ts";
 
 class PiAdapter extends Context.Service<PiAdapter, PiAdapterShape>()(
@@ -418,6 +420,52 @@ it.layer(OmpAdapterTestLayer)("OmpAdapter", (it) => {
       expect(runtimeMock.startInputs[0]).toMatchObject({
         binaryPath: "fake-omp",
         approvalFlag: "--auto-approve",
+      });
+    }),
+  );
+
+  it.effect("observes an OMP session owned by another process without starting RPC", () =>
+    Effect.gen(function* () {
+      const adapter = yield* PiAdapter;
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-omp-external-" });
+      const sessionFile = path.join(root, "session.jsonl");
+      yield* fileSystem.writeFileString(sessionFile, "");
+      const owner = yield* ChildProcess.make(
+        process.execPath,
+        [
+          "-e",
+          "require('node:fs').openSync(process.argv[1], 'r'); process.stdout.write('ready'); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0)",
+          sessionFile,
+        ],
+        { stdin: "ignore", stdout: "pipe", stderr: "ignore" },
+      );
+      yield* owner.stdout.pipe(Stream.take(1), Stream.runDrain);
+
+      const session = yield* adapter.startSession({
+        provider: ProviderDriverKind.make("omp"),
+        threadId: threadId("omp-external"),
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+        resumeCursor: {
+          schemaVersion: 1,
+          sessionId: "external-session",
+          sessionFile,
+        },
+      });
+
+      expect(runtimeMock.startInputs).toHaveLength(0);
+      expect(session).toMatchObject({
+        provider: "omp",
+        providerInstanceId: "omp",
+        status: "ready",
+        nativeSession: {
+          id: "external-session",
+          path: sessionFile,
+          ownership: "external",
+          supportsConcurrentAttach: false,
+        },
       });
     }),
   );

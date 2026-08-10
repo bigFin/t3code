@@ -19,6 +19,8 @@ export type ThreadActionMenuId =
   | "regenerate-title"
   | "mark-unread"
   | "copy-path"
+  | "release-to-cli"
+  | "copy-native-session-id"
   | "copy-branch"
   | "delete";
 
@@ -29,6 +31,13 @@ export interface ThreadActionMenuState {
   readonly isSnoozed: boolean;
   readonly canSnoozeNow: boolean;
   readonly isRegeneratingTitle: boolean;
+  readonly nativeSession:
+    | {
+        readonly id?: string;
+        readonly ownership: "t3" | "external" | "released";
+        readonly hasCliLaunch: boolean;
+      }
+    | undefined;
   readonly supports: {
     readonly settlement: boolean;
     readonly snooze: boolean;
@@ -96,6 +105,18 @@ export function buildThreadActionMenuItems(
             disabled: state.isRegeneratingTitle,
           },
         ]
+      : []),
+    ...(state.nativeSession?.hasCliLaunch
+      ? [
+          {
+            id: "release-to-cli" as const,
+            label:
+              state.nativeSession.ownership === "t3" ? "Release to CLI" : "Copy CLI resume command",
+          },
+        ]
+      : []),
+    ...(state.nativeSession?.id
+      ? [{ id: "copy-native-session-id" as const, label: "Copy native session ID", icon: "copy" }]
       : []),
     { id: "mark-unread", label: "Mark unread" },
     { id: "copy-path", label: "Copy path", icon: "copy" },

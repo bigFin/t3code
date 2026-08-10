@@ -1364,6 +1364,16 @@ export function makeOpenCodeAdapter(
             schemaVersion: OPENCODE_RESUME_VERSION,
             sessionId: started.openCodeSession.id,
           },
+          nativeSession: {
+            id: started.openCodeSession.id,
+            ownership: "t3",
+            supportsConcurrentAttach: false,
+            cli: {
+              command: binaryPath,
+              args: ["--session", started.openCodeSession.id],
+              cwd: directory,
+            },
+          },
           createdAt,
           updatedAt: createdAt,
         };
