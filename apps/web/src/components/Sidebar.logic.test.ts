@@ -20,6 +20,7 @@ import {
   resolveSidebarThreadStatus,
   resolveThreadStatusPill,
   resolveWorkingStartedAt,
+  sidebarEnvironmentConnectionClassName,
   searchSidebarThreadsByTitle,
   formatWorkingDurationLabel,
   shouldNavigateAfterProjectRemoval,
@@ -50,6 +51,18 @@ import {
 } from "../types";
 
 const localEnvironmentId = EnvironmentId.make("environment-local");
+
+describe("sidebarEnvironmentConnectionClassName", () => {
+  it("distinguishes connected, transitional, failed, and offline environments", () => {
+    expect(sidebarEnvironmentConnectionClassName("connected")).toBe("text-success");
+    expect(sidebarEnvironmentConnectionClassName("connecting")).toBe("text-warning");
+    expect(sidebarEnvironmentConnectionClassName("reconnecting")).toBe("text-warning");
+    expect(sidebarEnvironmentConnectionClassName("error")).toBe("text-destructive");
+    expect(sidebarEnvironmentConnectionClassName("offline")).toBe(
+      "text-sidebar-muted-foreground/70",
+    );
+  });
+});
 
 describe("shouldNavigateAfterProjectRemoval", () => {
   const projectThreads = [{ environmentId: "environment-local", id: "thread-1" }];

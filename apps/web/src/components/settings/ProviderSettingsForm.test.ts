@@ -2,6 +2,8 @@ import { describe, expect, it } from "vite-plus/test";
 import { ProviderDriverKind } from "@t3tools/contracts";
 
 import { DRIVER_OPTION_BY_VALUE } from "./providerDriverMeta";
+import { OmpIcon, PiAgentIcon } from "../Icons";
+import { PROVIDER_ICON_BY_PROVIDER } from "../chat/providerIconUtils";
 import {
   deriveProviderSettingsFields,
   nextProviderConfigWithFieldValue,
@@ -47,6 +49,21 @@ describe("ProviderSettingsForm helpers", () => {
     expect(deriveProviderSettingsFields(piAgent!).map((field) => field.key)).toContain(
       "binaryPath",
     );
+  });
+
+  it("offers Oh My Pi as a configurable provider driver", () => {
+    const omp = DRIVER_OPTION_BY_VALUE[ProviderDriverKind.make("omp")];
+
+    expect(omp).toMatchObject({
+      label: "Oh My Pi",
+      badgeLabel: "Early Access",
+    });
+    expect(deriveProviderSettingsFields(omp!).map((field) => field.key)).toContain("binaryPath");
+  });
+
+  it("uses distinct pi symbols for Pi Agent and Oh My Pi", () => {
+    expect(PROVIDER_ICON_BY_PROVIDER[ProviderDriverKind.make("piAgent")]).toBe(PiAgentIcon);
+    expect(PROVIDER_ICON_BY_PROVIDER[ProviderDriverKind.make("omp")]).toBe(OmpIcon);
   });
 
   it("preserves unknown config keys while omitting empty configurable fields", () => {

@@ -685,14 +685,45 @@ export const ACPRegistryIcon: Icon = ({ className, ...props }) => (
   </svg>
 );
 
+const PI_SYMBOL_PATH = "M4 7h16M8 7v7.5c0 2-1 3-2.5 3.5M16 7v11";
+
 export const PiAgentIcon: Icon = ({ className, ...props }) => (
-  <svg {...props} viewBox="0 0 800 800" className={cn("fill-none", className)}>
-    <rect width="800" height="800" rx="160" fill="#000" />
-    <path
-      fill="#fff"
-      fillRule="evenodd"
-      d="M165.29 165.29H517.36V400H400V517.36H282.65V634.72H165.29ZM282.65 282.65V400H400V282.65Z"
-    />
-    <path fill="#fff" d="M517.36 400H634.72V634.72H517.36Z" />
+  <svg
+    {...props}
+    viewBox="0 0 24 24"
+    fill="none"
+    className={className}
+    stroke="currentColor"
+    strokeWidth="2.5"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+  >
+    <path d={PI_SYMBOL_PATH} />
   </svg>
 );
+
+export const OmpIcon: Icon = ({ className, ...props }) => {
+  const gradientId = `${useId().replaceAll(":", "")}-omp`;
+  return (
+    <svg
+      {...props}
+      viewBox="0 0 24 24"
+      fill="none"
+      className={className}
+      stroke={`url(#${gradientId})`}
+      strokeWidth="2.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <defs>
+        <linearGradient id={gradientId} x1="4" y1="5" x2="20" y2="19">
+          <stop stopColor="#f97316" />
+          <stop offset=".35" stopColor="#ec4899" />
+          <stop offset=".7" stopColor="#8b5cf6" />
+          <stop offset="1" stopColor="#06b6d4" />
+        </linearGradient>
+      </defs>
+      <path d={PI_SYMBOL_PATH} />
+    </svg>
+  );
+};

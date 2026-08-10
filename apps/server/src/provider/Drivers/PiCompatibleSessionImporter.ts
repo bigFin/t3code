@@ -14,6 +14,7 @@ import {
   type OrchestrationThreadActivity,
   type OrchestrationSession,
 } from "@t3tools/contracts";
+import * as Clock from "effect/Clock";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -35,7 +36,10 @@ import {
   type PiCompatibleSessionImporterShape,
 } from "../Services/PiCompatibleSessionImporter.ts";
 
-const SCAN_INTERVAL_MS = 60_000;
+// Discover historical sessions on the slower sweep; between those walks, only
+// re-read files another process currently has open so CLI progress stays fresh.
+const FULL_SCAN_INTERVAL_MS = 60_000;
+const ACTIVE_SCAN_INTERVAL_MS = 2_000;
 const OMP_DRIVER = ProviderDriverKind.make("omp");
 const PI_DRIVER = ProviderDriverKind.make("piAgent");
 type UnknownRecord = Record<string, unknown>;
@@ -255,9 +259,12 @@ export function resolvePiCompatibleObservedSession(input: {
   )
     return undefined;
 
-  const desiredStatus = input.isOpen ? "ready" : "stopped";
+  const latestMessage = input.imported.messages.at(-1);
+  const hasActiveTurn = input.isOpen && latestMessage?.role === "user";
+  const desiredStatus = hasActiveTurn ? "running" : input.isOpen ? "ready" : "stopped";
   if (
     input.currentSession?.status === desiredStatus &&
+    input.currentSession.activeTurnId === (hasActiveTurn ? latestMessage.turnId : null) &&
     currentNativeSession?.ownership === "external" &&
     currentNativeSession.id === input.imported.id &&
     currentNativeSession.path === input.sourcePath
@@ -270,7 +277,7 @@ export function resolvePiCompatibleObservedSession(input: {
     providerName: input.driver,
     providerInstanceId: input.instanceId,
     runtimeMode: "full-access",
-    activeTurnId: null,
+    activeTurnId: hasActiveTurn ? latestMessage.turnId : null,
     lastError: null,
     nativeSession: {
       id: input.imported.id,
@@ -291,9 +298,13 @@ export function resolvePiCompatibleObservedSession(input: {
   };
 }
 
-export function piCompatibleTurnReconcileCommand(threadId: ThreadId, session: PiCompatibleSession) {
+export function piCompatibleTurnReconcileCommand(
+  threadId: ThreadId,
+  session: PiCompatibleSession,
+  isOpen = false,
+) {
   const latestMessage = session.messages.at(-1);
-  if (latestMessage === undefined) return undefined;
+  if (latestMessage === undefined || (isOpen && latestMessage.role === "user")) return undefined;
   const state: "completed" | "interrupted" =
     latestMessage.role === "assistant" ? "completed" : "interrupted";
   return {
@@ -341,7 +352,18 @@ const listSessionFiles = Effect.fn("PiCompatibleSessionImporter.listSessionFiles
   return files.toSorted();
 });
 
-const makePiCompatibleSessionImporter = (options?: { readonly scanIntervalMs?: number }) =>
+function isWithinSessionRoot(path: Path.Path, root: string, candidate: string): boolean {
+  const relative = path.relative(path.resolve(root), path.resolve(candidate));
+  return (
+    relative === "" ||
+    (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative))
+  );
+}
+
+const makePiCompatibleSessionImporter = (options?: {
+  readonly scanIntervalMs?: number;
+  readonly activeScanIntervalMs?: number;
+}) =>
   Effect.gen(function* () {
     const engine = yield* OrchestrationEngineService;
     const snapshots = yield* ProjectionSnapshotQuery;
@@ -349,7 +371,8 @@ const makePiCompatibleSessionImporter = (options?: { readonly scanIntervalMs?: n
     const settingsService = yield* ServerSettingsService;
     const fileSystem = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
-    const scanIntervalMs = options?.scanIntervalMs ?? SCAN_INTERVAL_MS;
+    const scanIntervalMs = options?.scanIntervalMs ?? FULL_SCAN_INTERVAL_MS;
+    const activeScanIntervalMs = options?.activeScanIntervalMs ?? ACTIVE_SCAN_INTERVAL_MS;
 
     const archiveThreadIfVisible = Effect.fn("PiCompatibleSessionImporter.archiveThreadIfVisible")(
       function* (threadId: ThreadId) {
@@ -422,7 +445,7 @@ const makePiCompatibleSessionImporter = (options?: { readonly scanIntervalMs?: n
             messages,
             createdAt: messages.at(-1)!.createdAt,
           });
-        const turnCommand = piCompatibleTurnReconcileCommand(threadId, imported);
+        const turnCommand = piCompatibleTurnReconcileCommand(threadId, imported, isOpen);
         if (turnCommand !== undefined) yield* engine.dispatch(turnCommand);
         const binding = yield* directory.getBinding(threadId);
         if (Option.isNone(binding))
@@ -524,7 +547,7 @@ const makePiCompatibleSessionImporter = (options?: { readonly scanIntervalMs?: n
       },
     );
 
-    const scan = Effect.fn("PiCompatibleSessionImporter.scan")(function* () {
+    const scan = Effect.fn("PiCompatibleSessionImporter.scan")(function* (mode: "full" | "active") {
       const openFiles = yield* listOpenProcessFiles(fileSystem, path);
       const settings = yield* settingsService.getSettings;
       for (const [rawInstanceId, entry] of Object.entries(
@@ -539,8 +562,17 @@ const makePiCompatibleSessionImporter = (options?: { readonly scanIntervalMs?: n
         const root = sessionRoot(stringValue(config.sessionDir) ?? "", defaultRoot);
         const configuredSessionDir = stringValue(config.sessionDir);
         const binaryPath = stringValue(config.binaryPath) ?? (driver === OMP_DRIVER ? "omp" : "pi");
+        const sourcePaths =
+          mode === "full"
+            ? yield* listSessionFiles(fileSystem, path, root)
+            : [...openFiles]
+                .filter(
+                  (sourcePath) =>
+                    sourcePath.endsWith(".jsonl") && isWithinSessionRoot(path, root, sourcePath),
+                )
+                .toSorted();
         const parsed: Array<{ sourcePath: string; session: PiCompatibleSession }> = [];
-        for (const sourcePath of yield* listSessionFiles(fileSystem, path, root)) {
+        for (const sourcePath of sourcePaths) {
           const contents = yield* fileSystem.readFileString(sourcePath).pipe(Effect.option);
           if (Option.isNone(contents)) continue;
           const session = parsePiCompatibleSession(contents.value, driver, sourcePath);
@@ -578,19 +610,26 @@ const makePiCompatibleSessionImporter = (options?: { readonly scanIntervalMs?: n
 
     const start: PiCompatibleSessionImporterShape["start"] = () =>
       Effect.gen(function* () {
+        let nextFullScanAt = 0;
         yield* forkParked(
           Effect.forever(
             Effect.gen(function* () {
-              yield* scan().pipe(
+              const now = yield* Clock.currentTimeMillis;
+              const mode = now >= nextFullScanAt ? "full" : "active";
+              if (mode === "full") nextFullScanAt = now + scanIntervalMs;
+              yield* scan(mode).pipe(
                 Effect.catchCause((cause) =>
-                  Effect.logWarning("pi-compatible-import.sweep-failed", { cause }),
+                  Effect.logWarning("pi-compatible-import.sweep-failed", { cause, mode }),
                 ),
               );
-              yield* Effect.sleep(Duration.millis(scanIntervalMs));
+              yield* Effect.sleep(Duration.millis(activeScanIntervalMs));
             }),
           ),
         );
-        yield* Effect.logInfo("pi-compatible-import.started", { scanIntervalMs });
+        yield* Effect.logInfo("pi-compatible-import.started", {
+          activeScanIntervalMs,
+          fullScanIntervalMs: scanIntervalMs,
+        });
       });
     return { start } satisfies PiCompatibleSessionImporterShape;
   });

@@ -119,7 +119,7 @@ describe("PiCompatibleSessionImporter", () => {
       completedAt: "2026-08-09T15:04:00.000Z",
     });
   });
-  it("marks open OMP transcripts as externally owned native sessions", () => {
+  it("marks open OMP turns as active externally owned sessions", () => {
     const parsed = parsePiCompatibleSession(
       [
         session,
@@ -149,7 +149,7 @@ describe("PiCompatibleSessionImporter", () => {
     });
 
     expect(observed).toMatchObject({
-      status: "ready",
+      status: "running",
       nativeSession: {
         id: "019fe70c-c446-7000-bf0a-907e165a996f",
         path: "/tmp/omp.jsonl",
@@ -162,6 +162,10 @@ describe("PiCompatibleSessionImporter", () => {
         },
       },
     });
+    expect(observed?.activeTurnId).toBe(parsed?.messages[0]?.turnId);
+    expect(
+      piCompatibleTurnReconcileCommand(ThreadId.make("thread-omp"), parsed!, true),
+    ).toBeUndefined();
     expect(
       resolvePiCompatibleObservedSession({
         currentSession: {

@@ -415,8 +415,21 @@ it.layer(OmpAdapterTestLayer)("OmpAdapter", (it) => {
         runtimeMode: "full-access",
       });
 
-      expect(session.provider).toBe(ProviderDriverKind.make("omp"));
-      expect(session.providerInstanceId).toBe(ompInstanceId);
+      expect(session).toMatchObject({
+        provider: ProviderDriverKind.make("omp"),
+        providerInstanceId: ompInstanceId,
+        nativeSession: {
+          id: "pi-session-1",
+          path: "/tmp/pi/session.jsonl",
+          ownership: "t3",
+          supportsConcurrentAttach: false,
+          cli: {
+            command: "fake-omp",
+            args: ["--resume", "/tmp/pi/session.jsonl", "--session-dir", "~/.omp/agent/sessions"],
+            cwd: process.cwd(),
+          },
+        },
+      });
       expect(runtimeMock.startInputs[0]).toMatchObject({
         binaryPath: "fake-omp",
         approvalFlag: "--auto-approve",

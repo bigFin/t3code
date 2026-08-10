@@ -16,6 +16,7 @@ import {
 } from "@dnd-kit/sortable";
 import { restrictToFirstScrollableAncestor, restrictToVerticalAxis } from "@dnd-kit/modifiers";
 import { CSS } from "@dnd-kit/utilities";
+import type { EnvironmentConnectionPhase } from "@t3tools/client-runtime/connection";
 import {
   canSnooze,
   effectiveSettled,
@@ -135,6 +136,7 @@ import {
   resolveSettledTimestamp,
   resolveSidebarThreadStatus,
   searchSidebarThreadsByTitle,
+  sidebarEnvironmentConnectionClassName,
   resolveWorkingStartedAt,
   sortLogicalProjectsForSidebar,
   sortPinnedThreadsForSidebar,
@@ -755,6 +757,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
   jumpLabel: string | null;
   currentEnvironmentId: string | null;
   environmentLabel: string | null;
+  environmentConnectionPhase: EnvironmentConnectionPhase | null;
   projectCwd: string | null;
   projectFaviconPath: string | null;
   projectTitle: string | null;
@@ -1506,13 +1509,23 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
                   <span className="text-red-600 dark:text-red-400">−{diff.deletions}</span>
                 </span>
               ) : null}
-              <span
-                aria-hidden
-                className="pointer-events-none ml-auto inline-flex shrink-0 items-center gap-1"
-              >
+              <span className="pointer-events-none ml-auto inline-flex shrink-0 items-center gap-1">
                 {isRemote ? (
-                  <span className="inline-flex shrink-0 items-center text-sidebar-muted-foreground/70">
-                    <ServerIcon aria-hidden className="size-3.5" />
+                  <span
+                    title={
+                      props.environmentLabel
+                        ? `${props.environmentLabel} — ${props.environmentConnectionPhase ?? "unknown"}`
+                        : "Remote environment"
+                    }
+                    className={cn(
+                      "inline-flex max-w-24 shrink-0 items-center gap-1",
+                      sidebarEnvironmentConnectionClassName(props.environmentConnectionPhase),
+                    )}
+                  >
+                    <ServerIcon aria-hidden className="size-3.5 shrink-0" />
+                    {props.environmentLabel ? (
+                      <span className="min-w-0 truncate">{props.environmentLabel}</span>
+                    ) : null}
                   </span>
                 ) : null}
                 {driverKind ? (
@@ -1775,6 +1788,15 @@ export default function Sidebar() {
     () =>
       new Map(
         environments.map((environment) => [environment.environmentId, environment.label] as const),
+      ),
+    [environments],
+  );
+  const environmentConnectionPhaseById = useMemo(
+    () =>
+      new Map(
+        environments.map(
+          (environment) => [environment.environmentId, environment.connection.phase] as const,
+        ),
       ),
     [environments],
   );
@@ -3626,6 +3648,9 @@ export default function Sidebar() {
                         jumpLabel={showJumpHints ? (jumpLabelByKey.get(threadKey) ?? null) : null}
                         currentEnvironmentId={primaryEnvironmentId}
                         environmentLabel={environmentLabelById.get(thread.environmentId) ?? null}
+                        environmentConnectionPhase={
+                          environmentConnectionPhaseById.get(thread.environmentId) ?? null
+                        }
                         projectCwd={
                           projectCwdByKey.get(`${thread.environmentId}:${thread.projectId}`) ?? null
                         }

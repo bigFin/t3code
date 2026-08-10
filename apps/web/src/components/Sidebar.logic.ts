@@ -1,4 +1,5 @@
 import * as React from "react";
+import type { EnvironmentConnectionPhase } from "@t3tools/client-runtime/connection";
 import type { ContextMenuItem } from "@t3tools/contracts";
 import type { SidebarProjectSortOrder, SidebarThreadSortOrder } from "@t3tools/contracts/settings";
 import {
@@ -22,6 +23,22 @@ export const THREAD_JUMP_HINT_SHOW_DELAY_MS = 100;
 // so this limit is a direct renderer-heap and server-load multiplier — keep
 // it small; cold opens still render instantly from the cached snapshot.
 export const SIDEBAR_THREAD_PREWARM_LIMIT = 3;
+
+export function sidebarEnvironmentConnectionClassName(
+  phase: EnvironmentConnectionPhase | null,
+): string {
+  switch (phase) {
+    case "connected":
+      return "text-success";
+    case "connecting":
+    case "reconnecting":
+      return "text-warning";
+    case "error":
+      return "text-destructive";
+    default:
+      return "text-sidebar-muted-foreground/70";
+  }
+}
 
 type SidebarProject = {
   id: string;
