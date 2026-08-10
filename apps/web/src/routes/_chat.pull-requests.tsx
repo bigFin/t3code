@@ -73,7 +73,7 @@ import {
   type PullRequestSurface,
 } from "../rightPanelStore";
 import { useDebouncedValue } from "../state/queries";
-import { useAllEnvironmentShellsBootstrapped, useProjects } from "../state/entities";
+import { useAllEnvironmentShellCachesHydrated, useProjects } from "../state/entities";
 import { usePrimaryEnvironment } from "../state/environments";
 import { pullRequestEnvironment } from "../state/pullRequests";
 import { useEnvironmentQuery } from "../state/query";
@@ -171,7 +171,7 @@ function PullRequestsRouteView() {
   // Whether the workspace has said what it holds yet. Until it has, an empty project list is
   // "not loaded" rather than "none", and telling a reader to add a project they already have is
   // the one wrong answer the empty state can give.
-  const projectsKnown = useAllEnvironmentShellsBootstrapped();
+  const projectsKnown = useAllEnvironmentShellCachesHydrated();
   // The page reads one environment, so a project from another one could neither be listed
   // nor acted on: scoping here keeps the filter and the selection honest.
   const projects = useMemo(

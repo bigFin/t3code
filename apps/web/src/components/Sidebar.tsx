@@ -29,7 +29,7 @@ import {
   scopeThreadRef,
   scopedThreadKey,
 } from "@t3tools/client-runtime/environment";
-import type { ScopedThreadRef } from "@t3tools/contracts";
+import type { EnvironmentId, ScopedThreadRef } from "@t3tools/contracts";
 import { formatNativeSessionCliCommand } from "@t3tools/shared/nativeSessionCli";
 import type {
   SidebarProjectSortOrder,
@@ -137,6 +137,7 @@ import {
   resolveSidebarThreadStatus,
   searchSidebarThreadsByTitle,
   sidebarEnvironmentConnectionClassName,
+  toggleSidebarHostScope,
   resolveWorkingStartedAt,
   sortLogicalProjectsForSidebar,
   sortPinnedThreadsForSidebar,
@@ -167,7 +168,15 @@ import { useThreadRunningTerminalIds } from "../state/terminalSessions";
 import { stackedThreadToast, toastManager } from "./ui/toast";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
-import { Menu, MenuGroup, MenuPopup, MenuRadioGroup, MenuRadioItem, MenuTrigger } from "./ui/menu";
+import {
+  Menu,
+  MenuCheckboxItem,
+  MenuGroup,
+  MenuPopup,
+  MenuRadioGroup,
+  MenuRadioItem,
+  MenuTrigger,
+} from "./ui/menu";
 import { SidebarContent, SidebarGroup, SidebarMenuButton, useSidebar } from "./ui/sidebar";
 import { SidebarChromeFooter, SidebarChromeHeader } from "./sidebar/SidebarChrome";
 import { Popover, PopoverPopup, PopoverTrigger } from "./ui/popover";
@@ -198,12 +207,16 @@ const SIDEBAR_THREAD_SORT_LABELS: Record<SidebarThreadSortOrder, string> = {
 function SidebarSortMenu({
   projectSortOrder,
   threadSortOrder,
+  groupByHost,
   onProjectSortOrderChange,
   onThreadSortOrderChange,
+  onGroupByHostChange,
 }: {
   projectSortOrder: SidebarProjectSortOrder;
+  groupByHost: boolean;
   threadSortOrder: SidebarThreadSortOrder;
   onProjectSortOrderChange: (sortOrder: SidebarProjectSortOrder) => void;
+  onGroupByHostChange: (groupByHost: boolean) => void;
   onThreadSortOrderChange: (sortOrder: SidebarThreadSortOrder) => void;
 }) {
   return (
@@ -255,6 +268,16 @@ function SidebarSortMenu({
               </MenuRadioItem>
             ))}
           </MenuRadioGroup>
+        </MenuGroup>
+        <MenuGroup>
+          <div className="px-2 pb-1 pt-2 text-xs font-medium text-muted-foreground">View</div>
+          <MenuCheckboxItem
+            variant="switch"
+            checked={groupByHost}
+            onCheckedChange={onGroupByHostChange}
+          >
+            Group active threads by host
+          </MenuCheckboxItem>
         </MenuGroup>
       </MenuPopup>
     </Menu>
@@ -616,6 +639,7 @@ const SidebarDraftBlock = memo(function SidebarDraftBlock(props: {
   projectCwdByKey: ReadonlyMap<string, string>;
   projectFaviconPathByKey: ReadonlyMap<string, string | null | undefined>;
   scopedProjectKeys: ReadonlySet<string> | null;
+  visibleEnvironmentIds: ReadonlySet<string> | null;
   routeDraftId: string | null;
   onNavigateToDraft: (draftId: DraftId) => void;
 }) {
@@ -656,6 +680,12 @@ const SidebarDraftBlock = memo(function SidebarDraftBlock(props: {
         continue;
       }
       if (
+        props.visibleEnvironmentIds !== null &&
+        !props.visibleEnvironmentIds.has(session.environmentId)
+      ) {
+        continue;
+      }
+      if (
         props.scopedProjectKeys !== null &&
         !props.scopedProjectKeys.has(`${session.environmentId}:${session.projectId}`)
       ) {
@@ -684,6 +714,7 @@ const SidebarDraftBlock = memo(function SidebarDraftBlock(props: {
     frozenActive,
     props.routeDraftId,
     props.scopedProjectKeys,
+    props.visibleEnvironmentIds,
   ]);
   const handleDiscard = useCallback(
     (draftId: DraftId) => {
@@ -1685,6 +1716,7 @@ export default function Sidebar() {
   const confirmThreadDelete = useClientSettings((s) => s.confirmThreadDelete);
   const sidebarProjectSortOrder = useClientSettings((s) => s.sidebarProjectSortOrder);
   const sidebarThreadSortOrder = useClientSettings((s) => s.sidebarThreadSortOrder);
+  const sidebarGroupByHost = useClientSettings((s) => s.sidebarGroupByHost);
   const updateClientSettings = useUpdateClientSettings();
   const timestampFormat = useClientSettings((s) => s.timestampFormat);
   const projectGroupingSettings = useClientSettings(selectProjectGroupingSettings);
@@ -1766,6 +1798,9 @@ export default function Sidebar() {
   );
   const { environments } = useEnvironments();
   const primaryEnvironmentId = usePrimaryEnvironmentId();
+  const [selectedHostIds, setSelectedHostIds] = useState<ReadonlySet<EnvironmentId>>(
+    () => new Set(),
+  );
   const clearSelection = useThreadSelectionStore((s) => s.clearSelection);
   const setSelectionAnchor = useThreadSelectionStore((s) => s.setAnchor);
   const toggleThreadSelection = useThreadSelectionStore((s) => s.toggleThread);
@@ -1814,10 +1849,55 @@ export default function Sidebar() {
       ),
     [environments],
   );
+  const hostOptions = useMemo(() => {
+    const environmentIdsWithProjects = new Set(projects.map((project) => project.environmentId));
+    return environments
+      .filter((environment) => environmentIdsWithProjects.has(environment.environmentId))
+      .toSorted((left, right) => {
+        if (left.environmentId === primaryEnvironmentId) return -1;
+        if (right.environmentId === primaryEnvironmentId) return 1;
+        return (
+          left.label.localeCompare(right.label) ||
+          left.environmentId.localeCompare(right.environmentId)
+        );
+      });
+  }, [environments, primaryEnvironmentId, projects]);
+  const availableHostIds = useMemo(
+    () => new Set(hostOptions.map((environment) => environment.environmentId)),
+    [hostOptions],
+  );
+  useEffect(() => {
+    setSelectedHostIds((current) => {
+      if (current.size === 0) return current;
+      const next = new Set(
+        [...current].filter((environmentId) => availableHostIds.has(environmentId)),
+      );
+      return next.size === current.size ? current : next;
+    });
+  }, [availableHostIds]);
+  const visibleEnvironmentIds = selectedHostIds.size === 0 ? null : selectedHostIds;
+  const hostScopeKey = [...selectedHostIds].toSorted().join("\0");
+  const toggleHostScope = useCallback((environmentId: EnvironmentId) => {
+    setSelectedHostIds((current) => toggleSidebarHostScope(current, environmentId));
+  }, []);
+  const hostFilteredProjects = useMemo(
+    () =>
+      visibleEnvironmentIds === null
+        ? projects
+        : projects.filter((project) => visibleEnvironmentIds.has(project.environmentId)),
+    [projects, visibleEnvironmentIds],
+  );
+  const hostFilteredThreads = useMemo(
+    () =>
+      visibleEnvironmentIds === null
+        ? threads
+        : threads.filter((thread) => visibleEnvironmentIds.has(thread.environmentId)),
+    [threads, visibleEnvironmentIds],
+  );
   const orderedProjects = useMemo(
     () =>
       orderItemsByPreferredIds({
-        items: projects,
+        items: hostFilteredProjects,
         preferredIds: projectOrder,
         getId: getProjectOrderKey,
         getPreferenceIds: (project) => [
@@ -1825,12 +1905,12 @@ export default function Sidebar() {
           legacyProjectCwdPreferenceKey(project.workspaceRoot),
         ],
       }),
-    [projectOrder, projects],
+    [hostFilteredProjects, projectOrder],
   );
   const unsortedProjectGroups = useMemo(
     () =>
       buildSidebarProjectSnapshots({
-        projects: sidebarProjectSortOrder === "manual" ? orderedProjects : projects,
+        projects: sidebarProjectSortOrder === "manual" ? orderedProjects : hostFilteredProjects,
         settings: projectGroupingSettings,
         primaryEnvironmentId,
         resolveEnvironmentLabel: (environmentId) => environmentLabelById.get(environmentId) ?? null,
@@ -1840,13 +1920,18 @@ export default function Sidebar() {
       orderedProjects,
       primaryEnvironmentId,
       projectGroupingSettings,
-      projects,
+      hostFilteredProjects,
       sidebarProjectSortOrder,
     ],
   );
   const projectGroups = useMemo(
-    () => sortLogicalProjectsForSidebar(unsortedProjectGroups, threads, sidebarProjectSortOrder),
-    [sidebarProjectSortOrder, threads, unsortedProjectGroups],
+    () =>
+      sortLogicalProjectsForSidebar(
+        unsortedProjectGroups,
+        hostFilteredThreads,
+        sidebarProjectSortOrder,
+      ),
+    [hostFilteredThreads, sidebarProjectSortOrder, unsortedProjectGroups],
   );
   const serverProviders = useAtomValue(primaryServerProvidersAtom);
   const providerEntryByInstanceId = useMemo(
@@ -1960,6 +2045,9 @@ export default function Sidebar() {
       if (!composerDraftHasUserContent(store.draftsByThreadKey[draftKey])) {
         continue;
       }
+      if (visibleEnvironmentIds !== null && !visibleEnvironmentIds.has(session.environmentId)) {
+        continue;
+      }
       if (
         scopedProjectKeys !== null &&
         !scopedProjectKeys.has(`${session.environmentId}:${session.projectId}`)
@@ -1970,11 +2058,11 @@ export default function Sidebar() {
     }
     return count;
   });
-  // Scope flips drop the selection: rows selected under the old scope may be
-  // hidden now, and bulk actions must never count or touch invisible rows.
+  // Scope flips drop the selection: rows selected under the old project or
+  // host scope may be hidden now, and bulk actions must never touch them.
   useEffect(() => {
     clearSelection();
-  }, [clearSelection, projectScopeKey]);
+  }, [clearSelection, hostScopeKey, projectScopeKey]);
 
   const handleProjectSettings = useCallback(
     (event: ReactMouseEvent<HTMLButtonElement>, projectGroup: SidebarProjectSnapshot) => {
@@ -2012,7 +2100,7 @@ export default function Sidebar() {
     // memo exactly at the next wake boundary.
     void snoozeWakeTick;
     const preciseNow = new Date().toISOString();
-    const visible = threads.filter(
+    const visible = hostFilteredThreads.filter(
       (thread) =>
         thread.archivedAt === null &&
         (scopedProjectKeys === null ||
@@ -2090,7 +2178,7 @@ export default function Sidebar() {
     sidebarThreadSortOrder,
     serverConfigs,
     snoozeWakeTick,
-    threads,
+    hostFilteredThreads,
   ]);
 
   const threadSearchInputRef = useRef<HTMLInputElement>(null);
@@ -2143,7 +2231,7 @@ export default function Sidebar() {
   // filter context changes so a scope/search flip never inherits a deep
   // page state.
   const [settledVisibleCount, setSettledVisibleCount] = useState(SETTLED_TAIL_INITIAL_COUNT);
-  const settledResetKey = projectScopeKey ?? "all";
+  const settledResetKey = `${projectScopeKey ?? "all"}:${hostScopeKey}`;
   const lastSettledResetKeyRef = useRef(settledResetKey);
   if (lastSettledResetKeyRef.current !== settledResetKey) {
     lastSettledResetKeyRef.current = settledResetKey;
@@ -3501,11 +3589,15 @@ export default function Sidebar() {
                 <SidebarSortMenu
                   projectSortOrder={sidebarProjectSortOrder}
                   threadSortOrder={sidebarThreadSortOrder}
+                  groupByHost={sidebarGroupByHost}
                   onProjectSortOrderChange={(sortOrder) =>
                     updateClientSettings({ sidebarProjectSortOrder: sortOrder })
                   }
                   onThreadSortOrderChange={(sortOrder) =>
                     updateClientSettings({ sidebarThreadSortOrder: sortOrder })
+                  }
+                  onGroupByHostChange={(groupByHost) =>
+                    updateClientSettings({ sidebarGroupByHost: groupByHost })
                   }
                 />
                 <Tooltip>
@@ -3528,6 +3620,53 @@ export default function Sidebar() {
                   </TooltipTrigger>
                   <TooltipPopup side="right">New project</TooltipPopup>
                 </Tooltip>
+              </div>
+            ) : null}
+            {hostOptions.length > 1 ? (
+              <div
+                role="group"
+                aria-label="Filter threads by host"
+                className="flex min-w-0 gap-1 overflow-x-auto px-0.5 pb-0.5"
+              >
+                <button
+                  type="button"
+                  aria-pressed={selectedHostIds.size === 0}
+                  onClick={() => setSelectedHostIds(new Set())}
+                  className={cn(
+                    "inline-flex h-6 shrink-0 items-center rounded-full border px-2 text-[11px] font-medium transition-colors",
+                    selectedHostIds.size === 0
+                      ? "border-sidebar-ring/40 bg-sidebar-accent text-sidebar-foreground"
+                      : "border-sidebar-border text-sidebar-muted-foreground hover:bg-sidebar-row-hover hover:text-sidebar-foreground",
+                  )}
+                >
+                  All
+                </button>
+                {hostOptions.map((environment) => {
+                  const isSelected = selectedHostIds.has(environment.environmentId);
+                  return (
+                    <button
+                      key={environment.environmentId}
+                      type="button"
+                      aria-pressed={isSelected}
+                      onClick={() => toggleHostScope(environment.environmentId)}
+                      className={cn(
+                        "inline-flex h-6 min-w-0 shrink-0 items-center gap-1.5 rounded-full border px-2 text-[11px] font-medium transition-colors",
+                        isSelected
+                          ? "border-sidebar-ring/40 bg-sidebar-accent text-sidebar-foreground"
+                          : "border-sidebar-border text-sidebar-muted-foreground hover:bg-sidebar-row-hover hover:text-sidebar-foreground",
+                      )}
+                    >
+                      <span
+                        aria-hidden
+                        className={cn(
+                          "size-1.5 shrink-0 rounded-full bg-current",
+                          sidebarEnvironmentConnectionClassName(environment.connection.phase),
+                        )}
+                      />
+                      <span className="max-w-24 truncate">{environment.label}</span>
+                    </button>
+                  );
+                })}
               </div>
             ) : null}
           </SidebarGroup>
@@ -3716,6 +3855,7 @@ export default function Sidebar() {
                       projectCwdByKey={projectCwdByKey}
                       projectFaviconPathByKey={projectFaviconPathByKey}
                       scopedProjectKeys={scopedProjectKeys}
+                      visibleEnvironmentIds={visibleEnvironmentIds}
                       routeDraftId={routeDraftIdForRows}
                       onNavigateToDraft={navigateToDraft}
                     />,
@@ -3760,8 +3900,57 @@ export default function Sidebar() {
                       />,
                     );
                   }
-                  for (const thread of activeThreads) {
-                    items.push(renderThreadRow(thread, "active"));
+                  if (sidebarGroupByHost && hostOptions.length > 1) {
+                    const activeThreadsByEnvironment = new Map<
+                      EnvironmentId,
+                      EnvironmentThreadShell[]
+                    >();
+                    for (const thread of activeThreads) {
+                      const environmentThreads =
+                        activeThreadsByEnvironment.get(thread.environmentId) ?? [];
+                      environmentThreads.push(thread);
+                      activeThreadsByEnvironment.set(thread.environmentId, environmentThreads);
+                    }
+                    const knownEnvironmentIds = new Set(
+                      hostOptions.map((environment) => environment.environmentId),
+                    );
+                    const orderedEnvironmentIds = [
+                      ...hostOptions.map((environment) => environment.environmentId),
+                      ...[...activeThreadsByEnvironment.keys()]
+                        .filter((environmentId) => !knownEnvironmentIds.has(environmentId))
+                        .toSorted(),
+                    ];
+                    for (const environmentId of orderedEnvironmentIds) {
+                      const environmentThreads = activeThreadsByEnvironment.get(environmentId);
+                      if (environmentThreads === undefined) continue;
+                      items.push(
+                        <li
+                          key={`host:${environmentId}`}
+                          data-thread-selection-safe
+                          className="mt-2 flex list-none items-center gap-1.5 px-2.5 pb-0.5 text-[11px] font-medium text-sidebar-muted-foreground"
+                        >
+                          <span
+                            aria-hidden
+                            className={cn(
+                              "size-1.5 shrink-0 rounded-full bg-current",
+                              sidebarEnvironmentConnectionClassName(
+                                environmentConnectionPhaseById.get(environmentId) ?? null,
+                              ),
+                            )}
+                          />
+                          <span className="min-w-0 truncate">
+                            {environmentLabelById.get(environmentId) ?? environmentId}
+                          </span>
+                        </li>,
+                      );
+                      for (const thread of environmentThreads) {
+                        items.push(renderThreadRow(thread, "active"));
+                      }
+                    }
+                  } else {
+                    for (const thread of activeThreads) {
+                      items.push(renderThreadRow(thread, "active"));
+                    }
                   }
                   // Snoozed shelf: between the inbox and Settled — out of the
                   // way, never gone. The header always renders while anything
@@ -3875,6 +4064,8 @@ export default function Sidebar() {
                 </>
               ) : scopedProjectGroup ? (
                 `No threads in ${scopedProjectGroup.displayName} yet`
+              ) : visibleEnvironmentIds !== null ? (
+                "No threads on the selected hosts"
               ) : (
                 "No threads yet"
               )}

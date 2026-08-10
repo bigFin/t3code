@@ -7,6 +7,124 @@ interface OpenSessionFileOptions {
   readonly procRoot?: string;
   readonly currentProcessId?: string;
 }
+type PiCompatibleProcessDriver = "omp" | "piAgent";
+
+export interface ActivePiSessionFiles {
+  readonly omp: ReadonlySet<string>;
+  readonly piAgent: ReadonlySet<string>;
+}
+
+interface ActivePiSessionFileOptions extends OpenSessionFileOptions {
+  readonly terminalSessionsRoots?: Partial<Record<PiCompatibleProcessDriver, string>>;
+}
+
+function processDriver(cmdline: string, path: Path.Path): PiCompatibleProcessDriver | undefined {
+  const arguments_ = cmdline.split("\0").filter((argument) => argument.length > 0);
+  if (
+    arguments_.some(
+      (argument) =>
+        argument.includes("@oh-my-pi/pi-coding-agent") || path.basename(argument) === "omp",
+    )
+  ) {
+    return "omp";
+  }
+  if (
+    arguments_.some(
+      (argument) =>
+        argument.includes("@mariozechner/pi-coding-agent") || path.basename(argument) === "pi",
+    )
+  ) {
+    return "piAgent";
+  }
+  return undefined;
+}
+
+function terminalBreadcrumbName(terminal: string, path: Path.Path): string | undefined {
+  const devicePrefix = `/dev${path.sep}`;
+  if (!terminal.startsWith(devicePrefix)) return undefined;
+  const name = terminal.slice(devicePrefix.length).split(path.sep).join("-");
+  return /^[A-Za-z0-9._-]+$/u.test(name) ? name : undefined;
+}
+
+/**
+ * Finds transcripts owned by live interactive Pi/OMP processes.
+ *
+ * These CLIs close their JSONL between writes, so open descriptors alone do
+ * not prove ownership. Their per-terminal breadcrumbs provide the exact
+ * session even when concurrent processes share a working directory.
+ */
+export const listActivePiSessionFiles = Effect.fn("PiSessionFiles.listActivePiSessionFiles")(
+  function* (
+    fileSystem: FileSystem.FileSystem,
+    path: Path.Path,
+    options?: ActivePiSessionFileOptions,
+  ): Effect.fn.Return<ActivePiSessionFiles> {
+    const procRoot = options?.procRoot ?? "/proc";
+    const currentProcessId = options?.currentProcessId ?? String(process.pid);
+    const home = process.env.HOME ?? "";
+    const terminalSessionsRoots = {
+      omp:
+        options?.terminalSessionsRoots?.omp ??
+        path.join(home, ".omp", "agent", "terminal-sessions"),
+      piAgent:
+        options?.terminalSessionsRoots?.piAgent ??
+        path.join(home, ".pi", "agent", "terminal-sessions"),
+    };
+    const active = {
+      omp: new Set<string>(),
+      piAgent: new Set<string>(),
+    };
+    const processes = yield* fileSystem
+      .readDirectory(procRoot)
+      .pipe(Effect.orElseSucceed(() => []));
+
+    for (const processId of processes) {
+      if (!/^\d+$/u.test(processId) || processId === currentProcessId) continue;
+      const processRoot = path.join(procRoot, processId);
+      const cmdline = yield* fileSystem
+        .readFileString(path.join(processRoot, "cmdline"))
+        .pipe(Effect.option);
+      if (Option.isNone(cmdline)) continue;
+      const driver = processDriver(cmdline.value, path);
+      if (driver === undefined) continue;
+
+      const descriptors = yield* fileSystem
+        .readDirectory(path.join(processRoot, "fd"))
+        .pipe(Effect.orElseSucceed(() => []));
+      for (const descriptor of descriptors) {
+        const target = yield* fileSystem
+          .readLink(path.join(processRoot, "fd", descriptor))
+          .pipe(Effect.option);
+        if (Option.isSome(target) && target.value.endsWith(".jsonl")) {
+          active[driver].add(path.resolve(target.value));
+        }
+      }
+
+      const terminal = yield* fileSystem
+        .readLink(path.join(processRoot, "fd", "0"))
+        .pipe(Effect.option);
+      const cwd = yield* fileSystem.readLink(path.join(processRoot, "cwd")).pipe(Effect.option);
+      if (Option.isNone(terminal) || Option.isNone(cwd)) continue;
+      const breadcrumbName = terminalBreadcrumbName(terminal.value, path);
+      if (breadcrumbName === undefined) continue;
+      const breadcrumb = yield* fileSystem
+        .readFileString(path.join(terminalSessionsRoots[driver], breadcrumbName))
+        .pipe(Effect.option);
+      if (Option.isNone(breadcrumb)) continue;
+      const [breadcrumbCwd, sessionFile] = breadcrumb.value.split(/\r?\n/u);
+      if (
+        breadcrumbCwd === undefined ||
+        sessionFile === undefined ||
+        path.resolve(breadcrumbCwd) !== path.resolve(cwd.value)
+      ) {
+        continue;
+      }
+      active[driver].add(path.resolve(sessionFile));
+    }
+
+    return active;
+  },
+);
 
 /** Snapshots regular files held open by other processes using Linux procfs. */
 export const listOpenProcessFiles = Effect.fn("PiSessionFiles.listOpenProcessFiles")(function* (

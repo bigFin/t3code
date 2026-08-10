@@ -39,6 +39,16 @@ export function sidebarEnvironmentConnectionClassName(
       return "text-sidebar-muted-foreground/70";
   }
 }
+export function toggleSidebarHostScope<T extends string>(
+  current: ReadonlySet<T>,
+  environmentId: T,
+): ReadonlySet<T> {
+  if (current.size === 0) return new Set([environmentId]);
+  const next = new Set(current);
+  if (next.has(environmentId)) next.delete(environmentId);
+  else next.add(environmentId);
+  return next;
+}
 
 type SidebarProject = {
   id: string;

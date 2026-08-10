@@ -29,20 +29,34 @@ import { ProjectionSnapshotQuery } from "../../orchestration/Services/Projection
 import { forkParked } from "../../serverActivation.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { deriveProviderInstanceConfigMap } from "../Layers/ProviderInstanceRegistryHydration.ts";
-import { listOpenProcessFiles } from "../piSessionFiles.ts";
+import { listActivePiSessionFiles } from "../piSessionFiles.ts";
 import { ProviderSessionDirectory } from "../Services/ProviderSessionDirectory.ts";
 import {
   PiCompatibleSessionImporter,
   type PiCompatibleSessionImporterShape,
 } from "../Services/PiCompatibleSessionImporter.ts";
 
-// Discover historical sessions on the slower sweep; between those walks, only
-// re-read files another process currently has open so CLI progress stays fresh.
+// Discover historical sessions on the slower sweep; between those walks,
+// re-read only transcripts owned by live CLI processes.
 const FULL_SCAN_INTERVAL_MS = 60_000;
 const ACTIVE_SCAN_INTERVAL_MS = 2_000;
 const OMP_DRIVER = ProviderDriverKind.make("omp");
 const PI_DRIVER = ProviderDriverKind.make("piAgent");
 type UnknownRecord = Record<string, unknown>;
+type PiCompatibleToolCall = {
+  readonly name: string;
+  readonly title: string;
+  readonly summary: string;
+  readonly itemType:
+    | "command_execution"
+    | "file_change"
+    | "mcp_tool_call"
+    | "dynamic_tool_call"
+    | "collab_agent_tool_call"
+    | "web_search";
+  readonly input: UnknownRecord;
+  readonly turnId: TurnId | null;
+};
 const decodeUnknownJson = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
 const encodeUnknownJson = Schema.encodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
 const ImportedRuntimePayload = Schema.Struct({
@@ -61,6 +75,8 @@ export interface PiCompatibleImportedMessage {
   readonly createdAt: string;
 }
 
+type PiCompatibleImportedActivity = OrchestrationThreadActivity;
+
 export interface PiCompatibleSession {
   readonly id: string;
   readonly cwd: string;
@@ -68,6 +84,7 @@ export interface PiCompatibleSession {
   readonly parentSession: string | undefined;
   readonly createdAt: string;
   readonly messages: ReadonlyArray<PiCompatibleImportedMessage>;
+  readonly activities: ReadonlyArray<PiCompatibleImportedActivity>;
 }
 
 function stringValue(value: unknown): string | undefined {
@@ -130,6 +147,106 @@ const conciseLine = (text: string, maxLength: number): string | undefined => {
   return `${firstLine.slice(0, maxLength - 3).trimEnd()}...`;
 };
 
+const ACTIVITY_DETAIL_MAX_LENGTH = 2_000;
+const TOOL_ARGUMENT_MAX_LENGTH = 1_000;
+const TOOL_ARGUMENT_KEYS = new Set([
+  "args",
+  "command",
+  "cwd",
+  "file",
+  "i",
+  "line",
+  "name",
+  "new_name",
+  "op",
+  "path",
+  "paths",
+  "pattern",
+  "query",
+  "symbol",
+  "task",
+  "to",
+  "url",
+]);
+
+function boundedText(value: string, maxLength: number): string {
+  if (value.length <= maxLength) return value;
+  return `${value.slice(0, maxLength - 21).trimEnd()}\n… output truncated`;
+}
+
+function compactToolArguments(value: unknown): UnknownRecord {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return {};
+  const compact: UnknownRecord = {};
+  for (const [key, entry] of Object.entries(value as UnknownRecord)) {
+    if (!TOOL_ARGUMENT_KEYS.has(key)) continue;
+    if (typeof entry === "string") compact[key] = boundedText(entry, TOOL_ARGUMENT_MAX_LENGTH);
+    else if (typeof entry === "number" || typeof entry === "boolean" || entry === null)
+      compact[key] = entry;
+    else if (Array.isArray(entry))
+      compact[key] = entry
+        .slice(0, 20)
+        .map((item) =>
+          typeof item === "string" ? boundedText(item, TOOL_ARGUMENT_MAX_LENGTH) : item,
+        );
+  }
+  return compact;
+}
+
+function pathsFromEditPatch(argumentsValue: unknown): ReadonlyArray<{ readonly path: string }> {
+  if (typeof argumentsValue !== "object" || argumentsValue === null) return [];
+  const input = (argumentsValue as UnknownRecord).input;
+  if (typeof input !== "string") return [];
+  const paths = new Set<string>();
+  for (const match of input.matchAll(/^\[([^#\]\r\n]+)#[0-9A-F]{4}\]$/gmu)) {
+    const path = match[1]?.trim();
+    if (path) paths.add(path);
+    if (paths.size >= 12) break;
+  }
+  return [...paths].map((path) => ({ path }));
+}
+
+function toolTitle(name: string): string {
+  const known: Readonly<Record<string, string>> = {
+    bash: "Terminal",
+    edit: "Edit",
+    glob: "Find files",
+    grep: "Search",
+    read: "Read",
+    task: "Agent",
+    todo: "Plan",
+    web_search: "Web search",
+    write: "Write",
+  };
+  const normalized = name.toLowerCase();
+  const exact = known[normalized];
+  if (exact !== undefined) return exact;
+  const words = name
+    .replace(/([a-z0-9])([A-Z])/gu, "$1 $2")
+    .replace(/[_-]+/gu, " ")
+    .trim();
+  return words.length === 0 ? "Tool" : `${words[0]!.toUpperCase()}${words.slice(1)}`;
+}
+
+function toolItemType(name: string): PiCompatibleToolCall["itemType"] {
+  const normalized = name.toLowerCase();
+  if (normalized === "bash") return "command_execution";
+  if (normalized === "edit" || normalized === "write" || normalized === "ast_edit")
+    return "file_change";
+  if (normalized === "web_search") return "web_search";
+  if (normalized === "task" || normalized === "agent") return "collab_agent_tool_call";
+  if (normalized.includes("browser")) return "mcp_tool_call";
+  return "dynamic_tool_call";
+}
+
+function toolRequestKind(
+  itemType: PiCompatibleToolCall["itemType"],
+  name: string,
+): "command" | "file-read" | "file-change" | undefined {
+  if (itemType === "command_execution") return "command";
+  if (itemType === "file_change") return "file-change";
+  return name === "read" || name === "grep" || name === "glob" ? "file-read" : undefined;
+}
+
 const IMPORTED_TITLE_MAX_LENGTH = 120;
 
 function titleFromFirstUserMessage(
@@ -147,9 +264,24 @@ export function parsePiCompatibleSession(
 ): PiCompatibleSession | undefined {
   const fallbackTime = "1970-01-01T00:00:00.000Z";
   let session: UnknownRecord | undefined;
-  let title: string | undefined;
+  let sessionTitle: string | undefined;
   let updatedAt = fallbackTime;
+  let activeTurnId: TurnId | null = null;
   const messages: PiCompatibleImportedMessage[] = [];
+  const activities: PiCompatibleImportedActivity[] = [];
+  const toolCalls = new Map<string, PiCompatibleToolCall>();
+  let anonymousRecordIndex = 0;
+  let turnActivityStartIndex = 0;
+  let lastVisibleAssistantTurnId: TurnId | null = null;
+  const finalizeActivityTurn = () => {
+    if (lastVisibleAssistantTurnId === null) return;
+    for (let index = turnActivityStartIndex; index < activities.length; index += 1) {
+      const activity = activities[index];
+      if (activity !== undefined) {
+        activities[index] = { ...activity, turnId: lastVisibleAssistantTurnId };
+      }
+    }
+  };
 
   for (const line of contents.split(/\r?\n/u)) {
     if (line.trim().length === 0) continue;
@@ -162,7 +294,8 @@ export function parsePiCompatibleSession(
     const timestamp = isoTimestamp(record.timestamp ?? record.updatedAt, fallbackTime);
     if (timestamp > updatedAt) updatedAt = timestamp;
     if (record.type === "session") session = record;
-    if (record.type === "title" && title === undefined) title = stringValue(record.title);
+    if (record.type === "title" && sessionTitle === undefined)
+      sessionTitle = stringValue(record.title);
     if (
       record.type !== "message" ||
       typeof record.message !== "object" ||
@@ -170,20 +303,158 @@ export function parsePiCompatibleSession(
       Array.isArray(record.message)
     )
       continue;
+
     const message = record.message as UnknownRecord;
-    if (message.role !== "user" && message.role !== "assistant") continue;
-    const text = textFromContent(message.content);
-    if (text === undefined) continue;
-    const recordId = stringValue(record.id) ?? `${messages.length}`;
+    const recordId = stringValue(record.id) ?? `${anonymousRecordIndex++}`;
     const sessionId = stringValue(session?.id) ?? sourcePath;
-    messages.push({
-      messageId: MessageId.make(`${driver}:${stableTextHash(sessionId)}:${recordId}`),
-      role: message.role,
-      text,
-      turnId: TurnId.make(`${driver}:${stableTextHash(sessionId)}:${recordId}`),
+    const sessionHash = stableTextHash(sessionId);
+    if (message.role === "user" || message.role === "assistant") {
+      const turnId = TurnId.make(`${driver}:${sessionHash}:${recordId}`);
+      if (message.role === "user") {
+        finalizeActivityTurn();
+        activeTurnId = turnId;
+        turnActivityStartIndex = activities.length;
+        lastVisibleAssistantTurnId = null;
+      }
+      const text = textFromContent(message.content);
+      if (text !== undefined)
+        messages.push({
+          messageId: MessageId.make(`${driver}:${sessionHash}:${recordId}`),
+          role: message.role,
+          text,
+          turnId,
+          createdAt: timestamp,
+        });
+      if (message.role === "assistant" && text !== undefined) {
+        lastVisibleAssistantTurnId = turnId;
+      }
+
+      if (message.role !== "assistant" || !Array.isArray(message.content)) continue;
+      for (const [partIndex, value] of message.content.entries()) {
+        if (typeof value !== "object" || value === null || Array.isArray(value)) continue;
+        const part = value as UnknownRecord;
+        if (part.type === "thinking" || part.type === "reasoning") {
+          const reasoning = stringValue(part.thinking) ?? stringValue(part.text);
+          if (reasoning === undefined) continue;
+          activities.push({
+            id: EventId.make(
+              `${driver}:${sessionHash}:reasoning:${stableTextHash(`${recordId}:${partIndex}`)}`,
+            ),
+            tone: "info",
+            kind: "task.progress",
+            summary: "Reasoning",
+            payload: {
+              summary: conciseLine(reasoning, 180) ?? "Reasoning",
+              detail: boundedText(reasoning, ACTIVITY_DETAIL_MAX_LENGTH),
+            },
+            turnId: activeTurnId,
+            createdAt: timestamp,
+          });
+          continue;
+        }
+        if (part.type !== "toolCall" && part.type !== "tool_call") continue;
+        const name = stringValue(part.name) ?? "tool";
+        const callId =
+          stringValue(part.id) ??
+          `${recordId}:${partIndex}:${stableTextHash(encodeUnknownJson(part))}`;
+        const input = compactToolArguments(part.arguments);
+        const patchFiles = pathsFromEditPatch(part.arguments);
+        if (patchFiles.length > 0) input.files = patchFiles;
+        const itemType = toolItemType(name);
+        const title = toolTitle(name);
+        const summary = stringValue(part.intent) ?? stringValue(input.i) ?? `${title} tool call`;
+        const toolCall = {
+          name,
+          title,
+          summary,
+          itemType,
+          input,
+          turnId: activeTurnId,
+        } satisfies PiCompatibleToolCall;
+        toolCalls.set(callId, toolCall);
+        const requestKind = toolRequestKind(itemType, name);
+        activities.push({
+          id: EventId.make(`${driver}:${sessionHash}:tool:${callId}:updated`),
+          tone: "tool",
+          kind: "tool.updated",
+          summary,
+          payload: {
+            itemType,
+            status: "inProgress",
+            title,
+            ...(requestKind === undefined ? {} : { requestKind }),
+            data: {
+              toolCallId: callId,
+              kind: itemType === "command_execution" ? "execute" : name,
+              item: {
+                name,
+                input,
+                ...(typeof input.command === "string" ? { command: input.command } : {}),
+              },
+            },
+          },
+          turnId: activeTurnId,
+          createdAt: timestamp,
+        });
+      }
+      continue;
+    }
+
+    if (message.role !== "toolResult") continue;
+    const callId = stringValue(message.toolCallId);
+    if (callId === undefined) continue;
+    const call = toolCalls.get(callId);
+    const name = call?.name ?? stringValue(message.toolName) ?? "tool";
+    const title = call?.title ?? toolTitle(name);
+    const itemType = call?.itemType ?? toolItemType(name);
+    const input = call?.input ?? {};
+    const output = textFromContent(message.content);
+    const detail =
+      output === undefined ? undefined : boundedText(output, ACTIVITY_DETAIL_MAX_LENGTH);
+    const resultDetails =
+      typeof message.details === "object" &&
+      message.details !== null &&
+      !Array.isArray(message.details)
+        ? (message.details as UnknownRecord)
+        : {};
+    const requestKind = toolRequestKind(itemType, name);
+    activities.push({
+      id: EventId.make(`${driver}:${sessionHash}:tool:${callId}:completed`),
+      tone: message.isError === true ? "error" : "tool",
+      kind: "tool.completed",
+      summary: call?.summary ?? `${title} tool call`,
+      payload: {
+        itemType,
+        status: message.isError === true ? "failed" : "completed",
+        title,
+        ...(requestKind === undefined ? {} : { requestKind }),
+        ...(detail === undefined ? {} : { detail }),
+        data: {
+          toolCallId: callId,
+          kind: itemType === "command_execution" ? "execute" : name,
+          item: {
+            name,
+            input,
+            ...(typeof input.command === "string" ? { command: input.command } : {}),
+          },
+          ...(detail === undefined
+            ? {}
+            : {
+                rawOutput: {
+                  content: detail,
+                  ...(typeof resultDetails.exitCode === "number"
+                    ? { exitCode: resultDetails.exitCode }
+                    : {}),
+                },
+              }),
+        },
+      },
+      turnId: call?.turnId ?? activeTurnId,
       createdAt: timestamp,
     });
+    toolCalls.delete(callId);
   }
+  finalizeActivityTurn();
 
   const id = stringValue(session?.id);
   const cwd = stringValue(session?.cwd);
@@ -192,9 +463,10 @@ export function parsePiCompatibleSession(
     id,
     cwd,
     parentSession: stringValue(session?.parentSession),
-    title: title ?? stringValue(session?.title) ?? titleFromFirstUserMessage(messages),
+    title: sessionTitle ?? stringValue(session?.title) ?? titleFromFirstUserMessage(messages),
     createdAt: isoTimestamp(session?.timestamp, updatedAt),
     messages,
+    activities,
   };
 }
 
@@ -373,6 +645,45 @@ const makePiCompatibleSessionImporter = (options?: {
     const path = yield* Path.Path;
     const scanIntervalMs = options?.scanIntervalMs ?? FULL_SCAN_INTERVAL_MS;
     const activeScanIntervalMs = options?.activeScanIntervalMs ?? ACTIVE_SCAN_INTERVAL_MS;
+    const importedActivityIdsByThread = new Map<ThreadId, Set<EventId>>();
+    let previouslyActiveSessionFiles = {
+      omp: new Set<string>(),
+      piAgent: new Set<string>(),
+    };
+
+    const importActivities = Effect.fn("PiCompatibleSessionImporter.importActivities")(function* (
+      threadId: ThreadId,
+      activities: ReadonlyArray<PiCompatibleImportedActivity>,
+    ) {
+      if (activities.length === 0) return;
+      let known = importedActivityIdsByThread.get(threadId);
+      if (known === undefined) {
+        known = new Set<EventId>();
+        const candidateIds = activities.map((activity) => activity.id);
+        for (let index = 0; index < candidateIds.length; index += 400) {
+          const existing = yield* snapshots.getExistingThreadActivityIds({
+            threadId,
+            activityIds: candidateIds.slice(index, index + 400),
+          });
+          for (const id of existing) known.add(id);
+        }
+        importedActivityIdsByThread.set(threadId, known);
+      }
+      const unseen = activities.filter((activity) => !known.has(activity.id));
+      if (unseen.length === 0) return;
+      yield* engine.dispatch({
+        type: "thread.activities.import",
+        commandId: stableCommandId(
+          "activities",
+          threadId,
+          stableTextHash(encodeUnknownJson(unseen.map((activity) => activity.id))),
+        ),
+        threadId,
+        activities: unseen,
+        createdAt: unseen.at(-1)!.createdAt,
+      });
+      for (const activity of unseen) known.add(activity.id);
+    });
 
     const archiveThreadIfVisible = Effect.fn("PiCompatibleSessionImporter.archiveThreadIfVisible")(
       function* (threadId: ThreadId) {
@@ -445,6 +756,7 @@ const makePiCompatibleSessionImporter = (options?: {
             messages,
             createdAt: messages.at(-1)!.createdAt,
           });
+        yield* importActivities(threadId, imported.activities);
         const turnCommand = piCompatibleTurnReconcileCommand(threadId, imported, isOpen);
         if (turnCommand !== undefined) yield* engine.dispatch(turnCommand);
         const binding = yield* directory.getBinding(threadId);
@@ -548,7 +860,7 @@ const makePiCompatibleSessionImporter = (options?: {
     );
 
     const scan = Effect.fn("PiCompatibleSessionImporter.scan")(function* (mode: "full" | "active") {
-      const openFiles = yield* listOpenProcessFiles(fileSystem, path);
+      const activeSessionFiles = yield* listActivePiSessionFiles(fileSystem, path);
       const settings = yield* settingsService.getSettings;
       for (const [rawInstanceId, entry] of Object.entries(
         deriveProviderInstanceConfigMap(settings),
@@ -562,10 +874,16 @@ const makePiCompatibleSessionImporter = (options?: {
         const root = sessionRoot(stringValue(config.sessionDir) ?? "", defaultRoot);
         const configuredSessionDir = stringValue(config.sessionDir);
         const binaryPath = stringValue(config.binaryPath) ?? (driver === OMP_DRIVER ? "omp" : "pi");
+        const activeFiles =
+          driver === OMP_DRIVER ? activeSessionFiles.omp : activeSessionFiles.piAgent;
+        const previousActiveFiles =
+          driver === OMP_DRIVER
+            ? previouslyActiveSessionFiles.omp
+            : previouslyActiveSessionFiles.piAgent;
         const sourcePaths =
           mode === "full"
             ? yield* listSessionFiles(fileSystem, path, root)
-            : [...openFiles]
+            : [...new Set([...activeFiles, ...previousActiveFiles])]
                 .filter(
                   (sourcePath) =>
                     sourcePath.endsWith(".jsonl") && isWithinSessionRoot(path, root, sourcePath),
@@ -590,7 +908,7 @@ const makePiCompatibleSessionImporter = (options?: {
               item.session,
               instanceId,
               driver,
-              openFiles.has(path.resolve(item.sourcePath)),
+              activeFiles.has(path.resolve(item.sourcePath)),
               binaryPath,
               configuredSessionDir === undefined
                 ? undefined
@@ -606,6 +924,10 @@ const makePiCompatibleSessionImporter = (options?: {
           if (parent !== undefined) yield* importSubagentSession(item.session, parent, driver);
         }
       }
+      previouslyActiveSessionFiles = {
+        omp: new Set(activeSessionFiles.omp),
+        piAgent: new Set(activeSessionFiles.piAgent),
+      };
     });
 
     const start: PiCompatibleSessionImporterShape["start"] = () =>

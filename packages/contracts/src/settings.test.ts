@@ -72,6 +72,7 @@ describe("ClientSettings sidebar", () => {
     const settings = decodeClientSettings({});
     expect(settings.legacySidebarEnabled).toBe(false);
     expect(settings.sidebarAutoSettleAfterDays).toBe(3);
+    expect(settings.sidebarGroupByHost).toBe(false);
   });
 
   it("drops the retired sidebar v2 beta keys, resetting everyone to the default", () => {
@@ -84,11 +85,13 @@ describe("ClientSettings sidebar", () => {
     expect(decoded).not.toHaveProperty("sidebarV2ConfiguredByUser");
   });
 
-  it("preserves an explicit legacy sidebar opt-in", () => {
+  it("preserves explicit sidebar opt-ins", () => {
     expect(decodeClientSettings({ legacySidebarEnabled: true }).legacySidebarEnabled).toBe(true);
+    expect(decodeClientSettings({ sidebarGroupByHost: true }).sidebarGroupByHost).toBe(true);
     expect(decodeClientSettingsPatch({ legacySidebarEnabled: true }).legacySidebarEnabled).toBe(
       true,
     );
+    expect(decodeClientSettingsPatch({ sidebarGroupByHost: true }).sidebarGroupByHost).toBe(true);
   });
 
   it("allows auto-settle by inactivity to be disabled", () => {

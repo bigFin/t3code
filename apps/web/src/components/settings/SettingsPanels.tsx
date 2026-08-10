@@ -519,6 +519,9 @@ export function useSettingsRestore(onRestored?: () => void) {
       DEFAULT_UNIFIED_SETTINGS.sidebarProjectGroupingMode
         ? ["Project Grouping"]
         : []),
+      ...(settings.sidebarGroupByHost !== DEFAULT_UNIFIED_SETTINGS.sidebarGroupByHost
+        ? ["Group sidebar by host"]
+        : []),
       ...(settings.sidebarAutoSettleAfterDays !==
       DEFAULT_UNIFIED_SETTINGS.sidebarAutoSettleAfterDays
         ? ["Auto-settle inactive threads"]
@@ -587,6 +590,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       settings.enableProviderUpdateChecks,
       settings.sidebarAutoSettleAfterDays,
       settings.sidebarProjectGroupingMode,
+      settings.sidebarGroupByHost,
       settings.sidebarThreadPreviewCount,
       settings.timestampFormat,
       settings.wordWrap,
@@ -666,6 +670,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       glassOpacity: DEFAULT_UNIFIED_SETTINGS.glassOpacity,
       sidebarThreadPreviewCount: DEFAULT_UNIFIED_SETTINGS.sidebarThreadPreviewCount,
       sidebarProjectGroupingMode: DEFAULT_UNIFIED_SETTINGS.sidebarProjectGroupingMode,
+      sidebarGroupByHost: DEFAULT_UNIFIED_SETTINGS.sidebarGroupByHost,
       sidebarAutoSettleAfterDays: DEFAULT_UNIFIED_SETTINGS.sidebarAutoSettleAfterDays,
       enableLegacyTokenStreaming: DEFAULT_UNIFIED_SETTINGS.enableLegacyTokenStreaming,
       enableProviderUpdateChecks: DEFAULT_UNIFIED_SETTINGS.enableProviderUpdateChecks,

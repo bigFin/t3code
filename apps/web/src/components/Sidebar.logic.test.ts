@@ -21,6 +21,7 @@ import {
   resolveThreadStatusPill,
   resolveWorkingStartedAt,
   sidebarEnvironmentConnectionClassName,
+  toggleSidebarHostScope,
   searchSidebarThreadsByTitle,
   formatWorkingDurationLabel,
   shouldNavigateAfterProjectRemoval,
@@ -61,6 +62,18 @@ describe("sidebarEnvironmentConnectionClassName", () => {
     expect(sidebarEnvironmentConnectionClassName("offline")).toBe(
       "text-sidebar-muted-foreground/70",
     );
+  });
+});
+describe("toggleSidebarHostScope", () => {
+  it("supports an implicit all-host state and additive host selection", () => {
+    const sikaOnly = toggleSidebarHostScope(new Set<string>(), "sika");
+    expect([...sikaOnly]).toEqual(["sika"]);
+
+    const twoHosts = toggleSidebarHostScope(sikaOnly, "kitu");
+    expect([...twoHosts]).toEqual(["sika", "kitu"]);
+
+    expect([...toggleSidebarHostScope(twoHosts, "sika")]).toEqual(["kitu"]);
+    expect(toggleSidebarHostScope(new Set(["sika"]), "sika").size).toBe(0);
   });
 });
 

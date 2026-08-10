@@ -30,7 +30,7 @@ import {
   type PiRuntimeShape,
 } from "../piRuntime.ts";
 import type { PiAdapterShape } from "../Services/PiAdapter.ts";
-import { isPiSessionFileOpen } from "../piSessionFiles.ts";
+import { isPiSessionFileOpen, listActivePiSessionFiles } from "../piSessionFiles.ts";
 import { makePiAdapter } from "./PiAdapter.ts";
 import { makeOmpAdapter } from "./OmpAdapter.ts";
 
@@ -186,6 +186,42 @@ it.effect("detects a Pi-compatible session file held by another process", () =>
         currentProcessId: "42",
       }),
     ).toBe(false);
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+it.effect("maps a live OMP process to its per-terminal session breadcrumb", () =>
+  Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const root = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-omp-session-owner-" });
+    const projectRoot = path.join(root, "project");
+    const sessionFile = path.join(root, "sessions", "session.jsonl");
+    const procRoot = path.join(root, "proc");
+    const processRoot = path.join(procRoot, "42");
+    const descriptorRoot = path.join(processRoot, "fd");
+    const terminalSessionsRoot = path.join(root, "terminal-sessions");
+    yield* fileSystem.makeDirectory(projectRoot, { recursive: true });
+    yield* fileSystem.makeDirectory(path.dirname(sessionFile), { recursive: true });
+    yield* fileSystem.makeDirectory(descriptorRoot, { recursive: true });
+    yield* fileSystem.makeDirectory(terminalSessionsRoot, { recursive: true });
+    yield* fileSystem.writeFileString(sessionFile, "");
+    yield* fileSystem.writeFileString(
+      path.join(processRoot, "cmdline"),
+      `bun\0/nix/store/omp/lib/node_modules/@oh-my-pi/pi-coding-agent/dist/cli.js\0`,
+    );
+    yield* fileSystem.symlink("/dev/pts/11", path.join(descriptorRoot, "0"));
+    yield* fileSystem.symlink(projectRoot, path.join(processRoot, "cwd"));
+    yield* fileSystem.writeFileString(
+      path.join(terminalSessionsRoot, "pts-11"),
+      `${projectRoot}\n${sessionFile}\n`,
+    );
+
+    const active = yield* listActivePiSessionFiles(fileSystem, path, {
+      procRoot,
+      currentProcessId: "1",
+      terminalSessionsRoots: { omp: terminalSessionsRoot },
+    });
+    expect(active.omp).toEqual(new Set([path.resolve(sessionFile)]));
+    expect(active.piAgent.size).toBe(0);
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
 

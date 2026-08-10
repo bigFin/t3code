@@ -86,7 +86,7 @@ describe("PiCompatibleSessionImporter", () => {
     expect(parsed?.title).not.toContain("  ");
     expect(parsed?.title).toMatch(/\.\.\.$/u);
   });
-  it("accepts OMP title records and skips non-text tool records", () => {
+  it("accepts OMP title records and imports non-text tool records as activities", () => {
     const parsed = parsePiCompatibleSession(
       [
         JSON.stringify({ type: "title", title: "OMP transcript" }),
@@ -94,14 +94,26 @@ describe("PiCompatibleSessionImporter", () => {
         "not json",
         JSON.stringify({
           type: "message",
-          id: "tool",
-          message: { role: "assistant", content: [{ type: "tool_call", name: "read" }] },
-        }),
-        JSON.stringify({
-          type: "message",
           id: "user-1",
           timestamp: "2026-08-09T15:04:00.000Z",
           message: { role: "user", content: [{ type: "input_text", text: "Continue" }] },
+        }),
+        JSON.stringify({
+          type: "message",
+          id: "tool",
+          timestamp: "2026-08-09T15:04:01.000Z",
+          message: {
+            role: "assistant",
+            content: [
+              {
+                type: "tool_call",
+                id: "call-read",
+                name: "read",
+                intent: "Reading the importer",
+                arguments: { path: "src/importer.ts" },
+              },
+            ],
+          },
         }),
       ].join("\n"),
       OMP,
@@ -111,6 +123,22 @@ describe("PiCompatibleSessionImporter", () => {
     expect(parsed?.title).toBe("OMP transcript");
     expect(parsed?.messages).toHaveLength(1);
     expect(parsed?.messages[0]?.text).toBe("Continue");
+    expect(parsed?.activities).toMatchObject([
+      {
+        kind: "tool.updated",
+        summary: "Reading the importer",
+        payload: {
+          itemType: "dynamic_tool_call",
+          requestKind: "file-read",
+          status: "inProgress",
+          data: {
+            toolCallId: "call-read",
+            item: { name: "read", input: { path: "src/importer.ts" } },
+          },
+        },
+        turnId: parsed?.messages[0]?.turnId,
+      },
+    ]);
     const command = parsed && piCompatibleTurnReconcileCommand(ThreadId.make("thread-omp"), parsed);
     expect(command).toMatchObject({
       type: "thread.turn.reconcile",
@@ -118,6 +146,116 @@ describe("PiCompatibleSessionImporter", () => {
       state: "interrupted",
       completedAt: "2026-08-09T15:04:00.000Z",
     });
+  });
+  it("imports OMP reasoning and collapsible tool lifecycles onto the completed turn", () => {
+    const parsed = parsePiCompatibleSession(
+      [
+        session,
+        JSON.stringify({
+          type: "message",
+          id: "user-1",
+          timestamp: "2026-08-09T15:04:00.000Z",
+          message: { role: "user", content: [{ type: "text", text: "Run the check" }] },
+        }),
+        JSON.stringify({
+          type: "message",
+          id: "assistant-tool",
+          timestamp: "2026-08-09T15:04:01.000Z",
+          message: {
+            role: "assistant",
+            stopReason: "toolUse",
+            content: [
+              { type: "thinking", thinking: "I should run the focused test first." },
+              {
+                type: "toolCall",
+                id: "call-bash",
+                name: "bash",
+                intent: "Running focused tests",
+                arguments: {
+                  i: "Running focused tests",
+                  command: "vp test run importer.test.ts",
+                  cwd: "/work/project",
+                },
+              },
+            ],
+          },
+        }),
+        JSON.stringify({
+          type: "custom",
+          customType: "tool_execution_start",
+          data: { toolCallId: "call-bash", toolName: "bash" },
+        }),
+        JSON.stringify({
+          type: "message",
+          id: "tool-result",
+          timestamp: "2026-08-09T15:04:02.000Z",
+          message: {
+            role: "toolResult",
+            toolCallId: "call-bash",
+            toolName: "bash",
+            isError: false,
+            details: { exitCode: 0 },
+            content: [{ type: "text", text: "1 test passed" }],
+          },
+        }),
+        JSON.stringify({
+          type: "message",
+          id: "assistant-final",
+          timestamp: "2026-08-09T15:04:03.000Z",
+          message: {
+            role: "assistant",
+            stopReason: "stop",
+            content: [{ type: "text", text: "Done." }],
+          },
+        }),
+      ].join("\n"),
+      OMP,
+      "/tmp/omp.jsonl",
+    );
+
+    const turnId = parsed?.messages[1]?.turnId;
+    expect(parsed?.activities).toMatchObject([
+      {
+        kind: "task.progress",
+        payload: {
+          summary: "I should run the focused test first.",
+          detail: "I should run the focused test first.",
+        },
+        turnId,
+      },
+      {
+        kind: "tool.updated",
+        summary: "Running focused tests",
+        payload: {
+          itemType: "command_execution",
+          requestKind: "command",
+          status: "inProgress",
+          title: "Terminal",
+          data: {
+            toolCallId: "call-bash",
+            item: {
+              command: "vp test run importer.test.ts",
+            },
+          },
+        },
+        turnId,
+      },
+      {
+        kind: "tool.completed",
+        summary: "Running focused tests",
+        payload: {
+          itemType: "command_execution",
+          status: "completed",
+          detail: "1 test passed",
+          data: {
+            toolCallId: "call-bash",
+            rawOutput: { content: "1 test passed", exitCode: 0 },
+          },
+        },
+        turnId,
+      },
+    ]);
+    expect(parsed?.messages.map((message) => message.text)).toEqual(["Run the check", "Done."]);
   });
   it("marks open OMP turns as active externally owned sessions", () => {
     const parsed = parsePiCompatibleSession(

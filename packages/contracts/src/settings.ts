@@ -197,6 +197,7 @@ export const ClientSettingsSchema = Schema.Struct({
   sidebarThreadSortOrder: SidebarThreadSortOrder.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_SIDEBAR_THREAD_SORT_ORDER)),
   ),
+  sidebarGroupByHost: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   sidebarV2ThreadSortOrder: SidebarV2ThreadSortOrder.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_SIDEBAR_V2_THREAD_SORT_ORDER)),
   ),
@@ -900,6 +901,7 @@ export const ClientSettingsPatch = Schema.Struct({
   ),
   sidebarProjectSortOrder: Schema.optionalKey(SidebarProjectSortOrder),
   sidebarThreadSortOrder: Schema.optionalKey(SidebarThreadSortOrder),
+  sidebarGroupByHost: Schema.optionalKey(Schema.Boolean),
   sidebarV2ThreadSortOrder: Schema.optionalKey(SidebarV2ThreadSortOrder),
   sidebarThreadPreviewCount: Schema.optionalKey(SidebarThreadPreviewCount),
   timestampFormat: Schema.optionalKey(TimestampFormat),
