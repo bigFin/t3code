@@ -965,6 +965,7 @@ export const runCodexProviderHost = Effect.fn("runCodexProviderHost")(function* 
         const existing = sessions.get(requestedSessionOptions.threadId);
         if (existing) {
           const snapshot = yield* existing.runtime.getSession;
+          const eventFiberExit = existing.eventFiber.pollUnsafe();
           const effectiveRequestedSessionOptions = preserveAdoptedThreadConfig(
             existing.options,
             requestedSessionOptions,
@@ -973,6 +974,7 @@ export const runCodexProviderHost = Effect.fn("runCodexProviderHost")(function* 
           if (
             snapshot.status !== "error" &&
             snapshot.status !== "closed" &&
+            eventFiberExit === undefined &&
             (adoptionMode !== "resume-only" ||
               sessionMatchesResumeCursor(snapshot, effectiveRequestedSessionOptions)) &&
             !sessionOptionsRequireReplacement(
@@ -1314,7 +1316,7 @@ export const runCodexProviderHost = Effect.fn("runCodexProviderHost")(function* 
             error: "Provider-host command requires an active matching attachment.",
           });
         }
-        const session = sessions.get(command.threadId);
+        let session = sessions.get(command.threadId);
         if (
           operation !== CODEX_PROVIDER_HOST_OPERATIONS.stopSession &&
           sessionStops.has(command.threadId)
@@ -1350,6 +1352,24 @@ export const runCodexProviderHost = Effect.fn("runCodexProviderHost")(function* 
             ok: false,
             error: `No provider-host session exists for ${command.threadId}.`,
           });
+        }
+        if (
+          session &&
+          operation !== CODEX_PROVIDER_HOST_OPERATIONS.stopSession &&
+          session.eventFiber.pollUnsafe() !== undefined
+        ) {
+          const recovery = yield* Effect.exit(createSession(session.options, "resume-only"));
+          if (Exit.isFailure(recovery)) {
+            return ProviderHostCommandResultEnvelope.make({
+              version: PROVIDER_HOST_PROTOCOL_VERSION,
+              type: "commandResult",
+              commandId: command.commandId,
+              threadId: command.threadId,
+              ok: false,
+              error: errorMessage(Cause.squash(recovery.cause)),
+            });
+          }
+          session = recovery.value;
         }
         const activeSession = session as HostSession;
         const execute = Effect.gen(function* () {

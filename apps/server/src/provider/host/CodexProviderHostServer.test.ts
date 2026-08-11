@@ -326,6 +326,10 @@ class FakeCodexRuntime implements CodexSessionRuntimeShape {
     this.emittedEventCountValue += 1;
     return Promise.resolve();
   }
+
+  endEvents(): Promise<void> {
+    return Effect.runPromise(Queue.end(this.eventQueue).pipe(Effect.asVoid));
+  }
 }
 
 interface HostTestContext {
@@ -1990,6 +1994,40 @@ describe("CodexProviderHostServer", () => {
     }),
   );
 
+  it.effect("replaces a runtime whose event stream ended before sending a command", () =>
+    withHost(async (context) => {
+      const client = await context.connect();
+      client.send(makeAttach(context, "client-recovery", "attachment-recovery"));
+      const firstSnapshot = await client.take(isSnapshotFor(context.threadId));
+      const original = context.runtimes[0]!;
+      original.getSessionImpl.mockResolvedValue({
+        ...(firstSnapshot.state as ProviderSession),
+        resumeCursor: { threadId: "provider-thread-event-stream-ended" },
+      });
+      await original.endEvents();
+
+      client.send(
+        makeCommand(context, {
+          clientId: "client-recovery",
+          attachmentId: "attachment-recovery",
+          commandId: "command-after-event-stream-ended",
+          operation: CODEX_PROVIDER_HOST_OPERATIONS.sendTurn,
+          payload: { input: "Continue after recovery" },
+        }),
+      );
+      const result = await client.take(isCommandResult("command-after-event-stream-ended"));
+
+      NodeAssert.equal(result.ok, true);
+      NodeAssert.equal(context.runtimeCreationCount(), 2);
+      NodeAssert.equal(original.sendTurnImpl.mock.calls.length, 0);
+      NodeAssert.equal(original.detachImpl.mock.calls.length, 1);
+      NodeAssert.deepStrictEqual(context.runtimes[1]?.options.resumeCursor, {
+        threadId: "provider-thread-event-stream-ended",
+      });
+      NodeAssert.equal(context.runtimes[1]?.options.resumePolicy, "resume-only");
+      NodeAssert.equal(context.runtimes[1]?.sendTurnImpl.mock.calls.length, 1);
+    }),
+  );
   it.effect("coalesces duplicate command ids and returns the same result", () =>
     withHost(async (context) => {
       const client = await context.connect();
