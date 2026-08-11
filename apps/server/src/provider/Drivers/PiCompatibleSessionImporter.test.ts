@@ -5,6 +5,7 @@ import { describe, expect, it } from "@effect/vitest";
 import { ProviderDriverKind, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
 
 import {
+  isPiCompatibleSessionManagedByT3,
   parsePiCompatibleSession,
   piCompatibleSubagentActivities,
   piCompatibleTurnReconcileCommand,
@@ -311,12 +312,14 @@ describe("PiCompatibleSessionImporter", () => {
     expect(
       piCompatibleTurnReconcileCommand(ThreadId.make("thread-omp"), parsed!, true),
     ).toBeUndefined();
+    const managedSession = {
+      ...observed!,
+      nativeSession: { ...observed!.nativeSession!, ownership: "t3" as const },
+    };
+    expect(isPiCompatibleSessionManagedByT3(managedSession)).toBe(true);
     expect(
       resolvePiCompatibleObservedSession({
-        currentSession: {
-          ...observed!,
-          nativeSession: { ...observed!.nativeSession!, ownership: "t3" },
-        },
+        currentSession: managedSession,
         threadId: ThreadId.make("thread-omp"),
         imported: parsed!,
         sourcePath: "/tmp/omp.jsonl",

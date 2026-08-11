@@ -2102,8 +2102,6 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
       (attachment) => resolveAttachment(input, attachment),
       { concurrency: 1 },
     );
-
-    const session = yield* requireSession(input.threadId);
     const reasoningEffort =
       input.modelSelection?.instanceId === boundInstanceId
         ? getModelSelectionStringOptionValue(input.modelSelection, "reasoningEffort")
@@ -2112,22 +2110,54 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
       input.modelSelection?.instanceId === boundInstanceId
         ? getCodexServiceTierOptionValue(input.modelSelection)
         : undefined;
-    return yield* session.runtime
-      .sendTurn({
-        ...(input.input !== undefined ? { input: input.input } : {}),
-        ...(input.modelSelection?.instanceId === boundInstanceId
-          ? { model: input.modelSelection.model }
-          : {}),
-        ...(reasoningEffort
-          ? {
-              effort: reasoningEffort as EffectCodexSchema.V2TurnStartParams__ReasoningEffort,
-            }
-          : {}),
-        ...(serviceTier ? { serviceTier } : {}),
-        ...(input.interactionMode !== undefined ? { interactionMode: input.interactionMode } : {}),
-        ...(codexAttachments.length > 0 ? { attachments: codexAttachments } : {}),
-      })
-      .pipe(Effect.mapError((cause) => mapCodexRuntimeError(input.threadId, "turn/start", cause)));
+    const turnInput = {
+      ...(input.input !== undefined ? { input: input.input } : {}),
+      ...(input.modelSelection?.instanceId === boundInstanceId
+        ? { model: input.modelSelection.model }
+        : {}),
+      ...(reasoningEffort
+        ? {
+            effort: reasoningEffort as EffectCodexSchema.V2TurnStartParams__ReasoningEffort,
+          }
+        : {}),
+      ...(serviceTier ? { serviceTier } : {}),
+      ...(input.interactionMode !== undefined ? { interactionMode: input.interactionMode } : {}),
+      ...(codexAttachments.length > 0 ? { attachments: codexAttachments } : {}),
+    };
+    const send = (session: CodexAdapterSessionContext) =>
+      session.runtime
+        .sendTurn(turnInput)
+        .pipe(
+          Effect.mapError((cause) => mapCodexRuntimeError(input.threadId, "turn/start", cause)),
+        );
+
+    const session = yield* requireSession(input.threadId);
+    const firstAttempt = yield* send(session).pipe(Effect.result);
+    if (firstAttempt._tag === "Success") {
+      return firstAttempt.success;
+    }
+    if (firstAttempt.failure._tag !== "ProviderAdapterSessionClosedError" || !appServerHost) {
+      return yield* firstAttempt.failure;
+    }
+
+    return yield* withThreadLock(
+      input.threadId,
+      Effect.gen(function* () {
+        const current = sessions.get(input.threadId);
+        if (current === session) {
+          const desired = desiredSessions.get(input.threadId);
+          if (!desired) {
+            return yield* firstAttempt.failure;
+          }
+          yield* attachSession(desired.input, "detach", "adopt");
+          yield* Effect.logInfo("codex.adapter.stale-attachment-recovered", {
+            threadId: input.threadId,
+            providerInstanceId: boundInstanceId,
+          });
+        }
+        return yield* send(yield* requireSession(input.threadId));
+      }),
+    );
   });
 
   const discardAttachmentInternal = Effect.fn("discardAttachmentInternal")(function* (

@@ -512,6 +512,13 @@ export function piCompatibleSubagentActivities(
     },
   ];
 }
+
+export function isPiCompatibleSessionManagedByT3(
+  session: OrchestrationSession | null | undefined,
+): boolean {
+  return session?.nativeSession?.ownership === "t3";
+}
+
 export function resolvePiCompatibleObservedSession(input: {
   readonly currentSession: OrchestrationSession | null | undefined;
   readonly threadId: ThreadId;
@@ -526,7 +533,7 @@ export function resolvePiCompatibleObservedSession(input: {
 }): OrchestrationSession | undefined {
   const currentNativeSession = input.currentSession?.nativeSession;
   if (
-    currentNativeSession?.ownership === "t3" ||
+    isPiCompatibleSessionManagedByT3(input.currentSession) ||
     (currentNativeSession?.ownership === "released" && !input.isOpen)
   )
     return undefined;
@@ -710,6 +717,8 @@ const makePiCompatibleSessionImporter = (options?: {
         const cwd = path.resolve(imported.cwd);
         const threadId = stableThreadId(driver, imported.id);
         const modelSelection = { instanceId, model: DEFAULT_MODEL } satisfies ModelSelection;
+        const existingThread = (yield* snapshots.getThreadShellsByIds([threadId])).get(threadId);
+        if (isPiCompatibleSessionManagedByT3(existingThread?.session)) return;
         const project = yield* snapshots.getActiveProjectByWorkspaceRoot(cwd);
         const projectId = Option.match(project, {
           onSome: (value) => value.id,

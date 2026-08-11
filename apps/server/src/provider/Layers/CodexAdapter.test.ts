@@ -901,6 +901,61 @@ sessionErrorLayer("CodexAdapterLive session errors", (it) => {
     }).pipe(Effect.provide(layer));
   });
 
+  it.effect("reattaches a stale provider-host session before retrying a turn", () => {
+    const threadId = asThreadId("sess-detached-stale-host");
+    const runtimes: Array<FakeCodexRuntime> = [];
+    const layer = Layer.effect(
+      CodexAdapter,
+      Effect.gen(function* () {
+        const codexConfig = decodeCodexSettings({});
+        return yield* makeCodexAdapter(codexConfig, {
+          appServerHost: {
+            socketPath: "/tmp/t3-codex-stale-host.sock",
+            ensure: Effect.succeed("/tmp/t3-codex-stale-host.sock"),
+          },
+          makeProviderHostRuntime: ({ options }) => {
+            const runtime = new FakeCodexRuntime(options);
+            if (runtimes.length === 0) {
+              runtime.sendTurnError = new CodexErrors.CodexAppServerTransportError({
+                operation: "read-input-stream",
+                cause: new Error("connect ENOENT /tmp/t3-codex-stale-host.sock"),
+              });
+            }
+            runtimes.push(runtime);
+            return Effect.succeed(runtime);
+          },
+        });
+      }),
+    ).pipe(
+      Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
+      Layer.provideMerge(ServerSettingsService.layerTest()),
+      Layer.provideMerge(providerSessionDirectoryTestLayer),
+      Layer.provideMerge(NodeServices.layer),
+    );
+
+    return Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("codex"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+
+      const result = yield* adapter.sendTurn({
+        threadId,
+        input: "try again",
+        attachments: [],
+      });
+
+      NodeAssert.equal(result.turnId, asTurnId("turn-1"));
+      NodeAssert.equal(runtimes.length, 2);
+      NodeAssert.equal(runtimes[0]?.sendTurnImpl.mock.calls.length, 0);
+      NodeAssert.equal(runtimes[0]?.detachImpl.mock.calls.length, 1);
+      NodeAssert.equal(runtimes[1]?.sendTurnImpl.mock.calls.length, 1);
+      NodeAssert.equal(yield* adapter.hasSession(threadId), true);
+    }).pipe(Effect.provide(layer));
+  });
+
   it.effect("maps codex model options for the adapter's bound custom instance id", () => {
     const customInstanceId = ProviderInstanceId.make("codex_personal");
     const customRuntimeFactory = makeRuntimeFactory();
