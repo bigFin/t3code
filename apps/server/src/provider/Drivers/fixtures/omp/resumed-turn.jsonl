@@ -1,0 +1,5 @@
+{"type":"session","version":3,"id":"omp-resumed","timestamp":"2026-08-09T15:04:00.000Z","cwd":"/work/project"}
+{"type":"message","id":"user-1","timestamp":"2026-08-09T15:04:01.000Z","message":{"role":"user","content":[{"type":"text","text":"Start the task"}]}}
+{"type":"message","id":"assistant-1","timestamp":"2026-08-09T15:04:02.000Z","message":{"role":"assistant","stopReason":"stop","content":[{"type":"text","text":"First turn complete."}]}}
+{"type":"message","id":"user-2","timestamp":"2026-08-09T15:05:01.000Z","message":{"role":"user","content":[{"type":"text","text":"Resume and finish"}]}}
+{"type":"message","id":"assistant-2","timestamp":"2026-08-09T15:05:02.000Z","message":{"role":"assistant","stopReason":"stop","content":[{"type":"text","text":"Resumed turn complete."}]}}

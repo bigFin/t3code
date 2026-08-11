@@ -1,3 +1,6 @@
+// @effect-diagnostics nodeBuiltinImport:off
+import * as NodeFS from "node:fs";
+
 import { describe, expect, it } from "@effect/vitest";
 import { ProviderDriverKind, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
 
@@ -18,6 +21,10 @@ const session = JSON.stringify({
   timestamp: "2026-08-09T15:03:21.414Z",
   cwd: "/work/project",
 });
+
+function readOmpFixture(name: string): string {
+  return NodeFS.readFileSync(new URL(`./fixtures/omp/${name}.jsonl`, import.meta.url), "utf8");
+}
 
 describe("PiCompatibleSessionImporter", () => {
   it("imports Pi v3 user and assistant text records", () => {
@@ -375,5 +382,82 @@ describe("PiCompatibleSessionImporter", () => {
     const completedPayload = activities?.[1]?.payload as { readonly summary?: string } | undefined;
     expect(completedPayload?.summary).toHaveLength(180);
     expect(completedPayload?.summary).not.toContain("\n");
+  });
+  describe("OMP transcript compatibility fixtures", () => {
+    const fixtures = [
+      {
+        name: "normal-response",
+        messages: ["Explain the change", "The change is complete."],
+        activityKinds: [],
+        turnState: "completed",
+      },
+      {
+        name: "tool-lifecycle",
+        messages: ["Run the focused test", "Done."],
+        activityKinds: ["task.progress", "tool.updated", "tool.completed"],
+        turnState: "completed",
+      },
+      {
+        name: "failed-tool",
+        messages: ["Run the command", "The command failed."],
+        activityKinds: ["tool.updated", "tool.completed"],
+        turnState: "completed",
+      },
+      {
+        name: "interrupted-turn",
+        messages: ["Keep working"],
+        activityKinds: [],
+        turnState: "interrupted",
+      },
+      {
+        name: "resumed-turn",
+        messages: [
+          "Start the task",
+          "First turn complete.",
+          "Resume and finish",
+          "Resumed turn complete.",
+        ],
+        activityKinds: [],
+        turnState: "completed",
+      },
+      {
+        name: "subagent",
+        messages: ["Review this importer", "Found one issue."],
+        activityKinds: [],
+        turnState: "completed",
+        parentSession: "/work/parent.jsonl",
+      },
+    ] as const;
+
+    for (const fixture of fixtures) {
+      it(`imports ${fixture.name}`, () => {
+        const parsed = parsePiCompatibleSession(
+          readOmpFixture(fixture.name),
+          OMP,
+          `/fixtures/${fixture.name}.jsonl`,
+        );
+
+        expect(parsed?.messages.map((message) => message.text)).toEqual(fixture.messages);
+        expect(parsed?.activities.map((activity) => activity.kind)).toEqual(fixture.activityKinds);
+        expect(parsed?.parentSession).toBe(
+          "parentSession" in fixture ? fixture.parentSession : undefined,
+        );
+        expect(
+          parsed && piCompatibleTurnReconcileCommand(ThreadId.make("fixture-thread"), parsed),
+        ).toMatchObject({ state: fixture.turnState });
+        if (fixture.activityKinds.length > 0) {
+          const completedTurnId = parsed?.messages.at(-1)?.turnId;
+          expect(parsed?.activities.every((activity) => activity.turnId === completedTurnId)).toBe(
+            true,
+          );
+        }
+        if (fixture.name === "failed-tool") {
+          expect(parsed?.activities.at(-1)?.payload).toMatchObject({ status: "failed" });
+        }
+        if (fixture.name === "subagent") {
+          expect(parsed && piCompatibleSubagentActivities(parsed)).toHaveLength(2);
+        }
+      });
+    }
   });
 });
