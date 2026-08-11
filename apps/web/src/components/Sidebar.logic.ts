@@ -50,6 +50,39 @@ export function toggleSidebarHostScope<T extends string>(
   return next;
 }
 
+export function resolveSidebarHostDisplayLabels<T extends string>(
+  hosts: ReadonlyArray<{
+    readonly environmentId: T;
+    readonly label: string;
+    readonly hostLabel: string;
+    readonly fallbackLabel?: string | null;
+  }>,
+): ReadonlyMap<T, string> {
+  const hostLabelCounts = new Map<string, number>();
+  for (const host of hosts) {
+    const key = host.hostLabel.trim().toLocaleLowerCase();
+    hostLabelCounts.set(key, (hostLabelCounts.get(key) ?? 0) + 1);
+  }
+
+  return new Map(
+    hosts.map((host) => {
+      const label = host.label.trim() || host.hostLabel;
+      const hostLabel = host.hostLabel.trim() || label;
+      if ((hostLabelCounts.get(hostLabel.toLocaleLowerCase()) ?? 0) < 2) {
+        return [host.environmentId, label] as const;
+      }
+      const fallbackLabel = host.fallbackLabel?.trim();
+      const qualifier =
+        label.toLocaleLowerCase() !== hostLabel.toLocaleLowerCase()
+          ? label
+          : fallbackLabel && fallbackLabel.toLocaleLowerCase() !== hostLabel.toLocaleLowerCase()
+            ? fallbackLabel
+            : host.environmentId.slice(0, 8);
+      return [host.environmentId, `${qualifier} · ${hostLabel}`] as const;
+    }),
+  );
+}
+
 type SidebarProject = {
   id: string;
   title: string;

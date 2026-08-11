@@ -16,6 +16,7 @@ import {
   orderItemsByPreferredIds,
   resolveProjectStatusIndicator,
   resolveSidebarStageBadgeLabel,
+  resolveSidebarHostDisplayLabels,
   resolveThreadRowClassName,
   resolveSidebarThreadStatus,
   resolveThreadStatusPill,
@@ -74,6 +75,54 @@ describe("toggleSidebarHostScope", () => {
 
     expect([...toggleSidebarHostScope(twoHosts, "sika")]).toEqual(["kitu"]);
     expect(toggleSidebarHostScope(new Set(["sika"]), "sika").size).toBe(0);
+  });
+});
+
+describe("resolveSidebarHostDisplayLabels", () => {
+  it("adds environment qualifiers only when hostnames collide", () => {
+    const labels = resolveSidebarHostDisplayLabels([
+      {
+        environmentId: "primary",
+        label: "Primary",
+        hostLabel: "sika",
+      },
+      {
+        environmentId: "remote",
+        label: "Remote",
+        hostLabel: "sika",
+      },
+      {
+        environmentId: "other",
+        label: "Kitu",
+        hostLabel: "kitu",
+      },
+    ]);
+
+    expect([...labels]).toEqual([
+      ["primary", "Primary · sika"],
+      ["remote", "Remote · sika"],
+      ["other", "Kitu"],
+    ]);
+  });
+
+  it("falls back to connection context when a saved label matches the hostname", () => {
+    const labels = resolveSidebarHostDisplayLabels([
+      {
+        environmentId: "environment-primary",
+        label: "sika",
+        hostLabel: "sika",
+        fallbackLabel: "Primary",
+      },
+      {
+        environmentId: "environment-remote",
+        label: "sika",
+        hostLabel: "sika",
+        fallbackLabel: "http://localhost:5734",
+      },
+    ]);
+
+    expect(labels.get("environment-primary")).toBe("Primary · sika");
+    expect(labels.get("environment-remote")).toBe("http://localhost:5734 · sika");
   });
 });
 

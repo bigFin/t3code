@@ -134,6 +134,7 @@ import {
   planPinnedReorder,
   resolveAdjacentThreadId,
   resolveSettledTimestamp,
+  resolveSidebarHostDisplayLabels,
   resolveSidebarThreadStatus,
   searchSidebarThreadsByTitle,
   sidebarEnvironmentConnectionClassName,
@@ -1833,13 +1834,6 @@ export default function Sidebar() {
   const routeThreadKeyRef = useRef(routeThreadKey);
   routeThreadKeyRef.current = routeThreadKey;
 
-  const environmentLabelById = useMemo(
-    () =>
-      new Map(
-        environments.map((environment) => [environment.environmentId, environment.label] as const),
-      ),
-    [environments],
-  );
   const environmentConnectionPhaseById = useMemo(
     () =>
       new Map(
@@ -1862,6 +1856,19 @@ export default function Sidebar() {
         );
       });
   }, [environments, primaryEnvironmentId, projects]);
+  const environmentLabelById = useMemo(
+    () =>
+      resolveSidebarHostDisplayLabels(
+        hostOptions.map((environment) => ({
+          environmentId: environment.environmentId,
+          label: environment.label,
+          hostLabel: environment.serverConfig?.environment.label ?? environment.label,
+          fallbackLabel:
+            environment.environmentId === primaryEnvironmentId ? "Primary" : environment.displayUrl,
+        })),
+      ),
+    [hostOptions, primaryEnvironmentId],
+  );
   const availableHostIds = useMemo(
     () => new Set(hostOptions.map((environment) => environment.environmentId)),
     [hostOptions],
@@ -3663,7 +3670,9 @@ export default function Sidebar() {
                           sidebarEnvironmentConnectionClassName(environment.connection.phase),
                         )}
                       />
-                      <span className="max-w-24 truncate">{environment.label}</span>
+                      <span className="max-w-32 truncate">
+                        {environmentLabelById.get(environment.environmentId) ?? environment.label}
+                      </span>
                     </button>
                   );
                 })}
