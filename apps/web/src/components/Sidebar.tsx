@@ -3640,13 +3640,20 @@ export default function Sidebar() {
                   aria-pressed={selectedHostIds.size === 0}
                   onClick={() => setSelectedHostIds(new Set())}
                   className={cn(
-                    "inline-flex h-6 shrink-0 items-center rounded-full border px-2 text-[11px] font-medium transition-colors",
+                    "relative inline-flex h-6 shrink-0 items-center rounded-full border ps-2 pe-6 text-[11px] font-medium outline-none transition-colors focus-visible:ring-2 focus-visible:ring-sidebar-ring",
                     selectedHostIds.size === 0
-                      ? "border-sidebar-ring/40 bg-sidebar-accent text-sidebar-foreground"
+                      ? "border-sidebar-ring/70 bg-sidebar-row-selected text-sidebar-foreground ring-1 ring-inset ring-sidebar-ring/30"
                       : "border-sidebar-border text-sidebar-muted-foreground hover:bg-sidebar-row-hover hover:text-sidebar-foreground",
                   )}
                 >
                   All
+                  <CheckIcon
+                    aria-hidden
+                    className={cn(
+                      "absolute end-1.5 size-3 transition-opacity",
+                      selectedHostIds.size === 0 ? "opacity-100" : "opacity-0",
+                    )}
+                  />
                 </button>
                 {hostOptions.map((environment) => {
                   const isSelected = selectedHostIds.has(environment.environmentId);
@@ -3657,9 +3664,9 @@ export default function Sidebar() {
                       aria-pressed={isSelected}
                       onClick={() => toggleHostScope(environment.environmentId)}
                       className={cn(
-                        "inline-flex h-6 min-w-0 shrink-0 items-center gap-1.5 rounded-full border px-2 text-[11px] font-medium transition-colors",
+                        "relative inline-flex h-6 min-w-0 shrink-0 items-center gap-1.5 rounded-full border ps-2 pe-6 text-[11px] font-medium outline-none transition-colors focus-visible:ring-2 focus-visible:ring-sidebar-ring",
                         isSelected
-                          ? "border-sidebar-ring/40 bg-sidebar-accent text-sidebar-foreground"
+                          ? "border-sidebar-ring/70 bg-sidebar-row-selected text-sidebar-foreground ring-1 ring-inset ring-sidebar-ring/30"
                           : "border-sidebar-border text-sidebar-muted-foreground hover:bg-sidebar-row-hover hover:text-sidebar-foreground",
                       )}
                     >
@@ -3673,6 +3680,13 @@ export default function Sidebar() {
                       <span className="max-w-32 truncate">
                         {environmentLabelById.get(environment.environmentId) ?? environment.label}
                       </span>
+                      <CheckIcon
+                        aria-hidden
+                        className={cn(
+                          "absolute end-1.5 size-3 transition-opacity",
+                          isSelected ? "opacity-100" : "opacity-0",
+                        )}
+                      />
                     </button>
                   );
                 })}

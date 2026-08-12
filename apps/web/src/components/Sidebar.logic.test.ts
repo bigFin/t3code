@@ -57,8 +57,8 @@ const localEnvironmentId = EnvironmentId.make("environment-local");
 describe("sidebarEnvironmentConnectionClassName", () => {
   it("distinguishes connected, transitional, failed, and offline environments", () => {
     expect(sidebarEnvironmentConnectionClassName("connected")).toBe("text-success");
-    expect(sidebarEnvironmentConnectionClassName("connecting")).toBe("text-warning");
-    expect(sidebarEnvironmentConnectionClassName("reconnecting")).toBe("text-warning");
+    expect(sidebarEnvironmentConnectionClassName("connecting")).toBe("text-info");
+    expect(sidebarEnvironmentConnectionClassName("reconnecting")).toBe("text-info");
     expect(sidebarEnvironmentConnectionClassName("error")).toBe("text-destructive");
     expect(sidebarEnvironmentConnectionClassName("offline")).toBe(
       "text-sidebar-muted-foreground/70",

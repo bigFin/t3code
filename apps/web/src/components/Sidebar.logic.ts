@@ -32,7 +32,7 @@ export function sidebarEnvironmentConnectionClassName(
       return "text-success";
     case "connecting":
     case "reconnecting":
-      return "text-warning";
+      return "text-info";
     case "error":
       return "text-destructive";
     default:
