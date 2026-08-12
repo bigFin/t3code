@@ -1,5 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeFS from "node:fs";
+import * as NodePath from "node:path";
 
 import { describe, expect, it } from "@effect/vitest";
 import { ProviderDriverKind, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
@@ -7,6 +8,7 @@ import { ProviderDriverKind, ProviderInstanceId, ThreadId } from "@t3tools/contr
 import {
   isPiCompatibleSessionManagedByT3,
   parsePiCompatibleSession,
+  partitionPiCompatibleSessions,
   piCompatibleSubagentActivities,
   piCompatibleTurnReconcileCommand,
   resolvePiCompatibleObservedSession,
@@ -331,6 +333,58 @@ describe("PiCompatibleSessionImporter", () => {
         observedAt: "2026-08-09T15:06:00.000Z",
       }),
     ).toBeUndefined();
+  });
+  it("classifies nested OMP task transcripts as subagent sessions", () => {
+    const parentPath = "/sessions/project/parent.jsonl";
+    const childPath = "/sessions/project/parent/ReviewImporter.jsonl";
+    const parent = parsePiCompatibleSession(
+      [
+        session,
+        JSON.stringify({
+          type: "message",
+          id: "user-1",
+          timestamp: "2026-08-09T15:04:00.000Z",
+          message: { role: "user", content: [{ type: "text", text: "Fix the importer" }] },
+        }),
+      ].join("\n"),
+      OMP,
+      parentPath,
+    )!;
+    const child = parsePiCompatibleSession(
+      [
+        JSON.stringify({
+          ...JSON.parse(session),
+          id: "child-session",
+        }),
+        JSON.stringify({
+          type: "message",
+          id: "user-1",
+          timestamp: "2026-08-09T15:04:01.000Z",
+          message: {
+            role: "user",
+            content: [
+              {
+                type: "text",
+                text: "Complete the assignment below, thoroughly:\n\nReview the importer",
+              },
+            ],
+          },
+        }),
+      ].join("\n"),
+      OMP,
+      childPath,
+    )!;
+
+    expect(child.parentSession).toBeUndefined();
+    expect(
+      partitionPiCompatibleSessions(NodePath, OMP, [
+        { sourcePath: parentPath, session: parent },
+        { sourcePath: childPath, session: child },
+      ]),
+    ).toMatchObject({
+      topLevel: [{ sourcePath: parentPath }],
+      subagents: [{ sourcePath: childPath, parent: { id: parent.id } }],
+    });
   });
   it("maps OMP child sessions to subagent activities", () => {
     const parsed = parsePiCompatibleSession(

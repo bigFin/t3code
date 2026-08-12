@@ -639,6 +639,54 @@ function isWithinSessionRoot(path: Path.Path, root: string, candidate: string): 
   );
 }
 
+type PiCompatibleSessionFile = {
+  readonly sourcePath: string;
+  readonly session: PiCompatibleSession;
+};
+
+type PiCompatibleSubagentSessionFile = PiCompatibleSessionFile & {
+  readonly parent: PiCompatibleSession;
+};
+
+export function partitionPiCompatibleSessions(
+  path: Pick<Path.Path, "dirname" | "resolve">,
+  driver: ProviderDriverKind,
+  parsed: ReadonlyArray<PiCompatibleSessionFile>,
+): {
+  readonly topLevel: ReadonlyArray<PiCompatibleSessionFile>;
+  readonly subagents: ReadonlyArray<PiCompatibleSubagentSessionFile>;
+} {
+  const byPath = new Map(
+    parsed.map(({ sourcePath, session }) => [path.resolve(sourcePath), session] as const),
+  );
+  const topLevel: PiCompatibleSessionFile[] = [];
+  const subagents: PiCompatibleSubagentSessionFile[] = [];
+
+  for (const item of parsed) {
+    const explicitParent =
+      item.session.parentSession === undefined
+        ? undefined
+        : path.resolve(path.dirname(item.sourcePath), item.session.parentSession);
+    const inferredOmpParent =
+      explicitParent === undefined && driver === OMP_DRIVER
+        ? path.resolve(`${path.dirname(item.sourcePath)}.jsonl`)
+        : undefined;
+    const parentPath =
+      explicitParent ??
+      (inferredOmpParent !== undefined && byPath.has(inferredOmpParent)
+        ? inferredOmpParent
+        : undefined);
+    if (parentPath === undefined) {
+      topLevel.push(item);
+      continue;
+    }
+    const parent = byPath.get(parentPath);
+    if (parent !== undefined) subagents.push({ ...item, parent });
+  }
+
+  return { topLevel, subagents };
+}
+
 const makePiCompatibleSessionImporter = (options?: {
   readonly scanIntervalMs?: number;
   readonly activeScanIntervalMs?: number;
@@ -906,32 +954,22 @@ const makePiCompatibleSessionImporter = (options?: {
           if (session !== undefined && session.messages.some((message) => message.role === "user"))
             parsed.push({ sourcePath, session });
         }
-        const byPath = new Map(
-          parsed.map(({ sourcePath, session }) => [path.resolve(sourcePath), session] as const),
-        );
+        const partitioned = partitionPiCompatibleSessions(path, driver, parsed);
         const instanceId = ProviderInstanceId.make(rawInstanceId);
-        for (const item of parsed)
-          if (item.session.parentSession === undefined)
-            yield* importTopLevelSession(
-              item.sourcePath,
-              item.session,
-              instanceId,
-              driver,
-              activeFiles.has(path.resolve(item.sourcePath)),
-              binaryPath,
-              configuredSessionDir === undefined
-                ? undefined
-                : sessionRoot(configuredSessionDir, defaultRoot),
-            );
-        for (const item of parsed) {
-          if (item.session.parentSession === undefined) continue;
-          const parentPath = path.resolve(
-            path.dirname(item.sourcePath),
-            item.session.parentSession,
+        for (const item of partitioned.topLevel)
+          yield* importTopLevelSession(
+            item.sourcePath,
+            item.session,
+            instanceId,
+            driver,
+            activeFiles.has(path.resolve(item.sourcePath)),
+            binaryPath,
+            configuredSessionDir === undefined
+              ? undefined
+              : sessionRoot(configuredSessionDir, defaultRoot),
           );
-          const parent = byPath.get(parentPath);
-          if (parent !== undefined) yield* importSubagentSession(item.session, parent, driver);
-        }
+        for (const item of partitioned.subagents)
+          yield* importSubagentSession(item.session, item.parent, driver);
       }
       previouslyActiveSessionFiles = {
         omp: new Set(activeSessionFiles.omp),
