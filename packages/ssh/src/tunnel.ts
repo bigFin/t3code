@@ -1921,6 +1921,13 @@ const makeSshEnvironmentManager = Effect.fn("ssh/tunnel.SshEnvironmentManager.ma
         Exit.isSuccess(exit) ? Effect.void : Scope.close(entryScope, Exit.void).pipe(Effect.ignore),
       ),
     );
+    // A concurrent ensure for the same target may have published its own
+    // entry while this one was spawning. Close whatever we are replacing so
+    // the losing tunnel process cannot outlive the map that tracks it.
+    const superseded = tunnels.get(input.key);
+    if (superseded !== undefined && superseded !== tunnelEntry) {
+      yield* closeTunnelEntry(superseded);
+    }
     tunnels.set(input.key, tunnelEntry);
     yield* Scope.addFinalizer(
       entryScope,
@@ -1966,76 +1973,85 @@ const makeSshEnvironmentManager = Effect.fn("ssh/tunnel.SshEnvironmentManager.ma
     resolvedTarget: DesktopSshEnvironmentTarget,
     runner?: RemoteT3RunnerOptions,
   ): Effect.fn.Return<SshTunnelEntry, SshEnvironmentEffectError, SshEnvironmentEffectContext> {
-    let entry = tunnels.get(key) ?? null;
+    // Concurrent ensures and reconnects interleave here: a cached entry may
+    // go stale while another fiber is already replacing it. Re-read the
+    // shared state after every await point instead of deciding once, so two
+    // fibers never both launch a replacement for the same target.
+    for (;;) {
+      const entry = tunnels.get(key) ?? null;
 
-    if (entry !== null) {
-      yield* Effect.logDebug("ssh.environment.tunnel.existing.check", {
-        ...sshTargetLogFields(resolvedTarget),
-        key,
-        localPort: entry.localPort,
-        remotePort: entry.remotePort,
-      });
-      const readinessExit = yield* Effect.exit(
-        waitForHttpReady({
-          baseUrl: entry.httpBaseUrl,
-          path: T3_SERVER_READINESS_PATH,
-          timeoutMs: EXISTING_TUNNEL_READY_TIMEOUT_MS,
-          probeTimeoutMs: EXISTING_TUNNEL_READY_PROBE_TIMEOUT_MS,
-        }),
-      );
-      if (Exit.isSuccess(readinessExit)) {
-        yield* Effect.logDebug("ssh.environment.tunnel.reused", {
+      if (entry !== null) {
+        yield* Effect.logDebug("ssh.environment.tunnel.existing.check", {
           ...sshTargetLogFields(resolvedTarget),
           key,
           localPort: entry.localPort,
           remotePort: entry.remotePort,
         });
-        return entry;
-      }
-      yield* Effect.logWarning("ssh.environment.tunnel.existing.stale", {
-        ...sshTargetLogFields(resolvedTarget),
-        key,
-        localPort: entry.localPort,
-        remotePort: entry.remotePort,
-        cause: readinessExit.cause,
-      });
-      yield* closeTunnelEntry(entry);
-      yield* cancelPendingTunnelEntry(key, resolvedTarget);
-      entry = null;
-    }
-
-    const pending = pendingTunnelEntries.get(key);
-    if (pending) {
-      yield* Effect.logDebug("ssh.environment.tunnel.pending.await", {
-        ...sshTargetLogFields(resolvedTarget),
-        key,
-      });
-      return yield* Deferred.await(pending);
-    }
-
-    const deferred = yield* Deferred.make<SshTunnelEntry, SshEnvironmentEffectError>();
-    pendingTunnelEntries.set(key, deferred);
-
-    return yield* createTunnelEntry({
-      key,
-      resolvedTarget,
-      ...(runner === undefined ? {} : { runner }),
-    }).pipe(
-      Effect.tapError((cause) =>
-        Effect.logWarning("ssh.environment.tunnel.create.failed", {
+        const readinessExit = yield* Effect.exit(
+          waitForHttpReady({
+            baseUrl: entry.httpBaseUrl,
+            path: T3_SERVER_READINESS_PATH,
+            timeoutMs: EXISTING_TUNNEL_READY_TIMEOUT_MS,
+            probeTimeoutMs: EXISTING_TUNNEL_READY_PROBE_TIMEOUT_MS,
+          }),
+        );
+        if (Exit.isSuccess(readinessExit)) {
+          yield* Effect.logDebug("ssh.environment.tunnel.reused", {
+            ...sshTargetLogFields(resolvedTarget),
+            key,
+            localPort: entry.localPort,
+            remotePort: entry.remotePort,
+          });
+          return entry;
+        }
+        yield* Effect.logWarning("ssh.environment.tunnel.existing.stale", {
           ...sshTargetLogFields(resolvedTarget),
           key,
-          cause,
-        }),
-      ),
-      Effect.onExit((exit) =>
-        Effect.sync(() => {
-          if (pendingTunnelEntries.get(key) === deferred) {
-            pendingTunnelEntries.delete(key);
-          }
-        }).pipe(Effect.andThen(Deferred.done(deferred, exit))),
-      ),
-    );
+          localPort: entry.localPort,
+          remotePort: entry.remotePort,
+          cause: readinessExit.cause,
+        });
+        yield* closeTunnelEntry(entry);
+        // Leave any in-flight creation alone: it is already producing the
+        // fresh entry this stale path wants, so re-checking the shared maps
+        // below beats cancelling it and racing a duplicate launch. Only an
+        // explicit disconnectEnvironment cancels pending creations.
+        continue;
+      }
+
+      const pending = pendingTunnelEntries.get(key);
+      if (pending) {
+        yield* Effect.logDebug("ssh.environment.tunnel.pending.await", {
+          ...sshTargetLogFields(resolvedTarget),
+          key,
+        });
+        return yield* Deferred.await(pending);
+      }
+
+      const deferred = yield* Deferred.make<SshTunnelEntry, SshEnvironmentEffectError>();
+      pendingTunnelEntries.set(key, deferred);
+
+      return yield* createTunnelEntry({
+        key,
+        resolvedTarget,
+        ...(runner === undefined ? {} : { runner }),
+      }).pipe(
+        Effect.tapError((cause) =>
+          Effect.logWarning("ssh.environment.tunnel.create.failed", {
+            ...sshTargetLogFields(resolvedTarget),
+            key,
+            cause,
+          }),
+        ),
+        Effect.onExit((exit) =>
+          Effect.sync(() => {
+            if (pendingTunnelEntries.get(key) === deferred) {
+              pendingTunnelEntries.delete(key);
+            }
+          }).pipe(Effect.andThen(Deferred.done(deferred, exit).pipe(Effect.ignore))),
+        ),
+      );
+    }
   });
 
   const ensureEnvironment = Effect.fn("ssh/tunnel.ensureEnvironment")(function* (

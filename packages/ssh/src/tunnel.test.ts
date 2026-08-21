@@ -973,3 +973,97 @@ describe("ssh tunnel scripts", () => {
     }).pipe(Effect.provide(layer), Effect.scoped);
   });
 });
+
+describe("ssh tunnel lifecycle", () => {
+  it.effect("coalesces concurrent stale reconnects into one replacement tunnel", () => {
+    let tunnelSpawnCount = 0;
+    let launchCount = 0;
+    let readinessRequestCount = 0;
+    let staleProbesArmed = false;
+    let arrivedStaleChecks = 0;
+    let replacementReleased = false;
+
+    const spawner = ChildProcessSpawner.make((command) =>
+      Effect.sync(() => {
+        const args = commandArgs(command);
+        if (args.includes("-N")) {
+          tunnelSpawnCount += 1;
+          return makeRunningProcess(() => {});
+        }
+        if (args.includes("sh") && args.includes("--")) {
+          launchCount += 1;
+          return makeSuccessfulProcess('{"remotePort":3773,"serverKind":"managed"}\n');
+        }
+        return makeSuccessfulProcess("\n");
+      }),
+    );
+    const staleDuringReconnectHttpClient = HttpClient.make((request) =>
+      Effect.gen(function* () {
+        readinessRequestCount += 1;
+        const respond = (status: number) =>
+          Effect.succeed(HttpClientResponse.fromWeb(request, new Response("", { status })));
+        if (readinessRequestCount === 1 || tunnelSpawnCount >= 2) {
+          return yield* respond(200);
+        }
+        if (!staleProbesArmed) {
+          return yield* respond(503);
+        }
+        arrivedStaleChecks += 1;
+        if (arrivedStaleChecks === 2) {
+          // Both reconnecting fibers are now inside their stale-entry
+          // checks; release them into the close/create race together.
+          replacementReleased = true;
+          return yield* respond(503);
+        }
+        // Hold the first fiber until the second one arrives.
+        while (!replacementReleased) {
+          yield* Effect.sleep(Duration.millis(100));
+        }
+        return yield* respond(503);
+      }),
+    );
+    const layer = Layer.mergeAll(
+      NodeServices.layer,
+      TestClock.layer(),
+      Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner),
+      Layer.succeed(HttpClient.HttpClient, staleDuringReconnectHttpClient),
+      Layer.succeed(NetService.NetService, testNetService),
+      SshPasswordPrompt.disabledLayer,
+      SshEnvironmentManager.layer(),
+    );
+    const target = {
+      alias: "devbox",
+      hostname: "devbox.example.com",
+      username: "julius",
+      port: 2222,
+    } as const;
+
+    return Effect.gen(function* () {
+      const manager = yield* SshEnvironmentManager;
+      yield* manager.ensureEnvironment(target);
+
+      staleProbesArmed = true;
+      const fiberA = yield* Effect.forkChild(manager.ensureEnvironment(target));
+      const fiberB = yield* Effect.forkChild(manager.ensureEnvironment(target));
+
+      let joined = false;
+      // Keep the shared clock moving so readiness retries and held probes
+      // make progress while this fiber waits on the reconnects.
+      yield* Effect.forkChild(
+        Effect.gen(function* () {
+          while (!joined) {
+            yield* TestClock.adjust(Duration.millis(100));
+          }
+        }),
+      );
+
+      const resultA = yield* Fiber.join(fiberA);
+      const resultB = yield* Fiber.join(fiberB);
+      joined = true;
+
+      assert.equal(launchCount, 2);
+      assert.equal(tunnelSpawnCount, 2);
+      assert.equal(resultB.httpBaseUrl, resultA.httpBaseUrl);
+    }).pipe(Effect.provide(layer), Effect.scoped);
+  });
+});
