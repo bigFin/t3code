@@ -114,6 +114,13 @@ export const DEFAULT_ENVIRONMENT_IDENTIFICATION_MODE: EnvironmentIdentificationM
 export const DEFAULT_COMPANION_ENABLED = false;
 
 /**
+ * URL (or data URL) of an 8x11 sprite sheet used by the optional Flux
+ * companion. Empty disables rendering even when the companion is enabled;
+ * sprites are user-supplied so no artwork ships with the app.
+ */
+export const CompanionSpriteUrl = Schema.String.check(Schema.isMaxLength(1_000_000));
+export const DEFAULT_COMPANION_SPRITE_URL = "";
+/**
  * A user-chosen font family (a single name or a comma-separated list). Empty
  * means "use the app default"; clients compose their own fallback stacks.
  */
@@ -123,6 +130,9 @@ export type FontFamilyPreference = typeof FontFamilyPreference.Type;
 export const ClientSettingsSchema = Schema.Struct({
   companionEnabled: Schema.Boolean.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_COMPANION_ENABLED)),
+  ),
+  companionSpriteUrl: CompanionSpriteUrl.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_COMPANION_SPRITE_URL)),
   ),
   confirmThreadArchive: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   confirmThreadDelete: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
@@ -866,6 +876,7 @@ export type ServerSettingsPatch = typeof ServerSettingsPatch.Type;
 
 export const ClientSettingsPatch = Schema.Struct({
   companionEnabled: Schema.optionalKey(Schema.Boolean),
+  companionSpriteUrl: Schema.optionalKey(CompanionSpriteUrl),
   confirmThreadArchive: Schema.optionalKey(Schema.Boolean),
   confirmThreadDelete: Schema.optionalKey(Schema.Boolean),
   diffIgnoreWhitespace: Schema.optionalKey(Schema.Boolean),

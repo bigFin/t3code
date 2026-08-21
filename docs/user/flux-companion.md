@@ -21,6 +21,15 @@ are in view.
 - Or open the command palette and search for **Flux**, **companion**, **pet**,
   or **cat**.
 
+## Bring your own sprite
+
+Flux ships without any artwork. To bring it to life, give it an 8x11 sprite
+sheet (PNG, or a data URL) in **Settings → Appearance → Flux companion sprite**.
+The sheet is read as a grid of square cells: the first 9 rows hold the walking,
+idle, and status animations, and the last 2 rows hold one static pose per
+pointer direction. Until a sprite URL is set — or while it fails to load — Flux
+stays hidden.
+
 Flux appears on desktop-sized web and desktop app windows with a mouse or
 trackpad. It stays still when your system requests reduced motion, and it does
 not float over compact touch layouts.
