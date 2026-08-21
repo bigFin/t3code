@@ -18,6 +18,7 @@ import {
 } from "@t3tools/client-runtime/state/runtime";
 import {
   DEFAULT_ENVIRONMENT_IDENTIFICATION_MODE,
+  DEFAULT_COMPANION_ENABLED,
   DEFAULT_UNIFIED_SETTINGS,
   type EnvironmentIdentificationMode,
   MAX_CODE_FONT_SIZE,
@@ -509,6 +510,9 @@ export function useSettingsRestore(onRestored?: () => void) {
       DEFAULT_UNIFIED_SETTINGS.environmentIdentificationMode
         ? ["Environment identification"]
         : []),
+      ...(settings.companionEnabled !== DEFAULT_UNIFIED_SETTINGS.companionEnabled
+        ? ["Flux companion"]
+        : []),
       ...(settings.timestampFormat !== DEFAULT_UNIFIED_SETTINGS.timestampFormat
         ? ["Time format"]
         : []),
@@ -570,6 +574,7 @@ export function useSettingsRestore(onRestored?: () => void) {
     [
       isTextGenerationModelDirty,
       isBackgroundActivityDirty,
+      settings.companionEnabled,
       settings.confirmThreadArchive,
       settings.confirmThreadDelete,
       settings.addProjectBaseDirectory,
@@ -667,6 +672,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       wordWrap: DEFAULT_UNIFIED_SETTINGS.wordWrap,
       diffIgnoreWhitespace: DEFAULT_UNIFIED_SETTINGS.diffIgnoreWhitespace,
       environmentIdentificationMode: DEFAULT_UNIFIED_SETTINGS.environmentIdentificationMode,
+      companionEnabled: DEFAULT_UNIFIED_SETTINGS.companionEnabled,
       glassOpacity: DEFAULT_UNIFIED_SETTINGS.glassOpacity,
       sidebarThreadPreviewCount: DEFAULT_UNIFIED_SETTINGS.sidebarThreadPreviewCount,
       sidebarProjectGroupingMode: DEFAULT_UNIFIED_SETTINGS.sidebarProjectGroupingMode,
@@ -1105,6 +1111,26 @@ export function AppearanceSettingsPanel() {
             }
           />
         ) : null}
+
+        <SettingsRow
+          title="Flux companion (beta)"
+          description="Try Flux, an experimental multi-host activity companion. Flux focuses the most actionable connected thread and opens it when selected."
+          resetAction={
+            settings.companionEnabled !== DEFAULT_COMPANION_ENABLED ? (
+              <SettingResetButton
+                label="Flux companion"
+                onClick={() => updateSettings({ companionEnabled: DEFAULT_COMPANION_ENABLED })}
+              />
+            ) : null
+          }
+          control={
+            <Switch
+              checked={settings.companionEnabled}
+              onCheckedChange={(checked) => updateSettings({ companionEnabled: Boolean(checked) })}
+              aria-label="Show Flux companion"
+            />
+          }
+        />
       </SettingsSection>
 
       <TypographySection />

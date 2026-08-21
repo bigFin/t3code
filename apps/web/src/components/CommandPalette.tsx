@@ -33,6 +33,7 @@ import { useNavigate, useParams } from "@tanstack/react-router";
 import * as Option from "effect/Option";
 import {
   ArrowLeftIcon,
+  BotIcon,
   CircleCheckIcon,
   CornerLeftUpIcon,
   FileSearchIcon,
@@ -64,7 +65,7 @@ import { useAtomValue } from "@effect/atom-react";
 import { isDesktopLocalConnectionTarget } from "../connection/desktopLocal";
 import { useDesktopLocalBootstraps } from "../connection/useDesktopLocalBootstraps";
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
-import { useClientSettings } from "../hooks/useSettings";
+import { useClientSettings, useUpdateClientSettings } from "../hooks/useSettings";
 import { useTheme } from "../hooks/useTheme";
 import { readLocalApi } from "../localApi";
 import { desktopLocalBackendId } from "../connection/desktopLocal";
@@ -572,6 +573,7 @@ function OpenCommandPaletteDialog(props: {
   const isActionsOnly = deferredQuery.startsWith(">");
   const [highlightedItemValue, setHighlightedItemValue] = useState<string | null>(null);
   const clientSettings = useClientSettings();
+  const updateClientSettings = useUpdateClientSettings();
   const createProject = useAtomCommand(projectEnvironment.create, {
     reportFailure: false,
   });
@@ -1574,6 +1576,19 @@ function OpenCommandPaletteDialog(props: {
     icon: <SettingsIcon className={ITEM_ICON_CLASS} />,
     run: async () => {
       await navigate({ to: "/settings" });
+    },
+  });
+  actionItems.push({
+    kind: "action",
+    value: "action:flux-companion",
+    searchTerms: ["flux", "companion", "pet", "cat", "activity", "hosts"],
+    title: clientSettings.companionEnabled
+      ? "Hide Flux companion (beta)"
+      : "Show Flux companion (beta)",
+    description: "Toggle the experimental multi-host activity companion.",
+    icon: <BotIcon className={ITEM_ICON_CLASS} />,
+    run: async () => {
+      updateClientSettings({ companionEnabled: !clientSettings.companionEnabled });
     },
   });
 
