@@ -13,6 +13,8 @@ import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 import * as DesktopClientSettings from "./DesktopClientSettings.ts";
 
 const clientSettings: ClientSettings = {
+  companionEnabled: true,
+  companionSpriteUrl: "https://example.com/flux-sprite.png",
   confirmThreadArchive: true,
   confirmThreadDelete: false,
   dismissedProviderUpdateNotificationKeys: [],
@@ -36,6 +38,7 @@ const clientSettings: ClientSettings = {
   sidebarProjectGroupingOverrides: {
     "environment-1:/tmp/project-a": "separate",
   },
+  sidebarGroupByHost: false,
   sidebarProjectSortOrder: "manual",
   sidebarThreadSortOrder: "created_at",
   sidebarThreadPreviewCount: 6,
