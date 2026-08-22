@@ -19,6 +19,7 @@ import { serviceCommand } from "./cli/service.ts";
 import { servicePreflightCommand } from "./cli/servicePreflight.ts";
 import { readCodexProviderHostConfig } from "./provider/host/CodexProviderHostConfig.ts";
 import { runCodexProviderHost } from "./provider/host/CodexProviderHostServer.ts";
+import { triageCommand } from "./cli/triage.ts";
 
 const CliRuntimeLayer = Layer.mergeAll(NodeServices.layer, NetService.layer);
 
@@ -81,6 +82,7 @@ export const makeCli = ({ cloudEnabled = hasCloudPublicConfig } = {}) =>
       serviceCommand,
       providerHostCommand,
       servicePreflightCommand,
+      triageCommand,
       cloudEnabled ? connectCommand : connectUnavailableCommand,
     ]),
   );

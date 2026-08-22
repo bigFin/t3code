@@ -1311,6 +1311,66 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
     }),
   );
 
+  it.effect("preserves failed and declined outcomes on completed tool items", () =>
+    Effect.gen(function* () {
+      const { adapter, runtime } = yield* startLifecycleRuntime();
+      const items = [
+        {
+          type: "commandExecution",
+          id: "failed-command",
+          command: "vp test run",
+          commandActions: [],
+          cwd: "/tmp",
+          exitCode: 1,
+          status: "failed",
+        },
+        {
+          type: "mcpToolCall",
+          id: "failed-mcp",
+          server: "simulator",
+          tool: "build",
+          arguments: {},
+          error: { message: "Build failed" },
+          status: "failed",
+        },
+        {
+          type: "fileChange",
+          id: "declined-change",
+          changes: [],
+          status: "declined",
+        },
+      ] as const;
+
+      for (const item of items) {
+        const firstEventFiber = yield* Stream.runHead(adapter.streamEvents).pipe(Effect.forkChild);
+
+        yield* runtime.emit({
+          id: asEventId(`evt-${item.id}`),
+          kind: "notification",
+          provider: ProviderDriverKind.make("codex"),
+          createdAt: "2026-01-01T00:00:00.000Z",
+          method: "item/completed",
+          threadId: asThreadId("thread-1"),
+          turnId: asTurnId("turn-1"),
+          itemId: asItemId(item.id),
+          payload: {
+            completedAtMs: 1_778_000_000_000,
+            threadId: "thread-1",
+            turnId: "turn-1",
+            item,
+          },
+        });
+
+        const firstEvent = yield* Fiber.join(firstEventFiber);
+        NodeAssert.equal(firstEvent._tag, "Some");
+        if (firstEvent._tag !== "Some" || firstEvent.value.type !== "item.completed") {
+          return;
+        }
+        NodeAssert.equal(firstEvent.value.payload.status, item.status);
+      }
+    }),
+  );
+
   it.effect("maps completed plan items to canonical proposed-plan completion events", () =>
     Effect.gen(function* () {
       const { adapter, runtime } = yield* startLifecycleRuntime();
@@ -1848,6 +1908,63 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
         compactsAutomatically: true,
       });
     }),
+  );
+
+  // Production calls startSession from a request fiber that finishes as soon as
+  // the session exists. `Effect.forkChild` made the runtime event consumer a
+  // child of that fiber, and Effect interrupts a fiber's children when it
+  // completes, so the consumer died on return and every event the session
+  // emitted afterwards was dropped. The other tests here start the session from
+  // the test fiber, which never completes, so the consumer survived and the bug
+  // stayed invisible. Starting it in a fiber that finishes reproduces
+  // production.
+  it.effect("keeps consuming runtime events after the startSession fiber completes", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      const startSessionFiber = yield* adapter
+        .startSession({
+          provider: ProviderDriverKind.make("codex"),
+          threadId: asThreadId("thread-outlives-start"),
+          runtimeMode: "full-access",
+        })
+        .pipe(Effect.forkChild);
+      yield* Fiber.join(startSessionFiber);
+
+      const runtime = lifecycleRuntimeFactory.lastRuntime;
+      NodeAssert.ok(runtime);
+
+      const firstEventFiber = yield* Stream.runHead(adapter.streamEvents).pipe(Effect.forkChild);
+      yield* runtime.emit({
+        id: asEventId("evt-after-start-session"),
+        kind: "notification",
+        provider: ProviderDriverKind.make("codex"),
+        createdAt: "2026-01-01T00:00:00.000Z",
+        method: "item/completed",
+        threadId: asThreadId("thread-outlives-start"),
+        turnId: asTurnId("turn-1"),
+        itemId: asItemId("msg_after_start"),
+        payload: {
+          completedAtMs: 1_778_000_000_000,
+          threadId: "thread-outlives-start",
+          turnId: "turn-1",
+          item: {
+            type: "agentMessage",
+            id: "msg_after_start",
+            text: "emitted after startSession returned",
+          },
+        },
+      });
+
+      const firstEvent = yield* Fiber.join(firstEventFiber).pipe(Effect.timeout("10 seconds"));
+      NodeAssert.equal(firstEvent._tag, "Some");
+      if (firstEvent._tag !== "Some") {
+        return;
+      }
+      NodeAssert.equal(firstEvent.value.type, "item.completed");
+      // Live clock so the timeout above is real: under the default test clock it
+      // waits on virtual time that never advances, and a regression would hang
+      // until the suite timeout instead of failing here.
+    }).pipe(TestClock.withLive),
   );
 });
 

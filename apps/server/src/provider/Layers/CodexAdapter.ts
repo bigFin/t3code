@@ -528,7 +528,9 @@ function mapItemLifecycle(
     lifecycle === "item.started"
       ? "inProgress"
       : lifecycle === "item.completed"
-        ? "completed"
+        ? "status" in item && (item.status === "failed" || item.status === "declined")
+          ? item.status
+          : "completed"
         : undefined;
 
   return {
@@ -2001,27 +2003,29 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
           ),
         );
 
-        const eventFiber: Fiber.Fiber<void, never> = yield* Stream.runForEach(
-          runtime.events,
-          (event) =>
-            Effect.gen(function* () {
-              yield* writeNativeEvent(event);
-              const runtimeEvents = mapToRuntimeEvents(event, event.threadId);
-              if (runtimeEvents.length === 0) {
-                yield* Effect.logDebug("ignoring unhandled Codex provider event", {
-                  method: event.method,
-                  threadId: event.threadId,
-                  turnId: event.turnId,
-                  itemId: event.itemId,
-                });
-                return;
-              }
-              yield* Queue.offerAll(runtimeEventQueue, runtimeEvents);
-              if (event.method === "session/disconnected" && appServerHost) {
-                yield* scheduleReconnect(event.threadId);
-              }
-            }),
-        ).pipe(Effect.forkChild);
+        // Fork into the session scope, not the calling fiber. `forkChild` makes
+        // this a child of `startSession`, and Effect interrupts a fiber's
+        // children when it completes, so the consumer died on return and every
+        // runtime event the session emitted afterwards was dropped.
+        const eventFiber = yield* Stream.runForEach(runtime.events, (event) =>
+          Effect.gen(function* () {
+            yield* writeNativeEvent(event);
+            const runtimeEvents = mapToRuntimeEvents(event, event.threadId);
+            if (runtimeEvents.length === 0) {
+              yield* Effect.logDebug("ignoring unhandled Codex provider event", {
+                method: event.method,
+                threadId: event.threadId,
+                turnId: event.turnId,
+                itemId: event.itemId,
+              });
+              return;
+            }
+            yield* Queue.offerAll(runtimeEventQueue, runtimeEvents);
+            if (event.method === "session/disconnected" && appServerHost) {
+              yield* scheduleReconnect(event.threadId);
+            }
+          }),
+        ).pipe(Effect.forkIn(sessionScope));
 
         const started: ProviderSession = yield* runtime.start().pipe(
           Effect.mapError((cause) =>

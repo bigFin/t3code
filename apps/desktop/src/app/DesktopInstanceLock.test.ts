@@ -51,6 +51,7 @@ const makeInstanceLockLayer = (options: {
     removeCommandLineSwitch: () => Effect.void,
     onBeforeQuitForUpdate: () => Effect.void,
     on: () => Effect.void,
+    systemLocale: Effect.succeed("en-US"),
   } satisfies ElectronApp.ElectronApp["Service"]);
 
   const environmentLayer = Layer.succeed(DesktopEnvironment.DesktopEnvironment, {
