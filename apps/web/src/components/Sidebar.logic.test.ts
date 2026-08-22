@@ -39,6 +39,7 @@ import {
   sortProjectsForSidebar,
   sortScopedProjectsForSidebar,
   shouldCreateNewThreadInCurrentProject,
+  groupSidebarThreadsByHost,
   THREAD_JUMP_HINT_SHOW_DELAY_MS,
 } from "./Sidebar.logic";
 import {
@@ -1793,5 +1794,47 @@ describe("sortLogicalProjectsForSidebar", () => {
         (project) => project.projectKey,
       ),
     ).toEqual(["logical-newer", "logical-older"]);
+  });
+});
+
+describe("groupSidebarThreadsByHost", () => {
+  const thread = <TEnvironmentId extends string>(environmentId: TEnvironmentId, id: string) => ({
+    environmentId,
+    id,
+  });
+
+  it("groups threads under their host in the given host order", () => {
+    const groups = groupSidebarThreadsByHost(
+      [thread("env-b", "t1"), thread("env-a", "t2"), thread("env-b", "t3")],
+      ["env-a", "env-b"],
+    );
+    expect(groups).toEqual([
+      { environmentId: "env-a", threads: [thread("env-a", "t2")] },
+      {
+        environmentId: "env-b",
+        threads: [thread("env-b", "t1"), thread("env-b", "t3")],
+      },
+    ]);
+  });
+
+  it("skips hosts without active threads", () => {
+    const groups = groupSidebarThreadsByHost([thread("env-b", "t1")], ["env-a", "env-b"]);
+    expect(groups).toEqual([{ environmentId: "env-b", threads: [thread("env-b", "t1")] }]);
+  });
+
+  it("appends unknown environments after known hosts, sorted by id", () => {
+    const groups = groupSidebarThreadsByHost(
+      [thread("env-z", "t1"), thread("env-c", "t2"), thread("env-a", "t3")],
+      ["env-a"] as Array<string>,
+    );
+    expect(groups.map((group) => group.environmentId)).toEqual(["env-a", "env-c", "env-z"]);
+  });
+
+  it("preserves within-host thread order", () => {
+    const groups = groupSidebarThreadsByHost(
+      [thread("env-a", "newest"), thread("env-a", "oldest")],
+      ["env-a"],
+    );
+    expect(groups[0]?.threads.map((thread) => thread.id)).toEqual(["newest", "oldest"]);
   });
 });

@@ -132,6 +132,7 @@ import {
   animatePinnedLayoutChanges,
   buildBulkTitleRegenerationContextMenuItem,
   formatWorkingDurationLabel,
+  groupSidebarThreadsByHost,
   firstValidTimestampMs,
   hasUnseenCompletion,
   isSidebarNestedLinkClick,
@@ -4169,28 +4170,11 @@ export default function Sidebar() {
                     );
                   }
                   if (sidebarGroupByHost && hostOptions.length > 1) {
-                    const activeThreadsByEnvironment = new Map<
-                      EnvironmentId,
-                      EnvironmentThreadShell[]
-                    >();
-                    for (const thread of activeThreads) {
-                      const environmentThreads =
-                        activeThreadsByEnvironment.get(thread.environmentId) ?? [];
-                      environmentThreads.push(thread);
-                      activeThreadsByEnvironment.set(thread.environmentId, environmentThreads);
-                    }
-                    const knownEnvironmentIds = new Set(
+                    const hostGroups = groupSidebarThreadsByHost(
+                      activeThreads,
                       hostOptions.map((environment) => environment.environmentId),
                     );
-                    const orderedEnvironmentIds = [
-                      ...hostOptions.map((environment) => environment.environmentId),
-                      ...[...activeThreadsByEnvironment.keys()]
-                        .filter((environmentId) => !knownEnvironmentIds.has(environmentId))
-                        .toSorted(),
-                    ];
-                    for (const environmentId of orderedEnvironmentIds) {
-                      const environmentThreads = activeThreadsByEnvironment.get(environmentId);
-                      if (environmentThreads === undefined) continue;
+                    for (const { environmentId, threads: environmentThreads } of hostGroups) {
                       items.push(
                         <li
                           key={`host:${environmentId}`}

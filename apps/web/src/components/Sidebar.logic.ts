@@ -1065,3 +1065,51 @@ export function sortScopedProjectsForSidebar<
       left.id.localeCompare(right.id),
   );
 }
+
+export interface SidebarHostGroup<
+  TThread extends { readonly environmentId: TEnvironmentId },
+  TEnvironmentId extends string = string,
+> {
+  readonly environmentId: TEnvironmentId;
+  readonly threads: ReadonlyArray<TThread>;
+}
+
+/**
+ * Groups the flat active-thread list by owning environment for the
+ * "Group active threads by host" sidebar view. Hosts come back in
+ * `orderedEnvironmentIds` order (the sorted host list, primary first);
+ * any thread whose environment is absent from that list — a host whose
+ * project list has not loaded yet — lands in a trailing group sorted by
+ * environment id so it stays reachable instead of vanishing. Environments
+ * with no active threads produce no group.
+ */
+export function groupSidebarThreadsByHost<
+  TThread extends { readonly environmentId: TEnvironmentId },
+  TEnvironmentId extends string,
+>(
+  threads: ReadonlyArray<TThread>,
+  orderedEnvironmentIds: ReadonlyArray<TEnvironmentId>,
+): Array<SidebarHostGroup<TThread, TEnvironmentId>> {
+  const threadsByEnvironment = new Map<TEnvironmentId, Array<TThread>>();
+  for (const thread of threads) {
+    const existing = threadsByEnvironment.get(thread.environmentId) ?? [];
+    existing.push(thread);
+    threadsByEnvironment.set(thread.environmentId, existing);
+  }
+
+  const knownEnvironmentIds = new Set(orderedEnvironmentIds);
+  const ordered = [
+    ...orderedEnvironmentIds,
+    ...[...threadsByEnvironment.keys()]
+      .filter((environmentId) => !knownEnvironmentIds.has(environmentId))
+      .toSorted(),
+  ];
+
+  const groups: Array<SidebarHostGroup<TThread, TEnvironmentId>> = [];
+  for (const environmentId of ordered) {
+    const environmentThreads = threadsByEnvironment.get(environmentId);
+    if (environmentThreads === undefined) continue;
+    groups.push({ environmentId, threads: environmentThreads });
+  }
+  return groups;
+}
