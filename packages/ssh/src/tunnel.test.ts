@@ -612,6 +612,14 @@ describe("ssh tunnel scripts", () => {
     );
   });
 
+  it("steals stale remote launch locks atomically", () => {
+    const script = buildRemoteLaunchScript();
+    assert.include(script, 'mv "$LAUNCH_LOCK_DIR" "$LAUNCH_LOCK_DIR.stale.$$"');
+    // The old two-step rm/rmdir steals could delete a freshly acquired
+    // launch lock; the only remaining rmdir is the holder's own cleanup.
+    assert.equal(script.split('rmdir "$LAUNCH_LOCK_DIR"').length - 1, 1);
+  });
+
   it.effect("accepts pretty-printed pairing JSON from the remote CLI", () => {
     const target = {
       alias: "devbox",

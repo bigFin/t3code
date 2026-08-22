@@ -668,15 +668,28 @@ cleanup_launch() {
 trap cleanup_launch EXIT
 acquire_launch_lock() {
   WAIT_COUNT=0
+  steal_lock() {
+    # Rename the directory aside in one step so two waiters can never both
+    # claim the lock, and so a fresh mkdir by another launcher cannot be
+    # destroyed by this waiter's cleanup.
+    if mv "$LAUNCH_LOCK_DIR" "$LAUNCH_LOCK_DIR.stale.$$" 2>/dev/null; then
+      rm -rf "$LAUNCH_LOCK_DIR.stale.$$"
+    fi
+  }
   while ! mkdir "$LAUNCH_LOCK_DIR" 2>/dev/null; do
     LOCK_OWNER="$(cat "$LAUNCH_LOCK_DIR/owner" 2>/dev/null || true)"
     if [ -n "$LOCK_OWNER" ] && ! kill -0 "$LOCK_OWNER" 2>/dev/null; then
-      rm -f "$LAUNCH_LOCK_DIR/owner"
-      rmdir "$LAUNCH_LOCK_DIR" 2>/dev/null || true
+      steal_lock
       continue
     fi
     if [ -z "$LOCK_OWNER" ] && [ "$WAIT_COUNT" -ge 50 ]; then
-      rmdir "$LAUNCH_LOCK_DIR" 2>/dev/null || true
+      # No owner written for over five seconds: the creator died between
+      # mkdir and writing its pid. Recheck emptiness immediately before the
+      # steal so a live holder that wrote its pid in the meantime keeps its
+      # lock.
+      if [ -z "$(cat "$LAUNCH_LOCK_DIR/owner" 2>/dev/null || true)" ]; then
+        steal_lock
+      fi
       continue
     fi
     if [ "$WAIT_COUNT" -ge 1200 ]; then
