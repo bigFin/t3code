@@ -144,6 +144,7 @@ import {
   resolveSidebarHostDisplayLabels,
   resolveSidebarThreadStatus,
   searchSidebarThreadsByTitle,
+  indexSidebarHostGroups,
   sidebarEnvironmentConnectionClassName,
   shouldCreateNewThreadInCurrentProject,
   toggleSidebarHostScope,
@@ -214,6 +215,7 @@ const SETTLED_TAIL_PAGE_COUNT = 25;
 const SETTLED_SHELF_EXPANDED_KEY = "t3code:sidebar-v2:settled-expanded";
 const SNOOZED_SHELF_EXPANDED_KEY = "t3code:sidebar-v2:snoozed-expanded";
 const COLLAPSED_HOST_GROUPS_KEY = "t3code:sidebar-v2:collapsed-host-groups";
+const EXPANDED_INACTIVE_HOSTS_KEY = "t3code:sidebar-v2:expanded-inactive-hosts";
 
 const SIDEBAR_PROJECT_SORT_LABELS: Record<SidebarProjectSortOrder, string> = {
   updated_at: "Last user message",
@@ -2004,6 +2006,7 @@ export default function Sidebar() {
         );
       });
   }, [environments, primaryEnvironmentId, projects]);
+  const groupedHostView = sidebarGroupByHost && hostOptions.length > 1;
   const environmentLabelById = useMemo(
     () =>
       resolveSidebarHostDisplayLabels(
@@ -2421,6 +2424,24 @@ export default function Sidebar() {
             : [...collapsed, environmentId],
       ),
     [setCollapsedHostGroups],
+  );
+  // Within an expanded host, settled history starts folded away; the user
+  // unfolds a host's "Settled (n)" row to browse older sessions. Persisted
+  // as the set of hosts currently unfolded — absent means folded.
+  const [expandedInactiveHosts, setExpandedInactiveHosts] = useLocalStorage(
+    EXPANDED_INACTIVE_HOSTS_KEY,
+    [],
+    Schema.Array(Schema.String),
+  );
+  const toggleHostInactiveFold = useCallback(
+    (environmentId: EnvironmentId) =>
+      setExpandedInactiveHosts(
+        (expanded) =>
+          expanded.includes(environmentId)
+            ? expanded.filter((id) => id !== environmentId)
+            : [...expanded, environmentId],
+      ),
+    [setExpandedInactiveHosts],
   );
   const renderedSettledThreads = useMemo(() => {
     if (settledShelfExpanded) return visibleSettledThreads;
@@ -4105,6 +4126,8 @@ export default function Sidebar() {
                       />
                     );
                   };
+
+
                   // Draft block above everything, then the pinned block:
                   // full cards above the inbox, closed by a thin divider (the
                   // pin glyphs carry the meaning, so no header text). Both
@@ -4112,6 +4135,9 @@ export default function Sidebar() {
                   // Pinned rows render in the one shared pinned order; only
                   // reorder-capable rows register as sortable (legacy-server
                   // pins render in place as plain rows).
+                  // Host grouping promotes every connected host to a
+                  // top-level collapsible section; the flat layout keeps
+                  // pins, shelves, and dividers exactly as before.
                   const items: ReactNode[] = [
                     <SidebarDraftBlock
                       key="draft-sessions"
@@ -4123,7 +4149,7 @@ export default function Sidebar() {
                       routeDraftId={routeDraftIdForRows}
                       onNavigateToDraft={navigateToDraft}
                     />,
-                    pinnedThreads.length > 0 ? (
+                    !groupedHostView && pinnedThreads.length > 0 ? (
                       <li key="pinned-dnd" className="list-none">
                         <DndContext
                           sensors={pinnedDndSensors}
@@ -4163,7 +4189,7 @@ export default function Sidebar() {
                       </li>
                     ) : null,
                   ];
-                  if (pinnedThreads.length > 0) {
+                  if (!groupedHostView && pinnedThreads.length > 0) {
                     items.push(
                       <li
                         key="pinned-divider"
@@ -4173,194 +4199,43 @@ export default function Sidebar() {
                       />,
                     );
                   }
-                  if (sidebarGroupByHost && hostOptions.length > 1) {
-                    const hostGroups = groupSidebarThreadsByHost(
-                      activeThreads,
-                      hostOptions.map((environment) => environment.environmentId),
-                    );
-                    for (const { environmentId, threads: environmentThreads } of hostGroups) {
-                      const collapsed = collapsedHostGroups.includes(environmentId);
-                      items.push(
-                        <li
-                          key={`host:${environmentId}`}
-                          data-thread-selection-safe
-                          className="mt-2 flex list-none items-center gap-1.5 px-2.5 pb-0.5 text-[11px] font-medium text-sidebar-muted-foreground"
-                        >
-                          <button
-                            type="button"
-                            onClick={() => toggleHostGroup(environmentId)}
-                            aria-expanded={!collapsed}
-                            aria-label={
-                              collapsed
-                                ? `Expand ${environmentLabelById.get(environmentId) ?? environmentId}`
-                                : `Collapse ${environmentLabelById.get(environmentId) ?? environmentId}`
-                            }
-                            className="-ml-0.5 flex min-w-0 cursor-pointer flex-1 items-center gap-1.5 rounded-sm text-left hover:text-sidebar-foreground"
-                          >
-                            <span
-                              aria-hidden
-                              className={cn(
-                                "size-1.5 shrink-0 rounded-full bg-current",
-                                sidebarEnvironmentConnectionClassName(
-                                  environmentConnectionPhaseById.get(environmentId) ?? null,
-                                ),
-                              )}
-                            />
-                            <span className="min-w-0 flex-1 truncate">
-                              {environmentLabelById.get(environmentId) ?? environmentId}
-                            </span>
-                            <span className="shrink-0 tabular-nums opacity-60">
-                              {environmentThreads.length}
-                            </span>
-                            <ChevronDownIcon
-                              aria-hidden
-                              className={cn(
-                                "size-3 shrink-0 transition-transform",
-                                collapsed && "-rotate-90",
-                              )}
-                            />
-                          </button>
-                        </li>,
-                      );
-                      if (!collapsed) {
-                        for (const thread of environmentThreads) {
-                          items.push(renderThreadRow(thread, "active"));
-                        }
-                      }
-                    }
-                  } else {
+                  if (groupedHostView) {
                     for (const thread of activeThreads) {
                       items.push(renderThreadRow(thread, "active"));
                     }
-                  }
-                  // Snoozed shelf: between the inbox and Settled — out of the
-                  // way, never gone. The header always renders while anything
-                  // is snoozed (the count is the whole footprint when
-                  // collapsed); rows only when expanded. Vanishes entirely at
-                  // count 0.
-                  if (snoozedThreads.length > 0) {
-                    items.push(
-                      <li
-                        key="snoozed-shelf-header"
-                        data-thread-selection-safe
-                        className="list-none"
-                      >
-                        <button
-                          type="button"
-                          onClick={toggleSnoozedShelf}
-                          aria-expanded={snoozedShelfExpanded}
-                          data-testid="sidebar-snoozed-shelf-toggle"
-                          className="mb-1 mt-3 flex w-full cursor-pointer items-center gap-2 px-2.5 text-left"
-                        >
-                          <span className="text-xs font-medium text-blue-600 dark:text-blue-400">
-                            {snoozedShelfExpanded
-                              ? "Snoozed"
-                              : `Snoozed (${snoozedThreads.length})`}
-                          </span>
-                          <span className="h-px flex-1 bg-blue-500/20 dark:bg-blue-400/15" />
-                          <ChevronDownIcon
-                            aria-hidden
-                            className={cn(
-                              "size-3 text-blue-600 transition-transform dark:text-blue-400",
-                              snoozedShelfExpanded && "rotate-180",
-                            )}
-                          />
-                        </button>
-                      </li>,
-                    );
-                    for (const thread of visibleSnoozedThreads) {
-                      items.push(renderThreadRow(thread, "snoozed"));
-                    }
-                  }
-                  if (settledThreads.length > 0) {
-                    items.push(
-                      <li
-                        key="settled-shelf-header"
-                        data-thread-selection-safe
-                        className="list-none"
-                      >
-                        <button
-                          type="button"
-                          onClick={toggleSettledShelf}
-                          aria-expanded={settledShelfExpanded}
-                          data-testid="sidebar-settled-shelf-toggle"
-                          className="mb-1 mt-3 flex w-full cursor-pointer items-center gap-2 px-2.5 text-left"
-                        >
-                          <span className="text-xs font-medium text-muted-foreground/50">
-                            {settledShelfExpanded
-                              ? "Settled"
-                              : `Settled (${settledThreads.length})`}
-                          </span>
-                          <span className="h-px flex-1 bg-sidebar-border/60" />
-                          <ChevronDownIcon
-                            aria-hidden
-                            className={cn(
-                              "size-3 text-muted-foreground/50 transition-transform",
-                              settledShelfExpanded && "rotate-180",
-                            )}
-                          />
-                        </button>
-                      </li>,
-                    );
-                  }
-                  if (sidebarGroupByHost && hostOptions.length > 1) {
-                    const settledHostGroups = groupSidebarThreadsByHost(
-                      renderedSettledThreads,
-                      hostOptions.map((environment) => environment.environmentId),
-                    );
-                    for (const { environmentId, threads: environmentThreads } of settledHostGroups) {
-                      const collapsed = collapsedHostGroups.includes(environmentId);
+                  } else {
+                    if (snoozedThreads.length > 0) {
                       items.push(
-                        <li
-                          key={`host-settled:${environmentId}`}
-                          data-thread-selection-safe
-                          className="mt-1.5 flex list-none items-center gap-1.5 px-2.5 pb-0.5 text-[11px] font-medium text-muted-foreground/50"
-                        >
-                          <button
-                            type="button"
-                            onClick={() => toggleHostGroup(environmentId)}
-                            aria-expanded={!collapsed}
-                            className="-ml-0.5 flex min-w-0 cursor-pointer flex-1 items-center gap-1.5 rounded-sm text-left hover:text-sidebar-muted-foreground"
-                          >
-                            <span
-                              aria-hidden
-                              className={cn(
-                                "size-1.5 shrink-0 rounded-full bg-current",
-                                sidebarEnvironmentConnectionClassName(
-                                  environmentConnectionPhaseById.get(environmentId) ?? null,
-                                ),
-                              )}
-                            />
-                            <span className="min-w-0 flex-1 truncate">
-                              {environmentLabelById.get(environmentId) ?? environmentId}
-                            </span>
-                            <span className="shrink-0 tabular-nums opacity-60">
-                              {environmentThreads.length}
-                            </span>
-                            <ChevronDownIcon
-                              aria-hidden
-                              className={cn(
-                                "size-3 shrink-0 transition-transform",
-                                collapsed && "-rotate-90",
-                              )}
-                            />
+                        <li key="snoozed-shelf-header" data-thread-selection-safe className="list-none">
+                          <button type="button" onClick={toggleSnoozedShelf} aria-expanded={snoozedShelfExpanded} data-testid="sidebar-snoozed-shelf-toggle" className="mb-1 mt-3 flex w-full cursor-pointer items-center gap-2 px-2.5 text-left">
+                            <span className="text-xs font-medium text-blue-600 dark:text-blue-400">{snoozedShelfExpanded ? "Snoozed" : `Snoozed (${snoozedThreads.length})`}</span>
+                            <span className="h-px flex-1 bg-blue-500/20 dark:bg-blue-400/15" />
+                            <ChevronDownIcon aria-hidden className={cn("size-3 text-blue-600 transition-transform dark:text-blue-400", snoozedShelfExpanded && "rotate-180")} />
                           </button>
                         </li>,
                       );
-                      if (!collapsed) {
-                        for (const thread of environmentThreads) {
-                          items.push(renderThreadRow(thread, "settled"));
-                        }
+                      for (const thread of visibleSnoozedThreads) {
+                        items.push(renderThreadRow(thread, "snoozed"));
                       }
                     }
-                  } else {
+                    if (settledThreads.length > 0) {
+                      items.push(
+                        <li key="settled-shelf-header" data-thread-selection-safe className="list-none">
+                          <button type="button" onClick={toggleSettledShelf} aria-expanded={settledShelfExpanded} data-testid="sidebar-settled-shelf-toggle" className="mb-1 mt-3 flex w-full cursor-pointer items-center gap-2 px-2.5 text-left">
+                            <span className="text-xs font-medium text-muted-foreground/50">{settledShelfExpanded ? "Settled" : `Settled (${settledThreads.length})`}</span>
+                            <span className="h-px flex-1 bg-sidebar-border/60" />
+                            <ChevronDownIcon aria-hidden className={cn("size-3 text-muted-foreground/50 transition-transform", settledShelfExpanded && "rotate-180")} />
+                          </button>
+                        </li>,
+                      );
+                    }
                     for (const thread of renderedSettledThreads) {
                       items.push(renderThreadRow(thread, "settled"));
                     }
                   }
                   return items;
                 })()}
-                {settledShelfExpanded && hiddenSettledCount > 0 ? (
+                {!groupedHostView && settledShelfExpanded && hiddenSettledCount > 0 ? (
                   <li className="list-none">
                     <button
                       type="button"

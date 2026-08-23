@@ -1075,6 +1075,23 @@ export interface SidebarHostGroup<
 }
 
 /**
+ * Indexes grouped output by environment id for per-host section rendering.
+ */
+export function indexSidebarHostGroups<
+  TThread extends { readonly environmentId: TEnvironmentId },
+  TEnvironmentId extends string,
+>(
+  threads: ReadonlyArray<TThread>,
+  orderedEnvironmentIds: ReadonlyArray<TEnvironmentId>,
+): Map<TEnvironmentId, ReadonlyArray<TThread>> {
+  return new Map(
+    groupSidebarThreadsByHost(threads, orderedEnvironmentIds).map(
+      (group) => [group.environmentId, group.threads] as const,
+    ),
+  );
+}
+
+/**
  * Groups the flat active-thread list by owning environment for the
  * "Group active threads by host" sidebar view. Hosts come back in
  * `orderedEnvironmentIds` order (the sorted host list, primary first);
