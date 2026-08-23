@@ -17,11 +17,11 @@ import {
   ProviderRespondToRequestInput,
   ProviderRespondToUserInputInput,
   ProviderSendTurnInput,
+  ProviderDriverKind,
   ProviderSessionStartInput,
   ProviderStopSessionInput,
   ProviderUploadFeedbackInput,
   type ProviderInstanceId,
-  type ProviderDriverKind,
   type ProviderRuntimeEvent,
   type ProviderSession,
 } from "@t3tools/contracts";
@@ -1381,6 +1381,13 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         );
         const adapter = adaptersByInstance.get(providerInstanceId);
         if (adapter && hasDetachedSessionPersistence(adapter)) {
+          return;
+        }
+        // OMP agents run in daemons that outlive this server, but the driver
+        // does not implement boot-time reattach yet. Until it does, keep
+        // their bindings as-is here: marking them stopped at shutdown made
+        // every live session read as settled after a restart.
+        if (binding.provider === ProviderDriverKind.make("omp")) {
           return;
         }
         yield* clearMcpSession(binding.threadId);

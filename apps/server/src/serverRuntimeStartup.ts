@@ -312,6 +312,11 @@ export const reconcileProviderSessions = Effect.gen(function* () {
   const orphanedThreads = threads.filter(
     (thread) =>
       thread.session !== null &&
+      // OMP agents run in daemons that outlive a server restart; their
+      // running sessions are real work, not orphans. The driver does not
+      // implement reattach yet, so reconciliation must leave them alone
+      // instead of erroring them at every boot.
+      thread.session.providerName !== "omp" &&
       (thread.session.status === "starting" ||
         thread.session.status === "running" ||
         thread.session.activeTurnId !== null) &&
