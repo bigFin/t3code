@@ -99,16 +99,37 @@ jobs:
           cache: true
           run-install: true
 
-      - name: Test downstream Codex integration
+      - name: Typecheck every workspace package
+        if: steps.detect.outputs.changed == 'true'
+        run: |
+          # Clean git auto-merges can silently drop upstream additions when a
+          # fork rewrite overlaps the same region; only a full per-package
+          # typecheck catches those. Do not narrow this list.
+          vp run --parallel --concurrency-limit 4 \
+            --filter t3 \
+            --filter '@t3tools/contracts' \
+            --filter '@t3tools/shared' \
+            --filter '@t3tools/client-runtime' \
+            --filter '@t3tools/ssh' \
+            --filter '@t3tools/web' \
+            --filter '@t3tools/desktop' \
+            typecheck
+
+      - name: Run downstream integration tests
         if: steps.detect.outputs.changed == 'true'
         run: |
           vp test run \
             apps/server/src/provider/Drivers/CodexCliSessionImporter.test.ts \
             apps/server/src/orchestration/decider.import.test.ts \
             apps/server/src/serverRuntimeStartup.test.ts \
-            apps/server/src/server.test.ts
-          vp run --filter t3 typecheck
-          vp run --filter @t3tools/contracts typecheck
+            apps/server/src/server.test.ts \
+            apps/server/src/provider/Layers/CodexProvider.test.ts \
+            apps/server/src/provider/Layers/CodexAdapter.test.ts \
+            apps/server/src/provider/host/CodexProviderHostServer.test.ts \
+            packages/ssh/src/tunnel.test.ts \
+            packages/shared/src/fluxCompanion.test.ts \
+            apps/web/src/components/Sidebar.logic.test.ts \
+            apps/desktop/src/settings/DesktopClientSettings.test.ts
 
       - name: Validate Nix package
         if: steps.detect.outputs.changed == 'true'
