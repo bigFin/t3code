@@ -705,28 +705,17 @@ export const PiAgentIcon: Icon = ({ className, ...props }) => (
   </svg>
 );
 
-export const OmpIcon: Icon = ({ className, ...props }) => {
-  const gradientId = `${useId().replaceAll(":", "")}-omp`;
-  return (
-    <svg
-      {...props}
-      viewBox="0 0 24 24"
-      fill="none"
-      className={className}
-      stroke={`url(#${gradientId})`}
-      strokeWidth="2.5"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    >
-      <defs>
-        <linearGradient id={gradientId} x1="4" y1="5" x2="20" y2="19">
-          <stop stopColor="#f97316" />
-          <stop offset=".35" stopColor="#ec4899" />
-          <stop offset=".7" stopColor="#8b5cf6" />
-          <stop offset="1" stopColor="#06b6d4" />
-        </linearGradient>
-      </defs>
-      <path d={PI_SYMBOL_PATH} />
-    </svg>
-  );
-};
+export const OmpIcon: Icon = ({ className, ...props }) => (
+  <svg
+    {...props}
+    viewBox="0 0 24 24"
+    fill="none"
+    className={className}
+    stroke="currentColor"
+    strokeWidth="2.5"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+  >
+    <path d={PI_SYMBOL_PATH} />
+  </svg>
+);
