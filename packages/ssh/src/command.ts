@@ -1,4 +1,7 @@
+// @effect-diagnostics nodeBuiltinImport:off
 import * as NodeCrypto from "node:crypto";
+import * as NodeFs from "node:fs";
+import * as NodeOs from "node:os";
 
 import type { DesktopSshEnvironmentTarget, DesktopUpdateChannel } from "@t3tools/contracts";
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
@@ -107,17 +110,39 @@ export function baseSshArgs(
   target: DesktopSshEnvironmentTarget,
   input?: { readonly batchMode?: "yes" | "no" },
 ): string[] {
-  return [
+  const args = [
     "-o",
     `BatchMode=${input?.batchMode ?? "no"}`,
     "-o",
     "ConnectTimeout=10",
-    "-o",
-    "ControlMaster=no",
-    "-o",
-    "ControlPath=none",
-    ...(target.port !== null ? ["-p", String(target.port)] : []),
   ];
+  if (process.platform === "win32") {
+    // Windows OpenSSH has no portable unix-socket ControlPath; every command
+    // pays its own handshake there.
+    args.push("-o", "ControlMaster=no", "-o", "ControlPath=none");
+  } else {
+    // Reuse one authenticated master per target so the connect sequence
+    // (target resolve, launch, pairing, log tail) pays the TCP + key
+    // exchange + auth handshake once instead of per command. `%C` keeps the
+    // socket path a bounded hash; ControlPersist lets later commands ride
+    // the master and expires it automatically after idle.
+    const controlDir = `${NodeOs.homedir()}/.t3/ssh-control`;
+    try {
+      NodeFs.mkdirSync(controlDir, { recursive: true });
+    } catch {}
+    args.push(
+      "-o",
+      "ControlMaster=auto",
+      "-o",
+      `ControlPath=${controlDir}/%C`,
+      "-o",
+      "ControlPersist=120",
+    );
+  }
+  if (target.port !== null) {
+    args.push("-p", String(target.port));
+  }
+  return args;
 }
 
 export function getLastNonEmptyOutputLine(stdout: string): string | null {

@@ -1,3 +1,6 @@
+// @effect-diagnostics nodeBuiltinImport:off
+import * as NodeOs from "node:os";
+
 import { assert, describe, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Duration from "effect/Duration";
@@ -107,9 +110,11 @@ describe("ssh command", () => {
           "-o",
           "ConnectTimeout=10",
           "-o",
-          "ControlMaster=no",
+          "ControlMaster=auto",
           "-o",
-          "ControlPath=none",
+          `ControlPath=${NodeOs.homedir()}/.t3/ssh-control/%C`,
+          "-o",
+          "ControlPersist=120",
           "-p",
           "2222",
         ],
