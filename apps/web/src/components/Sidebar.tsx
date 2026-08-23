@@ -213,6 +213,7 @@ const SETTLED_TAIL_PAGE_COUNT = 25;
 // Keep the v2 key so existing preferences survive the v2-to-default rename.
 const SETTLED_SHELF_EXPANDED_KEY = "t3code:sidebar-v2:settled-expanded";
 const SNOOZED_SHELF_EXPANDED_KEY = "t3code:sidebar-v2:snoozed-expanded";
+const COLLAPSED_HOST_GROUPS_KEY = "t3code:sidebar-v2:collapsed-host-groups";
 
 const SIDEBAR_PROJECT_SORT_LABELS: Record<SidebarProjectSortOrder, string> = {
   updated_at: "Last user message",
@@ -2406,6 +2407,21 @@ export default function Sidebar() {
     () => setSettledShelfExpanded((value) => !value),
     [setSettledShelfExpanded],
   );
+  const [collapsedHostGroups, setCollapsedHostGroups] = useLocalStorage(
+    COLLAPSED_HOST_GROUPS_KEY,
+    [],
+    Schema.Array(Schema.String),
+  );
+  const toggleHostGroup = useCallback(
+    (environmentId: EnvironmentId) =>
+      setCollapsedHostGroups(
+        (collapsed) =>
+          collapsed.includes(environmentId)
+            ? collapsed.filter((id) => id !== environmentId)
+            : [...collapsed, environmentId],
+      ),
+    [setCollapsedHostGroups],
+  );
   const renderedSettledThreads = useMemo(() => {
     if (settledShelfExpanded) return visibleSettledThreads;
     if (routeThreadKey === null) return [];
@@ -4163,28 +4179,53 @@ export default function Sidebar() {
                       hostOptions.map((environment) => environment.environmentId),
                     );
                     for (const { environmentId, threads: environmentThreads } of hostGroups) {
+                      const collapsed = collapsedHostGroups.includes(environmentId);
                       items.push(
                         <li
                           key={`host:${environmentId}`}
                           data-thread-selection-safe
                           className="mt-2 flex list-none items-center gap-1.5 px-2.5 pb-0.5 text-[11px] font-medium text-sidebar-muted-foreground"
                         >
-                          <span
-                            aria-hidden
-                            className={cn(
-                              "size-1.5 shrink-0 rounded-full bg-current",
-                              sidebarEnvironmentConnectionClassName(
-                                environmentConnectionPhaseById.get(environmentId) ?? null,
-                              ),
-                            )}
-                          />
-                          <span className="min-w-0 truncate">
-                            {environmentLabelById.get(environmentId) ?? environmentId}
-                          </span>
+                          <button
+                            type="button"
+                            onClick={() => toggleHostGroup(environmentId)}
+                            aria-expanded={!collapsed}
+                            aria-label={
+                              collapsed
+                                ? `Expand ${environmentLabelById.get(environmentId) ?? environmentId}`
+                                : `Collapse ${environmentLabelById.get(environmentId) ?? environmentId}`
+                            }
+                            className="-ml-0.5 flex min-w-0 cursor-pointer flex-1 items-center gap-1.5 rounded-sm text-left hover:text-sidebar-foreground"
+                          >
+                            <span
+                              aria-hidden
+                              className={cn(
+                                "size-1.5 shrink-0 rounded-full bg-current",
+                                sidebarEnvironmentConnectionClassName(
+                                  environmentConnectionPhaseById.get(environmentId) ?? null,
+                                ),
+                              )}
+                            />
+                            <span className="min-w-0 flex-1 truncate">
+                              {environmentLabelById.get(environmentId) ?? environmentId}
+                            </span>
+                            <span className="shrink-0 tabular-nums opacity-60">
+                              {environmentThreads.length}
+                            </span>
+                            <ChevronDownIcon
+                              aria-hidden
+                              className={cn(
+                                "size-3 shrink-0 transition-transform",
+                                collapsed && "-rotate-90",
+                              )}
+                            />
+                          </button>
                         </li>,
                       );
-                      for (const thread of environmentThreads) {
-                        items.push(renderThreadRow(thread, "active"));
+                      if (!collapsed) {
+                        for (const thread of environmentThreads) {
+                          items.push(renderThreadRow(thread, "active"));
+                        }
                       }
                     }
                   } else {
@@ -4262,8 +4303,60 @@ export default function Sidebar() {
                       </li>,
                     );
                   }
-                  for (const thread of renderedSettledThreads) {
-                    items.push(renderThreadRow(thread, "settled"));
+                  if (sidebarGroupByHost && hostOptions.length > 1) {
+                    const settledHostGroups = groupSidebarThreadsByHost(
+                      renderedSettledThreads,
+                      hostOptions.map((environment) => environment.environmentId),
+                    );
+                    for (const { environmentId, threads: environmentThreads } of settledHostGroups) {
+                      const collapsed = collapsedHostGroups.includes(environmentId);
+                      items.push(
+                        <li
+                          key={`host-settled:${environmentId}`}
+                          data-thread-selection-safe
+                          className="mt-1.5 flex list-none items-center gap-1.5 px-2.5 pb-0.5 text-[11px] font-medium text-muted-foreground/50"
+                        >
+                          <button
+                            type="button"
+                            onClick={() => toggleHostGroup(environmentId)}
+                            aria-expanded={!collapsed}
+                            className="-ml-0.5 flex min-w-0 cursor-pointer flex-1 items-center gap-1.5 rounded-sm text-left hover:text-sidebar-muted-foreground"
+                          >
+                            <span
+                              aria-hidden
+                              className={cn(
+                                "size-1.5 shrink-0 rounded-full bg-current",
+                                sidebarEnvironmentConnectionClassName(
+                                  environmentConnectionPhaseById.get(environmentId) ?? null,
+                                ),
+                              )}
+                            />
+                            <span className="min-w-0 flex-1 truncate">
+                              {environmentLabelById.get(environmentId) ?? environmentId}
+                            </span>
+                            <span className="shrink-0 tabular-nums opacity-60">
+                              {environmentThreads.length}
+                            </span>
+                            <ChevronDownIcon
+                              aria-hidden
+                              className={cn(
+                                "size-3 shrink-0 transition-transform",
+                                collapsed && "-rotate-90",
+                              )}
+                            />
+                          </button>
+                        </li>,
+                      );
+                      if (!collapsed) {
+                        for (const thread of environmentThreads) {
+                          items.push(renderThreadRow(thread, "settled"));
+                        }
+                      }
+                    }
+                  } else {
+                    for (const thread of renderedSettledThreads) {
+                      items.push(renderThreadRow(thread, "settled"));
+                    }
                   }
                   return items;
                 })()}
