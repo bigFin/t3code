@@ -1,5 +1,7 @@
 import * as NodeCrypto from "node:crypto";
 
+import * as Clock from "effect/Clock";
+
 import type {
   DesktopSshEnvironmentBootstrap,
   DesktopSshEnvironmentTarget,
@@ -1300,6 +1302,7 @@ export const launchOrReuseRemoteServer = Effect.fn("ssh/tunnel.launchOrReuseRemo
     SshCommandError | SshInvalidTargetError | SshLaunchError,
     ChildProcessSpawner.ChildProcessSpawner | FileSystem.FileSystem | Path.Path
   > {
+    const launchStartedAtMs = yield* Clock.currentTimeMillis;
     const preparedRunner = yield* prepareRemoteT3Runner(target, input, runner);
     yield* Effect.logInfo("ssh.remoteServer.launch.start", {
       ...sshTargetLogFields(target),
@@ -1343,6 +1346,7 @@ export const launchOrReuseRemoteServer = Effect.fn("ssh/tunnel.launchOrReuseRemo
       remotePort: parsed.remotePort,
       remoteServerKind: parsed.serverKind ?? null,
       stateKey: remoteStateKey(target),
+      durationMs: Number(yield* Clock.currentTimeMillis) - launchStartedAtMs,
     });
     return {
       remotePort: parsed.remotePort,
