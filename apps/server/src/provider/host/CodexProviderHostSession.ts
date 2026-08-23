@@ -55,6 +55,9 @@ export const CodexProviderHostUserInputPayload = Schema.Struct({
   requestId: ApprovalRequestId,
   answers: ProviderUserInputAnswers,
 });
+export const CodexProviderHostFeedbackPayload = Schema.Struct({
+  reason: Schema.optionalKey(Schema.String),
+});
 
 export const CODEX_PROVIDER_HOST_OPERATIONS = {
   sendTurn: "turn.start",
@@ -63,5 +66,6 @@ export const CODEX_PROVIDER_HOST_OPERATIONS = {
   rollbackThread: "thread.rollback",
   respondToRequest: "request.respond",
   respondToUserInput: "userInput.respond",
+  uploadFeedback: "feedback.upload",
   stopSession: "session.stop",
 } as const;

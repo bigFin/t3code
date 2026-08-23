@@ -29,6 +29,7 @@ import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as CodexErrors from "effect-codex-app-server/errors";
+import * as EffectCodexSchema from "effect-codex-app-server/schema";
 
 import {
   CodexSessionRuntimeLegacyHostAttachmentError,
@@ -44,6 +45,7 @@ import {
   CODEX_PROVIDER_HOST_OPERATIONS,
   CodexProviderHostApprovalPayload,
   CodexProviderHostInterruptPayload,
+  CodexProviderHostFeedbackPayload,
   CodexProviderHostRollbackPayload,
   CodexProviderHostSendTurnPayload,
   CodexProviderHostSessionOptions,
@@ -1375,6 +1377,21 @@ export const makeCodexProviderHostRuntime = Effect.fn("makeCodexProviderHostRunt
             answers,
           }),
         ).pipe(Effect.asVoid),
+      uploadFeedback: (reason) =>
+        sendCommand(
+          CODEX_PROVIDER_HOST_OPERATIONS.uploadFeedback,
+          CodexProviderHostFeedbackPayload.make({
+            ...(reason !== undefined ? { reason } : {}),
+          }),
+        ).pipe(
+          Effect.flatMap((result) =>
+            typeof result === "object" && result !== null
+              ? Effect.succeed(result as EffectCodexSchema.V2FeedbackUploadResponse)
+              : Effect.fail(
+                  transportError("feedback.upload", "Invalid provider-host feedback result."),
+                ),
+          ),
+        ),
       emittedEventCount: Effect.succeed(0),
       events: Stream.fromQueue(events).pipe(
         Stream.mapEffect(({ event, retainedBytes }) =>

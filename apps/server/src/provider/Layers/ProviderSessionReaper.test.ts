@@ -239,6 +239,7 @@ describe("ProviderSessionReaper", () => {
         });
       },
       rollbackConversation: () => unsupported(),
+      uploadFeedback: () => unsupported(),
       streamEvents: Stream.empty,
     };
     const orchestrationEngine: OrchestrationEngineShape = {

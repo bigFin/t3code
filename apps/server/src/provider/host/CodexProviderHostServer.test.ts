@@ -242,6 +242,9 @@ class FakeCodexRuntime implements CodexSessionRuntimeShape {
   readonly respondToUserInputImpl = vi.fn(
     (_requestId: ApprovalRequestId, _answers: ProviderUserInputAnswers) => Promise.resolve(),
   );
+  readonly uploadFeedbackImpl = vi.fn((_reason?: string): Promise<{ threadId: string }> =>
+    Promise.resolve({ threadId: "provider-thread-1" }),
+  );
   readonly detachImpl = vi.fn(() => Promise.resolve());
   readonly closeImpl = vi.fn(() => Promise.resolve());
 
@@ -293,6 +296,10 @@ class FakeCodexRuntime implements CodexSessionRuntimeShape {
 
   rollbackThread(numTurns: number) {
     return Effect.promise(() => this.rollbackThreadImpl(numTurns));
+  }
+
+  uploadFeedback(reason?: string) {
+    return Effect.promise(() => this.uploadFeedbackImpl(reason));
   }
 
   respondToRequest(requestId: ApprovalRequestId, decision: ProviderApprovalDecision) {

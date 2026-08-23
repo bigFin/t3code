@@ -1307,7 +1307,7 @@ export const launchOrReuseRemoteServer = Effect.fn("ssh/tunnel.launchOrReuseRemo
       stateKey: remoteStateKey(target),
     });
     const result = yield* runSshCommand(target, {
-      remoteCommandArgs: ["sh", "-s", "--", remoteStateKey(target)],
+      remoteCommandArgs: ["sh", "-l", "-s", "--", remoteStateKey(target)],
       stdin: buildRemoteLaunchScript(preparedRunner),
       timeoutMs: preparedRunner?.localPackageArchivePath?.trim()
         ? REMOTE_PACKAGE_READY_TIMEOUT_MS + 30_000

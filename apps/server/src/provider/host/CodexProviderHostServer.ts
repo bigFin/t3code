@@ -51,6 +51,7 @@ import type { CodexProviderHostConfig } from "./CodexProviderHostConfig.ts";
 import {
   CODEX_PROVIDER_HOST_OPERATIONS,
   CodexProviderHostApprovalPayload,
+  CodexProviderHostFeedbackPayload,
   CodexProviderHostInterruptPayload,
   CodexProviderHostRollbackPayload,
   CodexProviderHostSendTurnPayload,
@@ -122,6 +123,7 @@ const decodeInterrupt = Schema.decodeUnknownEffect(CodexProviderHostInterruptPay
 const decodeRollback = Schema.decodeUnknownEffect(CodexProviderHostRollbackPayload);
 const decodeApproval = Schema.decodeUnknownEffect(CodexProviderHostApprovalPayload);
 const decodeUserInput = Schema.decodeUnknownEffect(CodexProviderHostUserInputPayload);
+const decodeFeedback = Schema.decodeUnknownEffect(CodexProviderHostFeedbackPayload);
 const isCodexResumeCursor = Schema.is(CodexResumeCursorSchema);
 const isCodexSessionRuntimeThreadIdMissingError = Schema.is(
   CodexSessionRuntimeThreadIdMissingError,
@@ -1427,6 +1429,12 @@ export const runCodexProviderHost = Effect.fn("runCodexProviderHost")(function* 
                     activeSession.runtime.respondToUserInput(decoded.requestId, decoded.answers),
                   ),
                   Effect.as(null),
+                );
+              case CODEX_PROVIDER_HOST_OPERATIONS.uploadFeedback:
+                return decodeFeedback(command.payload).pipe(
+                  Effect.flatMap((decoded) =>
+                    activeSession.runtime.uploadFeedback(decoded.reason),
+                  ),
                 );
               case CODEX_PROVIDER_HOST_OPERATIONS.stopSession:
                 return stopSession(command.threadId).pipe(Effect.as(null));
