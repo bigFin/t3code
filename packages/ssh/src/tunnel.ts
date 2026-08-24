@@ -1694,15 +1694,17 @@ const startSshTunnel = Effect.fn("ssh/tunnel.startSshTunnel")(function* (input: 
     exitFailure,
   ).pipe(
     Effect.tap(() =>
-      Effect.logInfo("ssh.tunnel.ready", {
-        ...sshTargetLogFields(input.resolvedTarget),
-        command: tunnelCommand,
-        pid: child.pid,
-        localPort: input.localPort,
-        remotePort: input.remotePort,
-        httpBaseUrl: input.httpBaseUrl,
-        durationMs: Number(yield* Clock.currentTimeMillis) - tunnelStartedAtMs,
-      }),
+      Effect.flatMap(Clock.currentTimeMillis, (tunnelReadyAtMs) =>
+        Effect.logInfo("ssh.tunnel.ready", {
+          ...sshTargetLogFields(input.resolvedTarget),
+          command: tunnelCommand,
+          pid: child.pid,
+          localPort: input.localPort,
+          remotePort: input.remotePort,
+          httpBaseUrl: input.httpBaseUrl,
+          durationMs: Number(tunnelReadyAtMs) - tunnelStartedAtMs,
+        }),
+      ),
     ),
     Effect.tapError((cause) =>
       Effect.gen(function* () {
