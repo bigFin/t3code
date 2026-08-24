@@ -1600,6 +1600,7 @@ const startSshTunnel = Effect.fn("ssh/tunnel.startSshTunnel")(function* (input: 
     remoteServerKind: input.remoteServerKind,
     httpBaseUrl: input.httpBaseUrl,
   });
+  const tunnelStartedAtMs = yield* Clock.currentTimeMillis;
   const child = yield* spawner
     .spawn(
       ChildProcess.make(sshCommand, args, {
@@ -1700,6 +1701,7 @@ const startSshTunnel = Effect.fn("ssh/tunnel.startSshTunnel")(function* (input: 
         localPort: input.localPort,
         remotePort: input.remotePort,
         httpBaseUrl: input.httpBaseUrl,
+        durationMs: Number(yield* Clock.currentTimeMillis) - tunnelStartedAtMs,
       }),
     ),
     Effect.tapError((cause) =>
