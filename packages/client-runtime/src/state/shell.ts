@@ -272,6 +272,14 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
             error: Option.none(),
           }));
         }
+        // A cursor resume trusts the server to replay everything after the
+        // stored sequence. Anything missed outside that replay window —
+        // sleep, dropped frames, a dead subscription — would stay stale
+        // forever, so schedule an authoritative HTTP reconcile in the
+        // background to heal any gap.
+        if (canResume && Option.isSome(current.snapshot)) {
+          yield* Queue.offer(reconciliationRequests, undefined).pipe(Effect.ignore);
+        }
         return {
           afterSequence: current.snapshot.value.snapshotSequence,
           ...(supportsCompletionMarker ? { requestCompletionMarker: true as const } : {}),
