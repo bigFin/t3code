@@ -39,7 +39,7 @@ import {
 // Discover historical sessions on the slower sweep; between those walks,
 // re-read only transcripts owned by live CLI processes.
 const FULL_SCAN_INTERVAL_MS = 60_000;
-const ACTIVE_SCAN_INTERVAL_MS = 2_000;
+const ACTIVE_SCAN_INTERVAL_MS = 5_000;
 const OMP_DRIVER = ProviderDriverKind.make("omp");
 const PI_DRIVER = ProviderDriverKind.make("piAgent");
 type UnknownRecord = Record<string, unknown>;
