@@ -700,7 +700,10 @@ const makePiCompatibleSessionImporter = (options?: {
     const path = yield* Path.Path;
     const scanIntervalMs = options?.scanIntervalMs ?? FULL_SCAN_INTERVAL_MS;
     const activeScanIntervalMs = options?.activeScanIntervalMs ?? ACTIVE_SCAN_INTERVAL_MS;
-    const importedActivityIdsByThread = new Map<ThreadId, Set<EventId>>();
+    const parsedSessionCache = new Map<
+      string,
+      { readonly size: number; readonly mtimeMs: number; readonly session: PiCompatibleSession }
+    >();
     let previouslyActiveSessionFiles = {
       omp: new Set<string>(),
       piAgent: new Set<string>(),
@@ -948,11 +951,24 @@ const makePiCompatibleSessionImporter = (options?: {
                 .toSorted();
         const parsed: Array<{ sourcePath: string; session: PiCompatibleSession }> = [];
         for (const sourcePath of sourcePaths) {
+          const stat = yield* fileSystem.stat(sourcePath).pipe(Effect.option);
+          if (Option.isNone(stat)) continue;
+          const size = Number(stat.value.size);
+          const mtimeMs = Option.getOrUndefined(stat.value.mtime)?.getTime() ?? 0;
+          const cached = parsedSessionCache.get(sourcePath);
+          if (cached?.size === size && cached.mtimeMs === mtimeMs) {
+            parsed.push({ sourcePath, session: cached.session });
+            continue;
+          }
           const contents = yield* fileSystem.readFileString(sourcePath).pipe(Effect.option);
           if (Option.isNone(contents)) continue;
           const session = parsePiCompatibleSession(contents.value, driver, sourcePath);
-          if (session !== undefined && session.messages.some((message) => message.role === "user"))
+          if (session !== undefined && session.messages.some((message) => message.role === "user")) {
+            parsedSessionCache.set(sourcePath, { size, mtimeMs, session });
             parsed.push({ sourcePath, session });
+          } else {
+            parsedSessionCache.delete(sourcePath);
+          }
         }
         const partitioned = partitionPiCompatibleSessions(path, driver, parsed);
         const instanceId = ProviderInstanceId.make(rawInstanceId);
