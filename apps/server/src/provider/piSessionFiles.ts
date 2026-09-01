@@ -15,7 +15,9 @@ export interface ActivePiSessionFiles {
 }
 
 interface ActivePiSessionFileOptions extends OpenSessionFileOptions {
-  readonly terminalSessionsRoots?: Partial<Record<PiCompatibleProcessDriver, string>>;
+  readonly terminalSessionsRoots?: Partial<
+    Record<PiCompatibleProcessDriver, ReadonlyArray<string>>
+  >;
 }
 
 function processDriver(cmdline: string, path: Path.Path): PiCompatibleProcessDriver | undefined {
@@ -62,13 +64,13 @@ export const listActivePiSessionFiles = Effect.fn("PiSessionFiles.listActivePiSe
     const procRoot = options?.procRoot ?? "/proc";
     const currentProcessId = options?.currentProcessId ?? String(process.pid);
     const home = process.env.HOME ?? "";
+    const configuredRoots = options?.terminalSessionsRoots ?? {};
     const terminalSessionsRoots = {
-      omp:
-        options?.terminalSessionsRoots?.omp ??
-        path.join(home, ".omp", "agent", "terminal-sessions"),
-      piAgent:
-        options?.terminalSessionsRoots?.piAgent ??
+      omp: [...(configuredRoots.omp ?? []), path.join(home, ".omp", "agent", "terminal-sessions")],
+      piAgent: [
+        ...(configuredRoots.piAgent ?? []),
         path.join(home, ".pi", "agent", "terminal-sessions"),
+      ],
     };
     const active = {
       omp: new Set<string>(),
@@ -85,41 +87,53 @@ export const listActivePiSessionFiles = Effect.fn("PiSessionFiles.listActivePiSe
         .readFileString(path.join(processRoot, "cmdline"))
         .pipe(Effect.option);
       if (Option.isNone(cmdline)) continue;
-      const driver = processDriver(cmdline.value, path);
-      if (driver === undefined) continue;
-
-      const descriptors = yield* fileSystem
-        .readDirectory(path.join(processRoot, "fd"))
-        .pipe(Effect.orElseSucceed(() => []));
-      for (const descriptor of descriptors) {
-        const target = yield* fileSystem
-          .readLink(path.join(processRoot, "fd", descriptor))
-          .pipe(Effect.option);
-        if (Option.isSome(target) && target.value.endsWith(".jsonl")) {
-          active[driver].add(path.resolve(target.value));
-        }
-      }
+      const detectedDriver = processDriver(cmdline.value, path);
+      // Wrappers such as kitu can hide the underlying CLI from /proc/cmdline.
+      // A validated terminal breadcrumb still identifies the live session.
+      const candidateDrivers =
+        detectedDriver === undefined ? (["omp", "piAgent"] as const) : [detectedDriver];
 
       const terminal = yield* fileSystem
         .readLink(path.join(processRoot, "fd", "0"))
         .pipe(Effect.option);
       const cwd = yield* fileSystem.readLink(path.join(processRoot, "cwd")).pipe(Effect.option);
-      if (Option.isNone(terminal) || Option.isNone(cwd)) continue;
-      const breadcrumbName = terminalBreadcrumbName(terminal.value, path);
-      if (breadcrumbName === undefined) continue;
-      const breadcrumb = yield* fileSystem
-        .readFileString(path.join(terminalSessionsRoots[driver], breadcrumbName))
-        .pipe(Effect.option);
-      if (Option.isNone(breadcrumb)) continue;
-      const [breadcrumbCwd, sessionFile] = breadcrumb.value.split(/\r?\n/u);
-      if (
-        breadcrumbCwd === undefined ||
-        sessionFile === undefined ||
-        path.resolve(breadcrumbCwd) !== path.resolve(cwd.value)
-      ) {
-        continue;
+      const breadcrumbName = Option.isSome(terminal)
+        ? terminalBreadcrumbName(terminal.value, path)
+        : undefined;
+
+      for (const driver of candidateDrivers) {
+        if (breadcrumbName !== undefined && Option.isSome(cwd)) {
+          for (const root of terminalSessionsRoots[driver]) {
+            const breadcrumb = yield* fileSystem
+              .readFileString(path.join(root, breadcrumbName))
+              .pipe(Effect.option);
+            if (Option.isNone(breadcrumb)) continue;
+            const [breadcrumbCwd, sessionFile] = breadcrumb.value.split(/\r?\n/u);
+            if (
+              breadcrumbCwd === undefined ||
+              sessionFile === undefined ||
+              path.resolve(breadcrumbCwd) !== path.resolve(cwd.value)
+            ) {
+              continue;
+            }
+            active[driver].add(path.resolve(sessionFile));
+            break;
+          }
+        }
+        if (detectedDriver !== driver) continue;
+
+        const descriptors = yield* fileSystem
+          .readDirectory(path.join(processRoot, "fd"))
+          .pipe(Effect.orElseSucceed(() => []));
+        for (const descriptor of descriptors) {
+          const target = yield* fileSystem
+            .readLink(path.join(processRoot, "fd", descriptor))
+            .pipe(Effect.option);
+          if (Option.isSome(target) && target.value.endsWith(".jsonl")) {
+            active[driver].add(path.resolve(target.value));
+          }
+        }
       }
-      active[driver].add(path.resolve(sessionFile));
     }
 
     return active;

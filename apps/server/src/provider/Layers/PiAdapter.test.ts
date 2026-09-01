@@ -188,7 +188,7 @@ it.effect("detects a Pi-compatible session file held by another process", () =>
     ).toBe(false);
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
-it.effect("maps a live OMP process to its per-terminal session breadcrumb", () =>
+it.effect("maps a wrapped live OMP process to its per-terminal session breadcrumb", () =>
   Effect.gen(function* () {
     const fileSystem = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
@@ -204,10 +204,7 @@ it.effect("maps a live OMP process to its per-terminal session breadcrumb", () =
     yield* fileSystem.makeDirectory(descriptorRoot, { recursive: true });
     yield* fileSystem.makeDirectory(terminalSessionsRoot, { recursive: true });
     yield* fileSystem.writeFileString(sessionFile, "");
-    yield* fileSystem.writeFileString(
-      path.join(processRoot, "cmdline"),
-      `bun\0/nix/store/omp/lib/node_modules/@oh-my-pi/pi-coding-agent/dist/cli.js\0`,
-    );
+    yield* fileSystem.writeFileString(path.join(processRoot, "cmdline"), `kitu\0--resume\0`);
     yield* fileSystem.symlink("/dev/pts/11", path.join(descriptorRoot, "0"));
     yield* fileSystem.symlink(projectRoot, path.join(processRoot, "cwd"));
     yield* fileSystem.writeFileString(
@@ -218,7 +215,7 @@ it.effect("maps a live OMP process to its per-terminal session breadcrumb", () =
     const active = yield* listActivePiSessionFiles(fileSystem, path, {
       procRoot,
       currentProcessId: "1",
-      terminalSessionsRoots: { omp: terminalSessionsRoot },
+      terminalSessionsRoots: { omp: [terminalSessionsRoot] },
     });
     expect(active.omp).toEqual(new Set([path.resolve(sessionFile)]));
     expect(active.piAgent.size).toBe(0);

@@ -921,11 +921,34 @@ const makePiCompatibleSessionImporter = (options?: {
     );
 
     const scan = Effect.fn("PiCompatibleSessionImporter.scan")(function* (mode: "full" | "active") {
-      const activeSessionFiles = yield* listActivePiSessionFiles(fileSystem, path);
-      const settings = yield* settingsService.getSettings;
-      for (const [rawInstanceId, entry] of Object.entries(
-        deriveProviderInstanceConfigMap(settings),
-      )) {
+      const providerEntries = Object.entries(
+        deriveProviderInstanceConfigMap(yield* settingsService.getSettings),
+      );
+      const terminalSessionsRoots = {
+        omp: new Set<string>(),
+        piAgent: new Set<string>(),
+      };
+      for (const [, entry] of providerEntries) {
+        const driver = entry.driver;
+        if ((driver !== OMP_DRIVER && driver !== PI_DRIVER) || entry.enabled === false) continue;
+        const config = (entry.config ?? {}) as UnknownRecord;
+        if (config.enabled === false) continue;
+        const configuredSessionDir = stringValue(config.sessionDir);
+        if (configuredSessionDir === undefined) continue;
+        const defaultRoot =
+          driver === OMP_DRIVER ? "~/.omp/agent/sessions" : "~/.pi/agent/sessions";
+        const configuredRoot = sessionRoot(configuredSessionDir, defaultRoot);
+        const terminalSessionsRoot = path.join(path.dirname(configuredRoot), "terminal-sessions");
+        if (driver === OMP_DRIVER) terminalSessionsRoots.omp.add(terminalSessionsRoot);
+        else terminalSessionsRoots.piAgent.add(terminalSessionsRoot);
+      }
+      const activeSessionFiles = yield* listActivePiSessionFiles(fileSystem, path, {
+        terminalSessionsRoots: {
+          omp: [...terminalSessionsRoots.omp],
+          piAgent: [...terminalSessionsRoots.piAgent],
+        },
+      });
+      for (const [rawInstanceId, entry] of providerEntries) {
         const driver = entry.driver;
         if ((driver !== OMP_DRIVER && driver !== PI_DRIVER) || entry.enabled === false) continue;
         const config = (entry.config ?? {}) as UnknownRecord;
