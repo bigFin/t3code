@@ -204,7 +204,7 @@ it.effect("maps a wrapped live OMP process to its per-terminal session breadcrum
     yield* fileSystem.makeDirectory(descriptorRoot, { recursive: true });
     yield* fileSystem.makeDirectory(terminalSessionsRoot, { recursive: true });
     yield* fileSystem.writeFileString(sessionFile, "");
-    yield* fileSystem.writeFileString(path.join(processRoot, "cmdline"), `kitu\0--resume\0`);
+    yield* fileSystem.writeFileString(path.join(processRoot, "cmdline"), `wrapper\0--resume\0`);
     yield* fileSystem.symlink("/dev/pts/11", path.join(descriptorRoot, "0"));
     yield* fileSystem.symlink(projectRoot, path.join(processRoot, "cwd"));
     yield* fileSystem.writeFileString(
