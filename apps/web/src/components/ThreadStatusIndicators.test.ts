@@ -1,6 +1,4 @@
-import { effectiveSettled } from "@t3tools/client-runtime/state/thread-settled";
-import type { OrchestrationThreadShell } from "@t3tools/contracts";
-import { ProjectId, ProviderInstanceId, ThreadId, type VcsStatusResult } from "@t3tools/contracts";
+import { ProjectId, type VcsStatusResult } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import { AtomRegistry } from "effect/unstable/reactivity";
@@ -101,6 +99,12 @@ describe("resolveThreadPr", () => {
 describe("resolveDisplayedThreadPr + nextThreadChangeRequestSnapshot", () => {
   const featureBranch = "feature/current";
   const mergedPr = mergedFeaturePr();
+  const linkedPullRequest = {
+    projectId: ProjectId.make("project-1"),
+    repository: "pingdotgg/t3code",
+    number: 42,
+    url: "https://github.com/pingdotgg/t3code/pull/42",
+  };
   const provider = {
     kind: "github" as const,
     name: "GitHub",
@@ -130,6 +134,119 @@ describe("resolveDisplayedThreadPr + nextThreadChangeRequestSnapshot", () => {
         retainTerminalOnBranchMismatch: true,
       }),
     ).toEqual(provider);
+  });
+
+  it("shows a linked pull request when the checkout has a different branch", () => {
+    const linkedPullRequestStatus = {
+      pr: mergedPr,
+      sourceControlProvider: provider,
+    };
+
+    expect(
+      resolveDisplayedThreadPr({
+        threadBranch: "feature/other",
+        gitStatus: status({ refName: "feature/other", pr: null }),
+        snapshot: undefined,
+        retainTerminalOnBranchMismatch: false,
+        linkedPullRequest,
+        linkedPullRequestStatus,
+      }),
+    ).toEqual(mergedPr);
+    expect(
+      resolveDisplayedThreadPrProvider({
+        threadBranch: "feature/other",
+        gitStatus: status({ refName: "feature/other", pr: null }),
+        snapshot: undefined,
+        retainTerminalOnBranchMismatch: false,
+        linkedPullRequest,
+        linkedPullRequestStatus,
+      }),
+    ).toEqual(provider);
+    expect(
+      nextThreadChangeRequestSnapshot({
+        threadBranch: "feature/other",
+        gitStatus: status({ refName: "feature/other", pr: null }),
+        snapshot: undefined,
+        retainTerminalOnBranchMismatch: false,
+        linkedPullRequest,
+        linkedPullRequestStatus,
+      }),
+    ).toEqual({
+      branch: "feature/other",
+      pr: mergedPr,
+      sourceControlProvider: provider,
+      linkedPullRequest,
+    });
+  });
+
+  it("keeps a matching linked pull request snapshot while its status reloads", () => {
+    const snapshot = {
+      ...snapshotFor(featureBranch, mergedPr, provider),
+      linkedPullRequest,
+    };
+
+    expect(
+      resolveDisplayedThreadPr({
+        threadBranch: null,
+        gitStatus: null,
+        snapshot,
+        retainTerminalOnBranchMismatch: false,
+        linkedPullRequest,
+        linkedPullRequestStatus: null,
+      }),
+    ).toEqual(mergedPr);
+    expect(
+      nextThreadChangeRequestSnapshot({
+        threadBranch: null,
+        gitStatus: null,
+        snapshot,
+        retainTerminalOnBranchMismatch: false,
+        linkedPullRequest,
+        linkedPullRequestStatus: null,
+      }),
+    ).toBeUndefined();
+  });
+
+  it("clears an old snapshot when a different pull request is linked", () => {
+    const snapshot = {
+      ...snapshotFor(featureBranch, mergedPr, provider),
+      linkedPullRequest: { ...linkedPullRequest, number: 41 },
+    };
+
+    expect(
+      nextThreadChangeRequestSnapshot({
+        threadBranch: featureBranch,
+        gitStatus: null,
+        snapshot,
+        retainTerminalOnBranchMismatch: true,
+        linkedPullRequest,
+        linkedPullRequestStatus: null,
+      }),
+    ).toBeNull();
+  });
+
+  it("removes a linked pull request snapshot after the link is cleared", () => {
+    const snapshot = {
+      ...snapshotFor(featureBranch, mergedPr, provider),
+      linkedPullRequest,
+    };
+
+    expect(
+      resolveDisplayedThreadPr({
+        threadBranch: featureBranch,
+        gitStatus: status({ refName: "main", pr: null }),
+        snapshot,
+        retainTerminalOnBranchMismatch: true,
+      }),
+    ).toBeNull();
+    expect(
+      nextThreadChangeRequestSnapshot({
+        threadBranch: featureBranch,
+        gitStatus: null,
+        snapshot,
+        retainTerminalOnBranchMismatch: true,
+      }),
+    ).toBeNull();
   });
 
   it("after caching a merged PR, resolves main status back to the cached feature PR", () => {
@@ -376,7 +493,7 @@ describe("resolveDisplayedThreadPr + nextThreadChangeRequestSnapshot", () => {
     ).toEqual(mergedPr);
   });
 
-  it("keeps effectiveSettled true for a retained merged PR after a main checkout", () => {
+  it("retains a merged PR after a main checkout", () => {
     const matchingStatus = status({
       refName: featureBranch,
       pr: mergedPr,
@@ -399,36 +516,6 @@ describe("resolveDisplayedThreadPr + nextThreadChangeRequestSnapshot", () => {
       retainTerminalOnBranchMismatch: true,
     });
     expect(displayed?.state).toBe("merged");
-
-    const shell = {
-      id: ThreadId.make("thread-1"),
-      projectId: ProjectId.make("project-1"),
-      title: "Feature thread",
-      modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
-      runtimeMode: "full-access",
-      interactionMode: "default",
-      branch: "main",
-      worktreePath: null,
-      latestTurn: null,
-      session: null,
-      createdAt: "2026-04-09T00:00:00.000Z",
-      updatedAt: "2026-04-09T00:00:00.000Z",
-      archivedAt: null,
-      settledAt: null,
-      settledOverride: null,
-      latestUserMessageAt: "2026-04-09T00:00:00.000Z",
-      hasPendingApprovals: false,
-      hasPendingUserInput: false,
-      hasActionableProposedPlan: false,
-    } as OrchestrationThreadShell;
-
-    expect(
-      effectiveSettled(shell, {
-        now: "2026-04-10T00:00:00.000Z",
-        autoSettleAfterDays: null,
-        changeRequest: displayed,
-      }),
-    ).toBe(true);
   });
 });
 

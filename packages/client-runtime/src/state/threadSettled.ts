@@ -69,8 +69,6 @@ export function changeRequestAutoSettles(
   return updatedAtMs >= anchorAtMs;
 }
 
-const DAY_MS = 24 * 60 * 60 * 1_000;
-
 export function isThreadInterrupted(
   shell: Pick<OrchestrationThreadShell, "latestTurn" | "session">,
 ): boolean {
@@ -122,7 +120,6 @@ export function threadLastActivityAt(
 
   return latest;
 }
-
 /**
  * A queued turn start lives for at most this long: session adoption takes
  * seconds, so a user message still unadopted after the grace window is a
@@ -131,6 +128,7 @@ export function threadLastActivityAt(
  * such threads would be permanently unsettleable.
  */
 export const QUEUED_TURN_START_GRACE_MS = 2 * 60 * 1_000;
+const DAY_MS = 24 * 60 * 60 * 1_000;
 
 /**
  * A user message no turn has picked up yet: the turn.start command was
@@ -164,13 +162,10 @@ export function hasQueuedTurnStart(
     (candidate) => candidate == null || Date.parse(candidate) < messageAt,
   );
 }
-
 /**
  * A thread may be settled only when none of effectiveSettled's activity
  * blockers hold. This is deliberately the same list: anything the partition
- * refuses to CLASSIFY as settled must also be refused as a settle TARGET.
- * The server enforces its own invariants; this client-side twin exists so
- * the UI can disable/reject before a round trip.
+ * refuses to classify as settled must also be refused as a settle target.
  */
 export function canSettle(
   shell: Pick<
@@ -181,8 +176,6 @@ export function canSettle(
 ): boolean {
   if (shell.hasPendingApprovals || shell.hasPendingUserInput) return false;
   if (shell.session?.status === "starting" || shell.session?.status === "running") return false;
-  // Queued work is as blocked-on-progress as a live session: settling it
-  // (or auto-settling it on a closed PR) would hide a just-requested turn.
   if (hasQueuedTurnStart(shell, options)) return false;
   return true;
 }
@@ -210,8 +203,7 @@ export type ThreadSnoozeShell = Pick<
  * was set — the v1 taste of event-based snooze ("something happened" wakes
  * early).
  * Raising a hand never clears the server-side snooze fields; it only stops
- * the thread from CLASSIFYING as snoozed, exactly like blocked work and
- * effectiveSettled.
+ * the thread from classifying as snoozed.
  */
 export function threadRaisedHandWhileSnoozed(shell: ThreadSnoozeShell): boolean {
   if (shell.hasPendingApprovals || shell.hasPendingUserInput) return true;
@@ -437,7 +429,9 @@ function addSnoozeDays(base: Date, days: number): Date {
 /**
  * Shared "snooze until" choices for every client. "This evening" only
  * appears while it is meaningfully before evening; after that the calendar
- * choices start at "Tomorrow".
+ * choices start at "Tomorrow". Calendar presets that land on the same
+ * instant collapse: on Sundays "Tomorrow" and "Next week" are both Monday
+ * morning, so only "Tomorrow" is offered.
  */
 export function resolveSnoozePresets(now: Date): ReadonlyArray<SnoozePreset> {
   const inAnHour = new Date(now.getTime() + HOUR_MS);
@@ -477,12 +471,14 @@ export function resolveSnoozePresets(now: Date): ReadonlyArray<SnoozePreset> {
 
   const daysUntilMonday = (1 - now.getDay() + 7) % 7 || 7;
   const nextWeek = snoozeAtHour(addSnoozeDays(now, daysUntilMonday), MORNING_HOUR);
-  presets.push({
-    id: "next-week",
-    label: "Next week",
-    whenLabel: `${nextWeek.toLocaleDateString(undefined, { weekday: "short" })} ${snoozeTimeOfDayLabel(nextWeek)}`,
-    snoozedUntil: nextWeek.toISOString(),
-  });
+  if (nextWeek.getTime() !== tomorrow.getTime()) {
+    presets.push({
+      id: "next-week",
+      label: "Next week",
+      whenLabel: `${nextWeek.toLocaleDateString(undefined, { weekday: "short" })} ${snoozeTimeOfDayLabel(nextWeek)}`,
+      snoozedUntil: nextWeek.toISOString(),
+    });
+  }
 
   return presets;
 }

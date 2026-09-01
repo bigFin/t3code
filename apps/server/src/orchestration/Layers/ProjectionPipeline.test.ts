@@ -9,6 +9,7 @@ import {
   TurnId,
   ProviderInstanceId,
 } from "@t3tools/contracts";
+import * as Option from "effect/Option";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
@@ -31,6 +32,7 @@ import {
   OrchestrationProjectionPipelineLive,
 } from "./ProjectionPipeline.ts";
 import { OrchestrationProjectionSnapshotQueryLive } from "./ProjectionSnapshotQuery.ts";
+import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
 import * as ThreadBackgroundLiveness from "../ThreadBackgroundLiveness.ts";
 import * as ThreadPlanProgress from "../ThreadPlanProgress.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
@@ -174,6 +176,78 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
         assert.equal(row.lastAppliedSequence, 3);
       }
 
+      yield* sql`CREATE TABLE thread_shell_updates (count INTEGER NOT NULL)`;
+      yield* sql`INSERT INTO thread_shell_updates (count) VALUES (0)`;
+      yield* sql`
+        CREATE TRIGGER count_thread_shell_updates
+        AFTER UPDATE ON projection_threads
+        WHEN NEW.thread_id = 'thread-1'
+        BEGIN
+          UPDATE thread_shell_updates SET count = count + 1;
+        END;
+      `;
+
+      yield* eventStore.append({
+        type: "thread.message-sent",
+        eventId: EventId.make("evt-assistant-update"),
+        aggregateKind: "thread",
+        aggregateId: ThreadId.make("thread-1"),
+        occurredAt: "2026-01-01T00:00:00.100Z",
+        commandId: CommandId.make("cmd-assistant-update"),
+        causationEventId: null,
+        correlationId: CommandId.make("cmd-assistant-update"),
+        metadata: {},
+        payload: {
+          threadId: ThreadId.make("thread-1"),
+          messageId: MessageId.make("message-2"),
+          role: "assistant",
+          text: "more work",
+          turnId: null,
+          streaming: false,
+          createdAt: "2026-01-01T00:00:00.100Z",
+          updatedAt: "2026-01-01T00:00:00.100Z",
+        },
+      });
+      yield* projectionPipeline.bootstrap;
+
+      let threadShellUpdates = yield* sql<{ readonly count: number }>`
+        SELECT count FROM thread_shell_updates
+      `;
+      assert.deepEqual(threadShellUpdates, [{ count: 1 }]);
+
+      yield* sql`UPDATE thread_shell_updates SET count = 0`;
+      yield* eventStore.append({
+        type: "thread.activity-appended",
+        eventId: EventId.make("evt-routine-activity"),
+        aggregateKind: "thread",
+        aggregateId: ThreadId.make("thread-1"),
+        occurredAt: "2026-01-01T00:00:00.200Z",
+        commandId: CommandId.make("cmd-routine-activity"),
+        causationEventId: null,
+        correlationId: CommandId.make("cmd-routine-activity"),
+        metadata: {},
+        payload: {
+          threadId: ThreadId.make("thread-1"),
+          activity: {
+            id: EventId.make("activity-routine"),
+            tone: "tool",
+            kind: "tool.updated",
+            summary: "Tool made progress",
+            payload: {},
+            turnId: null,
+            createdAt: "2026-01-01T00:00:00.200Z",
+          },
+        },
+      });
+      yield* projectionPipeline.bootstrap;
+
+      threadShellUpdates = yield* sql<{ readonly count: number }>`
+        SELECT count FROM thread_shell_updates
+      `;
+      assert.deepEqual(threadShellUpdates, [{ count: 1 }]);
+      yield* sql`DROP TRIGGER count_thread_shell_updates`;
+      yield* sql`DROP TABLE thread_shell_updates`;
+
       // Settled lifecycle through the DB pipeline: thread.settled writes the
       // override + timestamp, thread.unsettled(user) flips to the active pin.
       yield* eventStore.append({
@@ -197,15 +271,17 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
       const settledRows = yield* sql<{
         readonly settledOverride: string | null;
         readonly settledAt: string | null;
+        readonly unsettledAt: string | null;
       }>`
         SELECT
           settled_override AS "settledOverride",
-          settled_at AS "settledAt"
+          settled_at AS "settledAt",
+          unsettled_at AS "unsettledAt"
         FROM projection_threads
         WHERE thread_id = 'thread-1'
       `;
       assert.deepEqual(settledRows, [
-        { settledOverride: "settled", settledAt: "2026-01-01T00:00:01.000Z" },
+        { settledOverride: "settled", settledAt: "2026-01-01T00:00:01.000Z", unsettledAt: null },
       ]);
 
       yield* eventStore.append({
@@ -229,14 +305,24 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
       const unsettledRows = yield* sql<{
         readonly settledOverride: string | null;
         readonly settledAt: string | null;
+        readonly unsettledAt: string | null;
       }>`
         SELECT
           settled_override AS "settledOverride",
-          settled_at AS "settledAt"
+          settled_at AS "settledAt",
+          unsettled_at AS "unsettledAt"
         FROM projection_threads
         WHERE thread_id = 'thread-1'
       `;
-      assert.deepEqual(unsettledRows, [{ settledOverride: "active", settledAt: null }]);
+      // The un-settle stamps the active-list re-entry time so clients can
+      // surface the thread at the top of the list.
+      assert.deepEqual(unsettledRows, [
+        {
+          settledOverride: "active",
+          settledAt: null,
+          unsettledAt: "2026-01-01T00:00:02.000Z",
+        },
+      ]);
     }),
   );
 });
@@ -909,6 +995,7 @@ it.layer(
       const now = "2026-01-01T00:00:00.000Z";
       const threadId = ThreadId.make("Thread Revert.Files");
       const keepAttachmentId = "thread-revert-files-00000000-0000-4000-8000-000000000001";
+      const keepFileAttachmentId = "thread-revert-files-00000000-0000-4000-8000-000000000004-pdf";
       const removeAttachmentId = "thread-revert-files-00000000-0000-4000-8000-000000000002";
       const otherThreadAttachmentId =
         "thread-revert-files-extra-00000000-0000-4000-8000-000000000003";
@@ -1010,6 +1097,13 @@ it.layer(
               mimeType: "image/png",
               sizeBytes: 5,
             },
+            {
+              type: "file",
+              id: keepFileAttachmentId,
+              name: "keep.pdf",
+              mimeType: "application/pdf",
+              sizeBytes: 5,
+            },
           ],
           turnId: TurnId.make("turn-keep"),
           streaming: false,
@@ -1072,9 +1166,11 @@ it.layer(
       });
 
       const keepPath = path.join(attachmentsDir, `${keepAttachmentId}.png`);
+      const keepFilePath = path.join(attachmentsDir, `${keepFileAttachmentId}.pdf`);
       const removePath = path.join(attachmentsDir, `${removeAttachmentId}.png`);
       yield* fileSystem.makeDirectory(attachmentsDir, { recursive: true });
       yield* fileSystem.writeFileString(keepPath, "keep");
+      yield* fileSystem.writeFileString(keepFilePath, "keep");
       yield* fileSystem.writeFileString(removePath, "remove");
       const otherThreadPath = path.join(attachmentsDir, `${otherThreadAttachmentId}.png`);
       yield* fileSystem.writeFileString(otherThreadPath, "other");
@@ -1099,6 +1195,7 @@ it.layer(
       });
 
       assert.isTrue(yield* exists(keepPath));
+      assert.isTrue(yield* exists(keepFilePath));
       assert.isFalse(yield* exists(removePath));
       assert.isTrue(yield* exists(otherThreadPath));
     }),
@@ -1118,6 +1215,7 @@ it.layer(Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-projection-atta
         const now = "2026-01-01T00:00:00.000Z";
         const threadId = ThreadId.make("Thread Delete.Files");
         const attachmentId = "thread-delete-files-00000000-0000-4000-8000-000000000001";
+        const fileAttachmentId = "thread-delete-files-00000000-0000-4000-8000-000000000003-pdf";
         const otherThreadAttachmentId =
           "thread-delete-files-extra-00000000-0000-4000-8000-000000000002";
 
@@ -1196,6 +1294,13 @@ it.layer(Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-projection-atta
                 mimeType: "image/png",
                 sizeBytes: 5,
               },
+              {
+                type: "file",
+                id: fileAttachmentId,
+                name: "delete.pdf",
+                mimeType: "application/pdf",
+                sizeBytes: 6,
+              },
             ],
             turnId: null,
             streaming: false,
@@ -1205,14 +1310,17 @@ it.layer(Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-projection-atta
         });
 
         const threadAttachmentPath = path.join(attachmentsDir, `${attachmentId}.png`);
+        const threadFileAttachmentPath = path.join(attachmentsDir, `${fileAttachmentId}.pdf`);
         const otherThreadAttachmentPath = path.join(
           attachmentsDir,
           `${otherThreadAttachmentId}.png`,
         );
         yield* fileSystem.makeDirectory(attachmentsDir, { recursive: true });
         yield* fileSystem.writeFileString(threadAttachmentPath, "delete");
+        yield* fileSystem.writeFileString(threadFileAttachmentPath, "delete");
         yield* fileSystem.writeFileString(otherThreadAttachmentPath, "other-thread");
         assert.isTrue(yield* exists(threadAttachmentPath));
+        assert.isTrue(yield* exists(threadFileAttachmentPath));
         assert.isTrue(yield* exists(otherThreadAttachmentPath));
 
         yield* appendAndProject({
@@ -1232,6 +1340,7 @@ it.layer(Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-projection-atta
         });
 
         assert.isFalse(yield* exists(threadAttachmentPath));
+        assert.isFalse(yield* exists(threadFileAttachmentPath));
         assert.isTrue(yield* exists(otherThreadAttachmentPath));
       }),
     );
@@ -1281,13 +1390,191 @@ it.layer(Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-projection-atta
   },
 );
 
+it.layer(Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-projection-attachments-replay-")))(
+  "OrchestrationProjectionPipeline",
+  (it) => {
+    it.effect("replaying a superseded thread.deleted keeps the re-created thread's files", () =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const projectionPipeline = yield* OrchestrationProjectionPipeline;
+        const eventStore = yield* OrchestrationEventStore;
+        const { attachmentsDir } = yield* ServerConfig;
+        const now = "2026-01-01T00:00:00.000Z";
+        const projectId = ProjectId.make("project-replay");
+        const retriedThreadId = ThreadId.make("thread-replay-retried");
+        const goneThreadId = ThreadId.make("thread-replay-gone");
+        const retriedAttachmentPath = path.join(
+          attachmentsDir,
+          "thread-replay-retried-00000000-0000-4000-8000-000000000001.png",
+        );
+        const goneAttachmentPath = path.join(
+          attachmentsDir,
+          "thread-replay-gone-00000000-0000-4000-8000-000000000002.png",
+        );
+        const threadCreated = (threadId: ThreadId, suffix: string) =>
+          eventStore.append({
+            type: "thread.created",
+            eventId: EventId.make(`evt-replay-create-${suffix}`),
+            aggregateKind: "thread",
+            aggregateId: threadId,
+            occurredAt: now,
+            commandId: CommandId.make(`cmd-replay-create-${suffix}`),
+            causationEventId: null,
+            correlationId: CorrelationId.make(`cmd-replay-create-${suffix}`),
+            metadata: {},
+            payload: {
+              threadId,
+              projectId,
+              title: `Thread ${suffix}`,
+              modelSelection: {
+                instanceId: ProviderInstanceId.make("codex"),
+                model: "gpt-5-codex",
+              },
+              runtimeMode: "full-access",
+              branch: null,
+              worktreePath: null,
+              createdAt: now,
+              updatedAt: now,
+            },
+          });
+        const threadDeleted = (threadId: ThreadId, suffix: string) =>
+          eventStore.append({
+            type: "thread.deleted",
+            eventId: EventId.make(`evt-replay-delete-${suffix}`),
+            aggregateKind: "thread",
+            aggregateId: threadId,
+            occurredAt: now,
+            commandId: CommandId.make(`cmd-replay-delete-${suffix}`),
+            causationEventId: null,
+            correlationId: CorrelationId.make(`cmd-replay-delete-${suffix}`),
+            metadata: {},
+            payload: { threadId, deletedAt: now },
+          });
+
+        yield* eventStore.append({
+          type: "project.created",
+          eventId: EventId.make("evt-replay-project"),
+          aggregateKind: "project",
+          aggregateId: projectId,
+          occurredAt: now,
+          commandId: CommandId.make("cmd-replay-project"),
+          causationEventId: null,
+          correlationId: CorrelationId.make("cmd-replay-project"),
+          metadata: {},
+          payload: {
+            projectId,
+            title: "Replay",
+            workspaceRoot: "/tmp/project-replay",
+            defaultModelSelection: null,
+            scripts: [],
+            createdAt: now,
+            updatedAt: now,
+          },
+        });
+        // A failed first send: create, roll back, then the draft retries the id.
+        yield* threadCreated(retriedThreadId, "retried-1");
+        yield* threadDeleted(retriedThreadId, "retried");
+        yield* threadCreated(retriedThreadId, "retried-2");
+        // A thread that was deleted for good.
+        yield* threadCreated(goneThreadId, "gone");
+        yield* threadDeleted(goneThreadId, "gone");
+
+        // Files on disk are not event-sourced: by the time anything replays,
+        // the retried thread's attachments already belong to its second life.
+        yield* fileSystem.makeDirectory(attachmentsDir, { recursive: true });
+        yield* fileSystem.writeFileString(retriedAttachmentPath, "second incarnation");
+        yield* fileSystem.writeFileString(goneAttachmentPath, "gone");
+
+        yield* projectionPipeline.bootstrap;
+
+        assert.isTrue(yield* exists(retriedAttachmentPath));
+        assert.isFalse(yield* exists(goneAttachmentPath));
+      }),
+    );
+  },
+);
+
 it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
+  it.effect("replays a bootstrap backlog larger than the event store default limit", () =>
+    Effect.gen(function* () {
+      const projectionPipeline = yield* OrchestrationProjectionPipeline;
+      const eventStore = yield* OrchestrationEventStore;
+      const sql = yield* SqlClient.SqlClient;
+      const now = "2026-01-01T00:00:00.000Z";
+      const projectId = ProjectId.make("project-bootstrap-backlog");
+
+      const sequenceRows = yield* sql<{ readonly maxSequence: number | null }>`
+        SELECT MAX(sequence) AS "maxSequence" FROM orchestration_events
+      `;
+      const sequenceBeforeBacklog = sequenceRows[0]?.maxSequence ?? 0;
+      const appendedEvents = yield* Effect.forEach(
+        Array.from({ length: 1_001 }, (_, index) => index),
+        (index) => {
+          const eventId = EventId.make(`evt-bootstrap-backlog-${index}`);
+          const commandId = CommandId.make(`cmd-bootstrap-backlog-${index}`);
+          return eventStore.append({
+            type: "project.created",
+            eventId,
+            aggregateKind: "project",
+            aggregateId: projectId,
+            occurredAt: now,
+            commandId,
+            causationEventId: null,
+            correlationId: CorrelationId.make(commandId),
+            metadata: {},
+            payload: {
+              projectId,
+              title: `Bootstrap backlog ${index}`,
+              workspaceRoot: "/tmp/project-bootstrap-backlog",
+              defaultModelSelection: null,
+              scripts: [],
+              createdAt: now,
+              updatedAt: now,
+            },
+          });
+        },
+      );
+      const lastSequence = appendedEvents[appendedEvents.length - 1]!.sequence;
+
+      yield* Effect.forEach(
+        Object.values(ORCHESTRATION_PROJECTOR_NAMES),
+        (projector) => {
+          const lastAppliedSequence =
+            projector === ORCHESTRATION_PROJECTOR_NAMES.projects
+              ? sequenceBeforeBacklog
+              : lastSequence;
+          return sql`
+            INSERT INTO projection_state (projector, last_applied_sequence, updated_at)
+            VALUES (${projector}, ${lastAppliedSequence}, ${now})
+            ON CONFLICT (projector)
+            DO UPDATE SET
+              last_applied_sequence = excluded.last_applied_sequence,
+              updated_at = excluded.updated_at
+          `;
+        },
+        { discard: true },
+      );
+
+      yield* projectionPipeline.bootstrap;
+
+      const stateRows = yield* sql<{ readonly lastAppliedSequence: number }>`
+        SELECT last_applied_sequence AS "lastAppliedSequence"
+        FROM projection_state
+        WHERE projector = ${ORCHESTRATION_PROJECTOR_NAMES.projects}
+      `;
+      assert.deepEqual(stateRows, [{ lastAppliedSequence: lastSequence }]);
+    }),
+  );
+
   it.effect("resumes from projector last_applied_sequence without replaying older events", () =>
     Effect.gen(function* () {
       const projectionPipeline = yield* OrchestrationProjectionPipeline;
       const eventStore = yield* OrchestrationEventStore;
       const sql = yield* SqlClient.SqlClient;
       const now = "2026-01-01T00:00:00.000Z";
+      const streamingAt = "2026-01-01T00:00:01.000Z";
+      const completedAt = "2026-01-01T00:00:02.000Z";
 
       yield* eventStore.append({
         type: "project.created",
@@ -1352,7 +1639,7 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
           role: "assistant",
           text: "hello",
           turnId: null,
-          streaming: false,
+          streaming: true,
           createdAt: now,
           updatedAt: now,
         },
@@ -1365,7 +1652,7 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
         eventId: EventId.make("evt-a4"),
         aggregateKind: "thread",
         aggregateId: ThreadId.make("thread-a"),
-        occurredAt: now,
+        occurredAt: streamingAt,
         commandId: CommandId.make("cmd-a4"),
         causationEventId: null,
         correlationId: CorrelationId.make("cmd-a4"),
@@ -1377,18 +1664,61 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
           text: " world",
           turnId: null,
           streaming: true,
-          createdAt: now,
-          updatedAt: now,
+          createdAt: streamingAt,
+          updatedAt: streamingAt,
         },
       });
 
       yield* projectionPipeline.bootstrap;
       yield* projectionPipeline.bootstrap;
 
-      const messageRows = yield* sql<{ readonly text: string }>`
-        SELECT text FROM projection_thread_messages WHERE message_id = 'message-a'
+      yield* eventStore.append({
+        type: "thread.message-sent",
+        eventId: EventId.make("evt-a5"),
+        aggregateKind: "thread",
+        aggregateId: ThreadId.make("thread-a"),
+        occurredAt: completedAt,
+        commandId: CommandId.make("cmd-a5"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-a5"),
+        metadata: {},
+        payload: {
+          threadId: ThreadId.make("thread-a"),
+          messageId: MessageId.make("message-a"),
+          role: "assistant",
+          text: "",
+          turnId: null,
+          streaming: false,
+          createdAt: completedAt,
+          updatedAt: completedAt,
+        },
+      });
+
+      yield* projectionPipeline.bootstrap;
+      yield* projectionPipeline.bootstrap;
+
+      const messageRows = yield* sql<{
+        readonly text: string;
+        readonly isStreaming: number;
+        readonly createdAt: string;
+        readonly updatedAt: string;
+      }>`
+        SELECT
+          text,
+          is_streaming AS "isStreaming",
+          created_at AS "createdAt",
+          updated_at AS "updatedAt"
+        FROM projection_thread_messages
+        WHERE message_id = 'message-a'
       `;
-      assert.deepEqual(messageRows, [{ text: "hello world" }]);
+      assert.deepEqual(messageRows, [
+        {
+          text: "hello world",
+          isStreaming: 0,
+          createdAt: now,
+          updatedAt: completedAt,
+        },
+      ]);
 
       const stateRows = yield* sql<{
         readonly projector: string;
@@ -2480,7 +2810,7 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
     }),
   );
 
-  it.effect("clears stale pending user input from projected shell summaries", () =>
+  it.effect("reads only user-input activities when refreshing shell summaries", () =>
     Effect.gen(function* () {
       const projectionPipeline = yield* OrchestrationProjectionPipeline;
       const eventStore = yield* OrchestrationEventStore;
@@ -2538,70 +2868,128 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
         },
       });
 
+      // Invalid JSON proves the summary query filters tool rows before decoding payloads.
+      yield* sql`
+        INSERT INTO projection_thread_activities (
+          activity_id,
+          thread_id,
+          turn_id,
+          tone,
+          kind,
+          summary,
+          payload_json,
+          sequence,
+          created_at
+        )
+        VALUES
+          (
+            'activity-malformed-tool-output',
+            'thread-stale-user-input',
+            NULL,
+            'info',
+            'tool.completed',
+            'Tool completed',
+            '{not-json',
+            NULL,
+            '2026-02-26T12:35:02.000Z'
+          ),
+          (
+            'activity-user-input-resolved-requested',
+            'thread-stale-user-input',
+            NULL,
+            'info',
+            'user-input.requested',
+            'User input requested',
+            json_object('requestId', 'user-input-resolved'),
+            NULL,
+            '2026-02-26T12:35:03.000Z'
+          ),
+          (
+            'activity-user-input-resolved',
+            'thread-stale-user-input',
+            NULL,
+            'info',
+            'user-input.resolved',
+            'User input resolved',
+            json_object('requestId', 'user-input-resolved'),
+            NULL,
+            '2026-02-26T12:35:04.000Z'
+          ),
+          (
+            'activity-user-input-stale-requested',
+            'thread-stale-user-input',
+            NULL,
+            'info',
+            'user-input.requested',
+            'User input requested',
+            json_object('requestId', 'user-input-stale'),
+            NULL,
+            '2026-02-26T12:35:05.000Z'
+          ),
+          (
+            'activity-user-input-stale-failed',
+            'thread-stale-user-input',
+            NULL,
+            'error',
+            'provider.user-input.respond.failed',
+            'Provider user input response failed',
+            json_object(
+              'requestId',
+              'user-input-stale',
+              'detail',
+              'Unknown pending Codex user input request: user-input-stale'
+            ),
+            NULL,
+            '2026-02-26T12:35:06.000Z'
+          ),
+          (
+            'activity-user-input-active-requested',
+            'thread-stale-user-input',
+            NULL,
+            'info',
+            'user-input.requested',
+            'User input requested',
+            json_object('requestId', 'user-input-active'),
+            NULL,
+            '2026-02-26T12:35:07.000Z'
+          ),
+          (
+            'activity-user-input-active-failed',
+            'thread-stale-user-input',
+            NULL,
+            'error',
+            'provider.user-input.respond.failed',
+            'Provider user input response failed',
+            json_object(
+              'requestId',
+              'user-input-active',
+              'detail',
+              'Provider is temporarily unavailable'
+            ),
+            NULL,
+            '2026-02-26T12:35:08.000Z'
+          )
+      `;
+
       yield* appendAndProject({
-        type: "thread.activity-appended",
+        type: "thread.message-sent",
         eventId: EventId.make("evt-stale-user-input-3"),
         aggregateKind: "thread",
         aggregateId: ThreadId.make("thread-stale-user-input"),
-        occurredAt: "2026-02-26T12:35:02.000Z",
+        occurredAt: "2026-02-26T12:35:09.000Z",
         commandId: CommandId.make("cmd-stale-user-input-3"),
         causationEventId: null,
         correlationId: CorrelationId.make("cmd-stale-user-input-3"),
         metadata: {},
         payload: {
           threadId: ThreadId.make("thread-stale-user-input"),
-          activity: {
-            id: EventId.make("activity-stale-user-input-requested"),
-            tone: "info",
-            kind: "user-input.requested",
-            summary: "User input requested",
-            payload: {
-              requestId: "user-input-request-stale-1",
-              questions: [
-                {
-                  id: "sandbox_mode",
-                  header: "Sandbox",
-                  question: "Which mode should be used?",
-                  options: [
-                    {
-                      label: "workspace-write",
-                      description: "Allow workspace writes only",
-                    },
-                  ],
-                },
-              ],
-            },
-            turnId: null,
-            createdAt: "2026-02-26T12:35:02.000Z",
-          },
-        },
-      });
-
-      yield* appendAndProject({
-        type: "thread.activity-appended",
-        eventId: EventId.make("evt-stale-user-input-4"),
-        aggregateKind: "thread",
-        aggregateId: ThreadId.make("thread-stale-user-input"),
-        occurredAt: "2026-02-26T12:35:03.000Z",
-        commandId: CommandId.make("cmd-stale-user-input-4"),
-        causationEventId: null,
-        correlationId: CorrelationId.make("cmd-stale-user-input-4"),
-        metadata: {},
-        payload: {
-          threadId: ThreadId.make("thread-stale-user-input"),
-          activity: {
-            id: EventId.make("activity-stale-user-input-failed"),
-            tone: "error",
-            kind: "provider.user-input.respond.failed",
-            summary: "Provider user input response failed",
-            payload: {
-              requestId: "user-input-request-stale-1",
-              detail:
-                "Provider adapter request failed (codex) for item/tool/requestUserInput: Unknown pending Codex user input request: user-input-request-stale-1",
-            },
-            turnId: null,
-            createdAt: "2026-02-26T12:35:03.000Z",
-          },
+          messageId: MessageId.make("message-stale-user-input"),
+          role: "user",
+          text: "Continue",
+          turnId: null,
+          streaming: false,
+          createdAt: "2026-02-26T12:35:09.000Z",
+          updatedAt: "2026-02-26T12:35:09.000Z",
         },
       });
 
@@ -2612,7 +3000,7 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
         FROM projection_threads
         WHERE thread_id = 'thread-stale-user-input'
       `;
-      assert.deepEqual(threadRows, [{ pendingUserInputCount: 0 }]);
+      assert.deepEqual(threadRows, [{ pendingUserInputCount: 1 }]);
     }),
   );
 
@@ -3202,7 +3590,7 @@ it.effect("restores pending turn-start metadata across projection pipeline resta
 
 const engineLayer = it.layer(
   OrchestrationEngineLive.pipe(
-    Layer.provide(OrchestrationProjectionSnapshotQueryLive),
+    Layer.provideMerge(OrchestrationProjectionSnapshotQueryLive),
     Layer.provide(ThreadBackgroundLiveness.layer),
     Layer.provide(ThreadPlanProgress.layer),
     Layer.provide(OrchestrationProjectionPipelineLive),
@@ -3427,6 +3815,149 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
           faviconPath: "brand/icon.svg",
         },
       ]);
+    }),
+  );
+
+  it.effect("re-creating a deleted thread id starts from an empty projection", () =>
+    Effect.gen(function* () {
+      const engine = yield* OrchestrationEngineService;
+      const snapshotQuery = yield* ProjectionSnapshotQuery;
+      const sql = yield* SqlClient.SqlClient;
+      const createdAt = "2026-01-01T00:00:00.000Z";
+      const projectId = ProjectId.make("project-retry");
+      const threadId = ThreadId.make("thread-retry");
+      const modelSelection = {
+        instanceId: ProviderInstanceId.make("codex"),
+        model: "gpt-5-codex",
+      };
+      const createThread = (commandId: string, title: string) =>
+        engine.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make(commandId),
+          threadId,
+          projectId,
+          title,
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          createdAt,
+        });
+      const countRowsForThread = (table: string) =>
+        sql<{ readonly count: number }>`
+          SELECT COUNT(*) AS count FROM ${sql(table)} WHERE thread_id = ${threadId}
+        `.pipe(Effect.map((rows) => rows[0]?.count ?? 0));
+      const perThreadTables = [
+        "projection_thread_messages",
+        "projection_thread_activities",
+        "projection_thread_sessions",
+        "projection_turns",
+        "projection_thread_proposed_plans",
+        "projection_pending_approvals",
+      ];
+
+      yield* engine.dispatch({
+        type: "project.create",
+        commandId: CommandId.make("cmd-retry-project"),
+        projectId,
+        title: "Retry Project",
+        workspaceRoot: "/tmp/project-retry",
+        defaultModelSelection: modelSelection,
+        createdAt,
+      });
+
+      // First attempt: the thread gets a turn, a message, an activity, and a
+      // running session before its bootstrap fails and the server rolls back.
+      yield* createThread("cmd-retry-create-1", "First attempt");
+      yield* engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-retry-turn-1"),
+        threadId,
+        message: {
+          messageId: MessageId.make("message-retry-1"),
+          role: "user",
+          text: "first attempt",
+          attachments: [],
+        },
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        createdAt,
+      });
+      yield* engine.dispatch({
+        type: "thread.activity.append",
+        commandId: CommandId.make("cmd-retry-activity-1"),
+        threadId,
+        activity: {
+          id: EventId.make("activity-retry-1"),
+          tone: "info",
+          kind: "approval.requested",
+          summary: "approval requested",
+          payload: { requestId: "request-retry-1" },
+          turnId: null,
+          createdAt,
+        },
+        createdAt,
+      });
+      yield* engine.dispatch({
+        type: "thread.proposed-plan.upsert",
+        commandId: CommandId.make("cmd-retry-plan-1"),
+        threadId,
+        proposedPlan: {
+          id: "plan-retry-1",
+          turnId: null,
+          planMarkdown: "# Plan",
+          implementedAt: null,
+          implementationThreadId: null,
+          createdAt,
+          updatedAt: createdAt,
+        },
+        createdAt,
+      });
+      yield* engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-retry-session-1"),
+        threadId,
+        session: {
+          threadId,
+          status: "running",
+          providerName: "codex",
+          runtimeMode: "full-access",
+          activeTurnId: TurnId.make("turn-retry-1"),
+          lastError: null,
+          updatedAt: createdAt,
+        },
+        createdAt,
+      });
+      for (const table of perThreadTables) {
+        assert.isAbove(yield* countRowsForThread(table), 0, `${table} should be populated`);
+      }
+      const populatedShell = Option.getOrThrow(yield* snapshotQuery.getThreadShellById(threadId));
+      assert.isTrue(populatedShell.hasPendingApprovals);
+      assert.isTrue(populatedShell.hasActionableProposedPlan);
+
+      yield* engine.dispatch({
+        type: "thread.delete",
+        commandId: CommandId.make("cmd-retry-delete"),
+        threadId,
+      });
+      assert.isTrue(Option.isNone(yield* snapshotQuery.getThreadShellById(threadId)));
+
+      // Retry from the same draft reuses the thread id.
+      yield* createThread("cmd-retry-create-2", "Second attempt");
+
+      const shell = Option.getOrThrow(yield* snapshotQuery.getThreadShellById(threadId));
+      assert.strictEqual(shell.title, "Second attempt");
+      assert.isFalse(shell.hasPendingApprovals);
+      assert.isFalse(shell.hasActionableProposedPlan);
+      for (const table of perThreadTables) {
+        assert.strictEqual(yield* countRowsForThread(table), 0, `${table} should be empty`);
+      }
+      const detail = Option.getOrThrow(yield* snapshotQuery.getThreadDetailById(threadId));
+      assert.deepEqual(detail.messages, []);
+      assert.deepEqual(detail.activities, []);
+      assert.isNull(detail.latestTurn);
+      assert.isNull(detail.session);
     }),
   );
 });

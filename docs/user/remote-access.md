@@ -180,7 +180,9 @@ run a copied command on the server machine.
 
 The server restarts briefly during an update. Active Codex turns on Linux and macOS continue in
 their independent provider host, but terminal commands and other providers can still be
-interrupted. For step-by-step guidance, see [Keeping T3 Code in Sync](./updating.md).
+interrupted. If T3 Connect cannot connect, check the date and time on both devices, then try
+again. Finish active work before updating because the server restarts briefly. For step-by-step
+guidance, see [Keeping T3 Code in Sync](./updating.md).
 
 On a Linux host, you can keep the server running after logout and manage it independently of the
 connection method. See [Running T3 Code in the Background](./background-service.md).

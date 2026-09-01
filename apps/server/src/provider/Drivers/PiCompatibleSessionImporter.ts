@@ -704,6 +704,7 @@ const makePiCompatibleSessionImporter = (options?: {
       string,
       { readonly size: number; readonly mtimeMs: number; readonly session: PiCompatibleSession }
     >();
+    const importedActivityIdsByThread = new Map<ThreadId, Set<EventId>>();
     let previouslyActiveSessionFiles = {
       omp: new Set<string>(),
       piAgent: new Set<string>(),
@@ -963,7 +964,10 @@ const makePiCompatibleSessionImporter = (options?: {
           const contents = yield* fileSystem.readFileString(sourcePath).pipe(Effect.option);
           if (Option.isNone(contents)) continue;
           const session = parsePiCompatibleSession(contents.value, driver, sourcePath);
-          if (session !== undefined && session.messages.some((message) => message.role === "user")) {
+          if (
+            session !== undefined &&
+            session.messages.some((message) => message.role === "user")
+          ) {
             parsedSessionCache.set(sourcePath, { size, mtimeMs, session });
             parsed.push({ sourcePath, session });
           } else {

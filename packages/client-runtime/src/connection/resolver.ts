@@ -56,7 +56,7 @@ function primarySocketUrl(
   if (url.pathname === "" || url.pathname === "/") {
     url.pathname = "/ws";
   }
-  appendClientConnectionParams(url, clientMetadata);
+  appendClientConnectionParams(url, clientMetadata, "direct");
   return url.toString();
 }
 
@@ -85,6 +85,7 @@ const makePrimaryBroker = Effect.fn("clientRuntime.connection.broker.makePrimary
       httpBaseUrl: target.httpBaseUrl,
       wsBaseUrl: target.wsBaseUrl,
       bearerToken: bearerToken.value,
+      connectionMethod: "direct",
     });
     return {
       ...authorized,
@@ -133,6 +134,7 @@ const makeBearerBroker = Effect.fn("clientRuntime.connection.broker.makeBearer")
       httpBaseUrl: profile.httpBaseUrl,
       wsBaseUrl: profile.wsBaseUrl,
       bearerToken: credential.token,
+      connectionMethod: "direct",
     });
     return {
       environmentId: authorized.environmentId,
@@ -196,6 +198,7 @@ const makeRelayBroker = Effect.fn("clientRuntime.connection.broker.makeRelay")(f
 const makeSshBroker = Effect.fn("clientRuntime.connection.broker.makeSsh")(function* () {
   const profiles = yield* ConnectionProfileStore.ConnectionProfileStore;
   const ssh = yield* ClientCapabilities.SshEnvironmentGateway;
+  const remote = yield* RemoteEnvironmentAuthorization.RemoteEnvironmentAuthorization;
 
   return Effect.fn("clientRuntime.connection.broker.ssh")(function* (
     entry: ConnectionCatalogEntry & { readonly target: SshConnectionTarget },
@@ -230,15 +233,19 @@ const makeSshBroker = Effect.fn("clientRuntime.connection.broker.makeSsh")(funct
         target: prepared.bootstrap.target,
       }),
     );
-    return {
-      environmentId: prepared.environmentId,
-      label: prepared.label,
+    const authorized = yield* remote.authorizeBearer({
+      expectedEnvironmentId: target.environmentId,
       httpBaseUrl: prepared.bootstrap.httpBaseUrl,
-      socketUrl: prepared.socketUrl,
-      httpAuthorization: {
-        _tag: "Bearer",
-        token: prepared.bearerToken,
-      },
+      wsBaseUrl: prepared.bootstrap.wsBaseUrl,
+      bearerToken: prepared.bearerToken,
+      connectionMethod: "ssh",
+    });
+    return {
+      environmentId: authorized.environmentId,
+      label: authorized.label,
+      httpBaseUrl: authorized.httpBaseUrl,
+      socketUrl: authorized.socketUrl,
+      httpAuthorization: authorized.httpAuthorization,
       target,
     } satisfies PreparedConnection;
   });
