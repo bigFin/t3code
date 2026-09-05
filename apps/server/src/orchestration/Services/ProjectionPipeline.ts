@@ -26,7 +26,8 @@ export interface OrchestrationProjectionPipelineShape {
   /**
    * Project a single orchestration event into projection repositories.
    *
-   * Projectors are executed sequentially to preserve deterministic ordering.
+   * Projectors run sequentially in one transaction. Attachment cleanup runs
+   * after that transaction commits.
    */
   readonly projectEvent: (
     event: OrchestrationEvent,
@@ -41,6 +42,14 @@ export interface OrchestrationProjectionPipelineShape {
   readonly projectEvents: (
     events: ReadonlyArray<OrchestrationEvent>,
   ) => Effect.Effect<void, ProjectionRepositoryError>;
+
+  /**
+   * Project an event inside a caller's transaction and return its attachment
+   * cleanup. Run the returned effect only after the outer transaction commits.
+   */
+  readonly projectEventDeferred: (
+    event: OrchestrationEvent,
+  ) => Effect.Effect<Effect.Effect<void>, ProjectionRepositoryError>;
 }
 
 /**

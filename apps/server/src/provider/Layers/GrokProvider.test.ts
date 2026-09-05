@@ -1,19 +1,45 @@
+// @effect-diagnostics nodeBuiltinImport:off - resolves the mock ACP agent script path relative to this test file.
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
-import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
+import * as Path from "effect/Path";
 import { GrokSettings } from "@t3tools/contracts";
 
 import {
   buildGrokModelCapabilities,
+  buildGrokModelsFromSessionModelState,
   buildInitialGrokProviderSnapshot,
   checkGrokProviderStatus,
   grokModelsFromSessionModelState,
 } from "./GrokProvider.ts";
 
 const decodeGrokSettings = Schema.decodeSync(GrokSettings);
+describe("buildGrokModelsFromSessionModelState", () => {
+  it("marks the agent's current model as default and keeps reasoning options", () => {
+    const models = buildGrokModelsFromSessionModelState({
+      currentModelId: "grok-4.6",
+      availableModels: [
+        {
+          modelId: "grok-4.6",
+          name: "Grok 4.6",
+          _meta: {
+            supportsReasoningEffort: true,
+            reasoningEffort: "high",
+            reasoningEfforts: [{ value: "high", label: "High", default: true }],
+          },
+        },
+        { modelId: "grok-4.5", name: "Grok 4.5" },
+      ],
+    });
+    expect(models.map((model) => [model.slug, model.isDefault ?? false])).toEqual([
+      ["grok-4.6", true],
+      ["grok-4.5", false],
+    ]);
+    expect(models[0]?.capabilities?.optionDescriptors).toHaveLength(1);
+  });
+});
 
 describe("buildGrokModelCapabilities", () => {
   it("preserves ACP-provided reasoning labels and the active default", () => {
@@ -270,6 +296,66 @@ it.layer(NodeServices.layer)("checkGrokProviderStatus", (it) => {
         expect(snapshot.models.map((model) => model.slug)).toEqual(["grok-build", "grok-next"]);
         expect(snapshot.message).toContain("checked when a Grok thread starts");
         expect(yield* fs.exists(executionMarker)).toBe(false);
+      }),
+    ),
+  );
+
+  it.effect("reports ready with caller-discovered models without executing the CLI", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const dir = yield* fs.makeTempDirectoryScoped({ prefix: "t3code-grok-probe-" });
+        const grokPath = path.join(dir, "grok");
+        const executionMarker = `${grokPath}.executed`;
+        yield* fs.writeFileString(
+          grokPath,
+          ["#!/bin/sh", 'touch "$0.executed"', "exit 0", ""].join("\n"),
+        );
+        yield* fs.chmod(grokPath, 0o755);
+
+        const snapshot = yield* checkGrokProviderStatus(
+          decodeGrokSettings({ enabled: true, binaryPath: grokPath }),
+          { ...process.env, XAI_API_KEY: "" },
+          grokModelsFromSessionModelState({
+            currentModelId: "grok-4.6",
+            availableModels: [
+              { modelId: "grok-4.6", name: "Grok 4.6" },
+              { modelId: "grok-4.5", name: "Grok 4.5" },
+            ],
+          }),
+        );
+
+        expect(snapshot.status).toBe("ready");
+        expect(snapshot.version).toBeNull();
+        expect(snapshot.auth).toEqual({ status: "unknown" });
+        expect(snapshot.models.map((model) => [model.slug, model.isDefault ?? false])).toEqual([
+          ["grok-4.6", true],
+          ["grok-4.5", false],
+        ]);
+        expect(snapshot.message).toContain("checked when a Grok thread starts");
+        expect(yield* fs.exists(executionMarker)).toBe(false);
+      }),
+    ),
+  );
+
+  it.effect("leaves authentication unknown until a Grok thread starts", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const dir = yield* fs.makeTempDirectoryScoped({ prefix: "t3code-grok-probe-" });
+        const grokPath = path.join(dir, "grok");
+        yield* fs.writeFileString(grokPath, ["#!/bin/sh", "exit 0", ""].join("\n"));
+        yield* fs.chmod(grokPath, 0o755);
+
+        const snapshot = yield* checkGrokProviderStatus(
+          decodeGrokSettings({ enabled: true, binaryPath: grokPath }),
+          { ...process.env, XAI_API_KEY: "xai-test-key" },
+        );
+
+        expect(snapshot.status).toBe("ready");
+        expect(snapshot.auth).toEqual({ status: "unknown" });
       }),
     ),
   );

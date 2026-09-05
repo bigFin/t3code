@@ -18,6 +18,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import { HttpClient } from "effect/unstable/http";
+import { ChildProcessSpawner } from "effect/unstable/process";
 
 import * as BackgroundPolicy from "../../background/BackgroundPolicy.ts";
 import { ServerConfig } from "../../config.ts";
@@ -52,12 +53,12 @@ const DRIVER_KIND = ProviderDriverKind.make("piAgent");
 const UPDATE = makePackageManagedProviderMaintenanceResolver({
   provider: DRIVER_KIND,
   npmPackageName: "@earendil-works/pi-coding-agent",
-  homebrewFormula: null,
   nativeUpdate: null,
 });
 
 export type PiDriverEnv =
   | BackgroundPolicy.BackgroundPolicy
+  | ChildProcessSpawner.ChildProcessSpawner
   | Crypto.Crypto
   | FileSystem.FileSystem
   | HttpClient.HttpClient
@@ -111,6 +112,7 @@ export const PiDriver: ProviderDriver<PiSettings, PiDriverEnv> = {
   create: ({ instanceId, displayName, accentColor, environment, enabled, config }) =>
     Effect.gen(function* () {
       const piRuntime = yield* PiRuntime;
+      const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
       const serverConfig = yield* ServerConfig;
       const httpClient = yield* HttpClient.HttpClient;
       const serverSettings = yield* ServerSettingsService;
@@ -146,7 +148,7 @@ export const PiDriver: ProviderDriver<PiSettings, PiDriverEnv> = {
 
       const snapshotSettings = makeProviderSnapshotSettingsSource(effectiveConfig, serverSettings);
       const snapshot = yield* makeManagedServerProvider<ProviderSnapshotSettings<PiSettings>>({
-        maintenanceCapabilities,
+        resolveMaintenance: () => Effect.succeed(maintenanceCapabilities),
         getSettings: snapshotSettings.getSettings,
         streamSettings: snapshotSettings.streamSettings,
         haveSettingsChanged: haveProviderSnapshotSettingsChanged,
@@ -161,6 +163,7 @@ export const PiDriver: ProviderDriver<PiSettings, PiDriverEnv> = {
             Effect.flatMap((enrichedSnapshot) => publishSnapshot(enrichedSnapshot)),
           ),
       }).pipe(
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
         Effect.mapError(
           (cause) =>
             new ProviderDriverError({

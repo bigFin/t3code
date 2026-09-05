@@ -3,7 +3,7 @@
 T3 Code is an "agent harness control surface". It enables control of the agents on your machine with a best-in-class mobile app ([iOS](https://apps.apple.com/us/app/t3-code-remote-claude-more/id6787819824), [Android](https://play.google.com/store/apps/details?id=com.t3tools.t3code)), [web app](https://app.t3.codes) and [Electron-based desktop app](https://t3.codes).
 
 Works with your subscriptions and model providers through Claude Code, Codex, Cursor, Grok Build,
-Oh My Pi, OpenCode, and Pi. If they're set up on your computer, T3 Code can control them.
+Oh My Pi, OpenCode, Pi, and Google Antigravity. If they're set up on your computer, T3 Code can control them.
 
 ## "Wait, what are you selling me?"
 
@@ -14,7 +14,7 @@ We wanted something performant, remote-ready, and truly open. If we ever go the 
 ## Installation
 
 > [!WARNING]
-> T3 Code currently supports Codex, Claude, Cursor, Grok Build, Oh My Pi, OpenCode, and Pi. Install and authenticate at least one provider before use:
+> T3 Code currently supports Codex, Claude, Cursor, Grok Build, Oh My Pi, OpenCode, Pi, and Antigravity. Install and authenticate at least one provider before use:
 >
 > - Codex: install [Codex CLI](https://developers.openai.com/codex/cli) and run `codex login`
 > - Claude: install [Claude Code](https://claude.com/product/claude-code) and run `claude auth login`
@@ -23,6 +23,7 @@ We wanted something performant, remote-ready, and truly open. If we ever go the 
 > - Oh My Pi: install [Oh My Pi](https://omp.sh), then run `omp auth-broker login`
 > - OpenCode: install [OpenCode](https://opencode.ai) and run `opencode auth login`
 > - Pi: install [Pi](https://pi.dev), run `pi`, then use `/login`
+> - Antigravity: enable it in Settings, then use **Install Antigravity** and **Sign in with Google**. No CLI is required.
 
 T3 keeps each provider's native session identity. Use **Release to CLI** from a thread's action menu
 to stop T3's adapter process and copy the provider's resume command; sending another message in T3
@@ -88,11 +89,12 @@ Full docs live in [docs/](./docs). There's no docs site yet.
 - [Keyboard shortcuts](./docs/user/keybindings.md)
 - [Customize a project icon](./docs/user/project-settings.md)
 - [Flux multi-host activity companion](./docs/user/flux-companion.md)
+- [Project settings](./docs/user/project-settings.md)
 - [Remote access from a phone or another machine](./docs/user/remote-access.md)
 - [Keeping app and server in sync](./docs/user/updating.md)
 - [Source control integrations](./docs/user/source-control.md)
 - Multiple accounts: [Codex](./docs/user/providers-codex.md) · [Claude](./docs/user/providers-claude.md)
-- Linux: [run T3 Code as a background service](./docs/user/background-service.md)
+- [Run T3 Code as a background service](./docs/user/background-service.md)
 
 Building from source? Start at [docs/internals/overview.md](./docs/internals/overview.md).
 

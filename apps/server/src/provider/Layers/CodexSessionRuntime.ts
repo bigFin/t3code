@@ -214,6 +214,7 @@ export interface CodexSessionRuntimeShape {
   readonly sendTurn: (
     input: CodexSessionRuntimeSendTurnInput,
   ) => Effect.Effect<ProviderTurnStartResult, CodexSessionRuntimeError>;
+  readonly compactThread: Effect.Effect<void, CodexSessionRuntimeError>;
   readonly interruptTurn: (turnId?: TurnId) => Effect.Effect<void, CodexSessionRuntimeError>;
   readonly readThread: Effect.Effect<CodexThreadSnapshot, CodexSessionRuntimeError>;
   readonly rollbackThread: (
@@ -2596,6 +2597,10 @@ export const makeCodexSessionRuntime = (
       start,
       getSession: Ref.get(sessionRef),
       emittedEventCount: Ref.get(emittedEventCount),
+      compactThread: Effect.gen(function* () {
+        const providerThreadId = yield* readProviderThreadId;
+        yield* client.request("thread/compact/start", { threadId: providerThreadId });
+      }),
       sendTurn: (input) =>
         Effect.gen(function* () {
           const providerThreadId = yield* readProviderThreadId;

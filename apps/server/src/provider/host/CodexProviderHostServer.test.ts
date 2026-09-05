@@ -326,6 +326,10 @@ class FakeCodexRuntime implements CodexSessionRuntimeShape {
     );
   }
 
+  get compactThread() {
+    return Effect.void;
+  }
+
   emit(event: ProviderEvent): Promise<void> {
     if (!Queue.offerUnsafe(this.eventQueue, event)) {
       return Promise.reject(new Error("Provider-host test event queue rejected an event."));

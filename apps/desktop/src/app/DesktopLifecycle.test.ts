@@ -347,7 +347,7 @@ describe("DesktopLifecycle", () => {
   for (const platform of ["darwin", "win32", "linux"] satisfies ReadonlyArray<NodeJS.Platform>) {
     it.effect(`lets the updater's quit event proceed on ${platform}`, () => {
       const appListeners = new Map<string, (...args: readonly unknown[]) => void>();
-
+      let windowsDestroyed = false;
       const environmentLayer = Layer.succeed(DesktopEnvironment.DesktopEnvironment, {
         platform,
         isDevelopment: false,
@@ -358,7 +358,13 @@ describe("DesktopLifecycle", () => {
       const layer = DesktopLifecycle.layer.pipe(
         Layer.provideMerge(makeElectronAppLayer(appListeners)),
         Layer.provideMerge(electronThemeLayer),
-        Layer.provideMerge(makeElectronWindowLayer()),
+        Layer.provideMerge(
+          makeElectronWindowLayer(
+            Effect.sync(() => {
+              windowsDestroyed = true;
+            }),
+          ),
+        ),
         Layer.provideMerge(makeDesktopWindowLayer()),
         Layer.provideMerge(environmentLayer),
         Layer.provideMerge(DesktopShutdown.layer),
@@ -382,6 +388,7 @@ describe("DesktopLifecycle", () => {
           yield* lifecycle.register;
 
           appListeners.get("before-quit-for-update")?.();
+          yield* Effect.yieldNow;
 
           let prevented = false;
           const event = {
@@ -395,6 +402,7 @@ describe("DesktopLifecycle", () => {
             prevented,
             "cancelling this event prevents the updater from completing its relaunch",
           );
+          assert.isTrue(windowsDestroyed);
 
           const state = yield* DesktopState.DesktopState;
           assert.isTrue(yield* Ref.get(state.quitting));

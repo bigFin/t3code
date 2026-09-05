@@ -1,56 +1,56 @@
-# Remote Architecture
+# Remote architecture
 
-> For maintainers. Using T3 Code? See [docs/user](../user/).
+Each connection joins a client to one environment over HTTP and WebSocket. The
+environment owns providers, execution, files, and durable state. Direct access,
+Tailscale, SSH, and T3 Connect change how the client reaches that server; they do
+not introduce another execution model. See
+[remote access](../user/remote-access.md) for setup.
 
-Remote environments are shipped, not planned. Direct, bearer-paired, relay-tunneled, Tailscale, and
-desktop-managed SSH access all exist today. This document describes the model they share and where
-each piece lives. For the user-facing setup guide see
-[remote access](../user/remote-access.md).
+## Identity is independent of the route
 
-## The model
+An environment keeps its ID across server restarts and endpoint changes. Saved
+connections are local to a client profile; the server's identity and state are
+not. A repository identity can correlate clones across environments, but never
+routes work between them. A project and its threads belong to one environment.
 
-T3 has one runtime boundary: a client talks to a T3 server over HTTP and WebSocket, and the server
-owns orchestration, providers, terminals, git, and filesystem operations. Remoteness is expressed at
-the connection layer, never by splitting the runtime.
+[Environment ID initialization](../../apps/server/src/environment/ServerEnvironment.ts)
+must publish a complete ID atomically. Repair of an empty ID file retains a
+recovery file so concurrent or delayed initializers choose the same winner.
+Removing that recovery state as ordinary temporary-file cleanup can change the
+identity underneath an already-running server.
 
-```text
-┌──────────────────────────────────────────────┐
-│ Client (desktop / mobile / web)              │
-│  known environments, connection supervisor   │
-└───────────────┬──────────────────────────────┘
-                │ resolves one access endpoint
-┌───────────────▼──────────────────────────────┐
-│ Access method                                │
-│  direct ws/wss, relay tunnel,                │
-│  Tailscale serve, desktop-managed ssh        │
-└───────────────┬──────────────────────────────┘
-                │ connects to one T3 server
-┌───────────────▼──────────────────────────────┐
-│ Execution environment = one T3 server        │
-│  identity, providers, projects/threads,      │
-│  terminals, git, filesystem                  │
-└──────────────────────────────────────────────┘
-```
+Advertised endpoints are reachability hints. Only the connecting device can
+prove that a route works. In particular, a host's loopback address refers to a
+different machine when another device opens it. Endpoint selection must not
+silently fall back to loopback when a shareable endpoint is unavailable.
 
-### ExecutionEnvironment
+## Hosted web is a client
 
-One running T3 server instance. It owns provider availability and auth, model availability, projects
-and threads, terminal processes, filesystem access, git operations, and server settings.
+The hosted web app stores its connection catalog in the browser and connects
+directly to each environment. It does not proxy traffic or hold server-side
+pairing state. Hosting the UI over HTTPS therefore cannot make a plain HTTP LAN
+backend accessible from that browser context.
 
-It is identified by a stable `environmentId`, persisted by the server at `<stateDir>/environment-id`
-and generated on first start (`apps/server/src/environment/ServerEnvironment.ts`). Desktop, mobile,
-and web all reason about the same concept.
+A [hosted pairing URL](../../apps/web/src/hostedPairing.ts) identifies the backend
+in its query and carries the pairing secret in its fragment. Fragments stay out
+of requests to the hosted origin. The browser exchanges the secret with the
+environment and strips it from its history. Moving the token into a query
+parameter would disclose it to the wrong origin.
 
-Initialization publishes a complete ID atomically. Empty or whitespace-only ID files are repaired
-using a retained `<stateDir>/environment-id.recovery` file so concurrent and delayed repairs choose
-the same ID. Existing nonempty ID files remain authoritative.
+## Access and process ownership are different
 
-### Known environments and connection targets
+Tailscale supplies an endpoint for ordinary pairing, so it needs no separate
+environment type. Authentication remains the environment's responsibility for
+every route. See [environment authentication](./environment-auth.md) and the
+[T3 Connect trust boundary](./t3-connect.md).
 
-A saved client-side entry for an environment the client knows how to reach. It is not
-server-authored; it is local to a device or client profile. In the hosted web app these entries are
-browser-local. A hosted pairing URL can create one, but it does not give the hosted app a server-side
-control plane or a copy of session state.
+SSH can launch a server as well as forward a port. Desktop main owns that
+lifecycle because it can spawn SSH and handle authentication prompts. The
+renderer uses the forwarded endpoint through the shared connection runtime.
+[SSH cleanup](../../packages/ssh/src/tunnel.ts) stops a remote server only if the
+launcher owns it; a server it discovered already running must survive a client
+disconnect. Reconnection restores the forward before opening the application
+transport.
 
 [`connection/model.ts`][model] defines four target tags, which are the real access taxonomy:
 
@@ -228,6 +228,11 @@ carries the running server version and may advertise a safe replacement path, so
 right action without making the transport responsible for process management. The connection
 supervisor owns the resulting disconnect and reconnect like any other involuntary close. See
 [server-updates.md](./server-updates.md).
+Remote servers can outlive several client releases. Clients must use advertised
+capabilities and handle their absence, rather than assume their own version
+describes the server. Process replacement belongs to the launcher's
+[update protocol](./server-updates.md); the connection runtime handles the
+resulting disconnect.
 
 ## Future work
 

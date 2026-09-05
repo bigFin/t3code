@@ -9,6 +9,7 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
+import { ChildProcessSpawner } from "effect/unstable/process";
 
 import * as BackgroundPolicy from "../../background/BackgroundPolicy.ts";
 import { ServerConfig } from "../../config.ts";
@@ -29,8 +30,8 @@ import type { ServerProviderDraft } from "../providerSnapshot.ts";
 import { mergeProviderInstanceEnvironment } from "../ProviderInstanceEnvironment.ts";
 import {
   makeManualOnlyProviderMaintenanceCapabilities,
-  makeStaticProviderMaintenanceResolver,
   resolveProviderMaintenanceCapabilitiesEffect,
+  type ProviderMaintenanceCapabilitiesResolver,
 } from "../providerMaintenance.ts";
 import {
   haveProviderSnapshotSettingsChanged,
@@ -40,15 +41,19 @@ import {
 
 const decodeOmpSettings = Schema.decodeSync(OmpSettings);
 const DRIVER_KIND = ProviderDriverKind.make("omp");
-const UPDATE = makeStaticProviderMaintenanceResolver(
-  makeManualOnlyProviderMaintenanceCapabilities({
-    provider: DRIVER_KIND,
-    packageName: null,
-  }),
-);
+const UPDATE: ProviderMaintenanceCapabilitiesResolver = {
+  resolve: () =>
+    Effect.succeed(
+      makeManualOnlyProviderMaintenanceCapabilities({
+        provider: DRIVER_KIND,
+        packageName: null,
+      }),
+    ),
+};
 
 export type OmpDriverEnv =
   | BackgroundPolicy.BackgroundPolicy
+  | ChildProcessSpawner.ChildProcessSpawner
   | Crypto.Crypto
   | FileSystem.FileSystem
   | Path.Path
@@ -101,6 +106,7 @@ export const OmpDriver: ProviderDriver<OmpSettings, OmpDriverEnv> = {
   create: ({ instanceId, displayName, accentColor, environment, enabled, config }) =>
     Effect.gen(function* () {
       const piRuntime = yield* PiRuntime;
+      const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
       const serverConfig = yield* ServerConfig;
       const serverSettings = yield* ServerSettingsService;
       const eventLoggers = yield* ProviderEventLoggers;
@@ -135,7 +141,7 @@ export const OmpDriver: ProviderDriver<OmpSettings, OmpDriverEnv> = {
 
       const snapshotSettings = makeProviderSnapshotSettingsSource(effectiveConfig, serverSettings);
       const snapshot = yield* makeManagedServerProvider<ProviderSnapshotSettings<OmpSettings>>({
-        maintenanceCapabilities,
+        resolveMaintenance: () => Effect.succeed(maintenanceCapabilities),
         getSettings: snapshotSettings.getSettings,
         streamSettings: snapshotSettings.streamSettings,
         haveSettingsChanged: haveProviderSnapshotSettingsChanged,
@@ -144,6 +150,7 @@ export const OmpDriver: ProviderDriver<OmpSettings, OmpDriverEnv> = {
         checkProvider,
         enrichSnapshot: () => Effect.void,
       }).pipe(
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
         Effect.mapError(
           (cause) =>
             new ProviderDriverError({

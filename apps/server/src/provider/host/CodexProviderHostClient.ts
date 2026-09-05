@@ -1405,6 +1405,7 @@ export const makeCodexProviderHostRuntime = Effect.fn("makeCodexProviderHostRunt
       ),
       detach: release(false).pipe(Effect.orDie),
       close: release(true).pipe(Effect.orDie),
+      compactThread: Effect.void,
     } satisfies CodexSessionRuntimeShape;
   },
 );

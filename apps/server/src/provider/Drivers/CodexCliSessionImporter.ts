@@ -88,7 +88,12 @@ const decodeCodexSettings = Schema.decodeUnknownEffect(CodexSettings);
 const encodeUnknownJsonString = Schema.encodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
 const isModelSelection = Schema.is(ModelSelection);
 
-type CodexListedThread = CodexSchema.V2ThreadListResponse["data"][number];
+// Listed threads arrive as list responses, but only shared identity fields
+// (id, status, updatedAt, path) are read — read responses stay compatible
+// across CLI error-code renames.
+type CodexListedThread =
+  | CodexSchema.V2ThreadListResponse["data"][number]
+  | CodexSchema.V2ThreadReadResponse["thread"];
 type CodexReadThread = CodexSchema.V2ThreadReadResponse["thread"];
 type CodexThreadItem = CodexReadThread["turns"][number]["items"][number];
 type CodexUserInput = Extract<CodexThreadItem, { readonly type: "userMessage" }>["content"][number];

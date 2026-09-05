@@ -15,7 +15,6 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
-import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { HttpServer } from "effect/unstable/http";
@@ -43,6 +42,7 @@ import * as ServerLifecycleEvents from "../src/serverLifecycleEvents.ts";
 import * as ServerRuntimeStartup from "../src/serverRuntimeStartup.ts";
 import * as ServerSettings from "../src/serverSettings.ts";
 import * as AnalyticsService from "../src/telemetry/AnalyticsService.ts";
+import * as GitVcsDriver from "../src/vcs/GitVcsDriver.ts";
 
 const providerInstanceId = ProviderInstanceId.make("codex");
 const projectId = ProjectId.make("project-startup-orphan");
@@ -109,11 +109,13 @@ const startupDependencies = Layer.mergeAll(
     }),
   ),
   AnalyticsService.layerTest,
+  Layer.mock(GitVcsDriver.GitVcsDriver)({}),
   CodexCliSessionImporterLive,
   PiCompatibleSessionImporterLive,
   Layer.succeed(ProviderService.ProviderService, {
     startSession: () => Effect.die("unused"),
     sendTurn: () => Effect.die("unused"),
+    compactThread: () => Effect.die("unused"),
     interruptTurn: () => Effect.die("unused"),
     respondToRequest: () => Effect.die("unused"),
     respondToUserInput: () => Effect.die("unused"),
@@ -121,6 +123,7 @@ const startupDependencies = Layer.mergeAll(
     stopSession: () => Effect.die("unused"),
     listSessions: () => Effect.succeed([]),
     getCapabilities: () => Effect.die("unused"),
+    assertConversationRollbackSupported: () => Effect.die("unused"),
     getInstanceInfo: () => Effect.die("unused"),
     rollbackConversation: () => Effect.die("unused"),
     uploadFeedback: () => Effect.die("unused"),
@@ -370,8 +373,9 @@ it.effect(
           dispatch: () => Effect.die("unused"),
           streamDomainEvents: Stream.empty,
           latestSequence: Effect.succeed(0),
-          readAggregateEvents: () => Stream.empty,
-          subscribeDomainEvents: Effect.die("unused"),
+          readThreadEvents: () => Stream.empty,
+          getThreadReplayStats: () => Effect.die("unused"),
+          subscribeDomainEvents: Effect.succeed(Stream.empty),
         }),
       ),
       Effect.provide(Layer.mock(ProjectionSnapshotQuery.ProjectionSnapshotQuery)({})),

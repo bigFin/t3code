@@ -48,7 +48,6 @@ export function formatProviderDisplayName(provider: string | null | undefined): 
     }
   }
 }
-
 export function deriveLatestContextWindowSnapshot(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
 ): ContextWindowSnapshot | null {

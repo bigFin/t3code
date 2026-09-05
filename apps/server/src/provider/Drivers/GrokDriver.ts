@@ -1,7 +1,6 @@
 import {
   GrokSettings,
   ProviderDriverKind,
-  type ServerProvider,
   type ServerProviderModel,
 } from "@t3tools/contracts";
 import type * as EffectAcpSchema from "effect-acp/schema";
@@ -34,14 +33,11 @@ import {
   type ProviderDriver,
   type ProviderInstance,
 } from "../ProviderDriver.ts";
+import { withInstanceIdentity } from "./instanceIdentity.ts";
 import type { ServerProviderShape } from "../Services/ServerProvider.ts";
-import type { ServerProviderDraft } from "../providerSnapshot.ts";
 import { mergeProviderInstanceEnvironment } from "../ProviderInstanceEnvironment.ts";
-import {
-  makeManualOnlyProviderMaintenanceCapabilities,
-  makeStaticProviderMaintenanceResolver,
-  resolveProviderMaintenanceCapabilitiesEffect,
-} from "../providerMaintenance.ts";
+import { discoverGrokSkills } from "./GrokSkills.ts";
+import { makeManualOnlyProviderMaintenanceCapabilities } from "../providerMaintenance.ts";
 import {
   haveProviderSnapshotSettingsChanged,
   makeProviderSnapshotSettingsSource,
@@ -50,12 +46,10 @@ import {
 const decodeGrokSettings = Schema.decodeSync(GrokSettings);
 
 const DRIVER_KIND = ProviderDriverKind.make("grok");
-const UPDATE = makeStaticProviderMaintenanceResolver(
-  makeManualOnlyProviderMaintenanceCapabilities({
-    provider: DRIVER_KIND,
-    packageName: null,
-  }),
-);
+const MAINTENANCE_CAPABILITIES = makeManualOnlyProviderMaintenanceCapabilities({
+  provider: DRIVER_KIND,
+  packageName: null,
+});
 
 function sameModelCatalog(
   left: ReadonlyArray<ServerProviderModel>,
@@ -83,22 +77,6 @@ export type GrokDriverEnv =
   | ServerConfig
   | ServerSettingsService;
 
-const withInstanceIdentity =
-  (input: {
-    readonly instanceId: ProviderInstance["instanceId"];
-    readonly displayName: string | undefined;
-    readonly accentColor: string | undefined;
-    readonly continuationGroupKey: string;
-  }) =>
-  (snapshot: ServerProviderDraft): ServerProvider => ({
-    ...snapshot,
-    instanceId: input.instanceId,
-    driver: DRIVER_KIND,
-    ...(input.displayName ? { displayName: input.displayName } : {}),
-    ...(input.accentColor ? { accentColor: input.accentColor } : {}),
-    continuation: { groupKey: input.continuationGroupKey },
-  });
-
 export const GrokDriver: ProviderDriver<GrokSettings, GrokDriverEnv> = {
   driverKind: DRIVER_KIND,
   metadata: {
@@ -110,6 +88,7 @@ export const GrokDriver: ProviderDriver<GrokSettings, GrokDriverEnv> = {
   create: ({ instanceId, displayName, accentColor, environment, enabled, config }) =>
     Effect.gen(function* () {
       const crypto = yield* Crypto.Crypto;
+      const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
       const fileSystem = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const httpClient = yield* HttpClient.HttpClient;
@@ -123,15 +102,12 @@ export const GrokDriver: ProviderDriver<GrokSettings, GrokDriverEnv> = {
       });
       const stampIdentity = withInstanceIdentity({
         instanceId,
+        driverKind: DRIVER_KIND,
         displayName,
         accentColor,
         continuationGroupKey: continuationIdentity.continuationKey,
       });
       const effectiveConfig = { ...config, enabled } satisfies GrokSettings;
-      const maintenanceCapabilities = yield* resolveProviderMaintenanceCapabilitiesEffect(UPDATE, {
-        binaryPath: effectiveConfig.binaryPath,
-        env: processEnv,
-      });
       const discoveredModelsRef = yield* Ref.make<ReadonlyArray<ServerProviderModel>>([]);
       const snapshotReady = yield* Deferred.make<ServerProviderShape>();
       const publishDiscoveredModels = Effect.fn("GrokDriver.publishDiscoveredModels")(function* (
@@ -146,7 +122,6 @@ export const GrokDriver: ProviderDriver<GrokSettings, GrokDriverEnv> = {
         const provider = yield* Deferred.await(snapshotReady);
         yield* provider.refresh;
       });
-
       const adapter = yield* makeGrokAdapter(effectiveConfig, {
         environment: processEnv,
         ...(eventLoggers.native ? { nativeEventLogger: eventLoggers.native } : {}),
@@ -167,7 +142,7 @@ export const GrokDriver: ProviderDriver<GrokSettings, GrokDriverEnv> = {
 
       const snapshotSettings = makeProviderSnapshotSettingsSource(effectiveConfig, serverSettings);
       const snapshot = yield* makeManagedServerProvider<ProviderSnapshotSettings<GrokSettings>>({
-        maintenanceCapabilities,
+        resolveMaintenance: () => Effect.succeed(MAINTENANCE_CAPABILITIES),
         getSettings: snapshotSettings.getSettings,
         streamSettings: snapshotSettings.streamSettings,
         haveSettingsChanged: haveProviderSnapshotSettingsChanged,
@@ -177,7 +152,7 @@ export const GrokDriver: ProviderDriver<GrokSettings, GrokDriverEnv> = {
         enrichSnapshot: ({ settings, snapshot: currentSnapshot, publishSnapshot }) =>
           enrichGrokSnapshot({
             snapshot: currentSnapshot,
-            maintenanceCapabilities,
+            maintenanceCapabilities: MAINTENANCE_CAPABILITIES,
             enableProviderUpdateChecks: settings.enableProviderUpdateChecks,
             publishSnapshot,
             httpClient,
@@ -194,6 +169,24 @@ export const GrokDriver: ProviderDriver<GrokSettings, GrokDriverEnv> = {
         ),
       );
       yield* Deferred.succeed(snapshotReady, snapshot);
+      const snapshotForCwd = (workspaceCwd: string) =>
+        !effectiveConfig.enabled
+          ? snapshot.getSnapshot
+          : Effect.all([
+              snapshot.getSnapshot,
+              discoverGrokSkills(effectiveConfig, processEnv, workspaceCwd).pipe(
+                Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+                Effect.mapError(
+                  (cause) =>
+                    new ProviderDriverError({
+                      driver: DRIVER_KIND,
+                      instanceId,
+                      detail: `Failed to discover Grok skills for '${workspaceCwd}'`,
+                      cause,
+                    }),
+                ),
+              ),
+            ]).pipe(Effect.map(([machineSnapshot, skills]) => ({ ...machineSnapshot, skills })));
 
       return {
         instanceId,
@@ -203,6 +196,7 @@ export const GrokDriver: ProviderDriver<GrokSettings, GrokDriverEnv> = {
         accentColor,
         enabled,
         snapshot,
+        snapshotForCwd,
         adapter,
         textGeneration,
       } satisfies ProviderInstance;

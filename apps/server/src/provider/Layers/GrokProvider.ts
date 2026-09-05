@@ -1,4 +1,5 @@
 import {
+  type CustomModelSetting,
   type GrokSettings,
   type ModelCapabilities,
   type ServerProvider,
@@ -14,6 +15,7 @@ import { HttpClient } from "effect/unstable/http";
 
 import {
   buildServerProvider,
+  COMPACT_SLASH_COMMAND,
   providerModelsFromSettings,
   type ServerProviderDraft,
 } from "../providerSnapshot.ts";
@@ -22,9 +24,11 @@ import {
   type ProviderMaintenanceCapabilities,
 } from "../providerMaintenance.ts";
 import {
+  GROK_DEFAULT_MODEL_SLUG,
   isValidGrokReasoningEffortToken,
   resolveGrokAcpBaseModelId,
 } from "../acp/GrokAcpSupport.ts";
+
 
 const GROK_PRESENTATION = {
   displayName: "Grok",
@@ -39,7 +43,7 @@ const GROK_BINARY_UNAVAILABLE_MESSAGE = "Grok CLI (`grok`) is not installed or n
 
 const GROK_BUILT_IN_MODELS: ReadonlyArray<ServerProviderModel> = [
   {
-    slug: "grok-build",
+    slug: GROK_DEFAULT_MODEL_SLUG,
     name: "Grok Build",
     isCustom: false,
     capabilities: EMPTY_CAPABILITIES,
@@ -86,7 +90,7 @@ export function buildInitialGrokProviderSnapshot(
 }
 
 function grokModelsFromSettings(
-  customModels: ReadonlyArray<string> | undefined,
+  customModels: ReadonlyArray<CustomModelSetting> | undefined,
   builtInModels: ReadonlyArray<ServerProviderModel> = GROK_BUILT_IN_MODELS,
 ): ReadonlyArray<ServerProviderModel> {
   return providerModelsFromSettings(builtInModels, customModels ?? [], EMPTY_CAPABILITIES);
@@ -192,29 +196,36 @@ export function buildGrokModelCapabilities(model: EffectAcpSchema.ModelInfo): Mo
 export function grokModelsFromSessionModelState(
   modelState: EffectAcpSchema.SessionModelState | null | undefined,
 ): ReadonlyArray<ServerProviderModel> {
-  return buildGrokDiscoveredModelsFromSessionModelState(modelState);
+  return buildGrokModelsFromSessionModelState(modelState);
 }
 
-function buildGrokDiscoveredModelsFromSessionModelState(
+/** Models advertised by the ACP agent, with the session's current model marked as default. */
+export function buildGrokModelsFromSessionModelState(
   modelState: EffectAcpSchema.SessionModelState | null | undefined,
 ): ReadonlyArray<ServerProviderModel> {
-  if (!modelState || modelState.availableModels.length === 0) return [];
-
+  if (!modelState || modelState.availableModels.length === 0) {
+    return [];
+  }
+  const currentModelId = modelState.currentModelId.trim();
   const seen = new Set<string>();
-  return modelState.availableModels.flatMap((model) => {
+  return modelState.availableModels.flatMap((model): ServerProviderModel[] => {
     const slug = resolveGrokAcpBaseModelId(model.modelId);
-    if (!slug || seen.has(slug)) return [];
+    if (!slug || seen.has(slug)) {
+      return [];
+    }
     seen.add(slug);
     return [
       {
         slug,
         name: model.name?.trim() || slug,
         isCustom: false,
+        ...(model.modelId.trim() === currentModelId ? { isDefault: true } : {}),
         capabilities: buildGrokModelCapabilities(model),
       },
     ];
   });
 }
+
 
 export const checkGrokProviderStatus = Effect.fn("checkGrokProviderStatus")(function* (
   grokSettings: GrokSettings,
@@ -264,11 +275,13 @@ export const checkGrokProviderStatus = Effect.fn("checkGrokProviderStatus")(func
     });
   }
 
+
   return buildServerProvider({
     presentation: GROK_PRESENTATION,
     enabled: grokSettings.enabled,
     checkedAt,
     models,
+    slashCommands: [COMPACT_SLASH_COMMAND],
     probe: {
       installed: true,
       version: null,

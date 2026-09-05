@@ -635,13 +635,19 @@ fi
 # never becomes ready. Resolve the CLI once up front so that install failure is
 # reported here, with npm's own output on stderr.
 require_installed_t3_cli() {
-  T3_CLI_PATH="$("$@" -- sh -c 'command -v t3' || true)"
+  if ! T3_CLI_PATH="$("$@" -- sh -c 'command -v t3')"; then
+    printf 'Remote host could not install %s. See npm output above for the cause.\\n' @@T3_PACKAGE_SPEC@@ >&2
+    return 1
+  fi
   if [ -n "$T3_CLI_PATH" ]; then
     return 0
   fi
   printf 'Remote host installed %s but npm produced no t3 executable, which usually means a native dependency (node-pty) failed to build. Install a C toolchain on the remote host (Debian/Ubuntu: build-essential, Fedora/RHEL: gcc-c++ make, macOS: xcode-select --install) and try again.\n' @@T3_PACKAGE_SPEC@@ >&2
   return 1
 }
+# The launcher records this PID, so registry packages exec the CLI directly.
+# Tarball specs retain npx's package-bin wrapper because its temporary bin path
+# is only valid while npx runs it.
 if [ -n "$T3_PACKAGE_SPEC" ] && command -v npx >/dev/null 2>&1; then
   case "$T3_PACKAGE_SPEC" in
     *.tgz)
@@ -650,7 +656,7 @@ if [ -n "$T3_PACKAGE_SPEC" ] && command -v npx >/dev/null 2>&1; then
       ;;
   esac
   require_installed_t3_cli npx --yes --package @@T3_PACKAGE_SPEC@@ || exit 1
-  exec npx --yes @@T3_PACKAGE_SPEC@@ "$@"
+  exec "$T3_CLI_PATH" "$@"
 fi
 if [ -n "$T3_PACKAGE_SPEC" ] && command -v npm >/dev/null 2>&1; then
   case "$T3_PACKAGE_SPEC" in
@@ -660,7 +666,7 @@ if [ -n "$T3_PACKAGE_SPEC" ] && command -v npm >/dev/null 2>&1; then
       ;;
   esac
   require_installed_t3_cli npm exec --yes --package @@T3_PACKAGE_SPEC@@ || exit 1
-  exec npm exec --yes @@T3_PACKAGE_SPEC@@ -- "$@"
+  exec "$T3_CLI_PATH" "$@"
 fi
 if [ "$T3_REQUIRE_EXACT_BUILD" = "1" ]; then
   printf 'The controlling T3 desktop requires its matching server build, but no runnable matching package is available on this host. Rebuild or reinstall the desktop package and reconnect.\n' >&2
