@@ -71,7 +71,7 @@ export function resolveAutoSettlementAt(input: {
 }): string | null {
   const { thread, pullRequest } = input;
   if (!isAutoSettlementCandidate(thread, input.now)) return null;
-  const activityAt = latestTimestamp([
+  const contentAt = latestTimestamp([
     thread.latestUserMessageAt,
     thread.latestTurn?.requestedAt,
     thread.latestTurn?.startedAt,
@@ -79,10 +79,17 @@ export function resolveAutoSettlementAt(input: {
   ]);
   if (pullRequest !== null) {
     if (pullRequestSettles(thread, pullRequest, input.autoSettleOnMerge)) {
-      return activityAt ?? thread.createdAt;
+      return contentAt ?? thread.createdAt;
     }
   }
-  if (input.autoSettleAfterDays === null || activityAt === null) return null;
+  if (input.autoSettleAfterDays === null || contentAt === null) return null;
+  // Imported transcripts, assistant replies, and subagent work advance
+  // updatedAt without touching the user-message or turn stamps. A thread
+  // with fresh imported activity is not idle, so it counts here — but only
+  // once the thread has real content; updatedAt alone (creation, title
+  // refreshes) must never settle a never-used thread.
+  const activityAt = latestTimestamp([contentAt, thread.updatedAt]);
+  if (activityAt === null) return null; // Unreachable: contentAt is non-null.
   return Date.parse(activityAt) < Date.parse(input.now) - input.autoSettleAfterDays * DAY_MS
     ? activityAt
     : null;

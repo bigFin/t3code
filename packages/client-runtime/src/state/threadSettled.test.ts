@@ -175,7 +175,7 @@ function makeShell(input: {
 }
 
 describe("threadLastActivityAt", () => {
-  it("returns the latest real user or turn activity and ignores thread/session updates", () => {
+  it("returns the latest user, turn, or thread-update activity, but never updatedAt alone", () => {
     const shell = makeShell({ activityAt: null, sessionStatus: "running" });
     const withActivity: OrchestrationThreadShell = {
       ...shell,
@@ -190,8 +190,12 @@ describe("threadLastActivityAt", () => {
       },
     };
 
-    expect(threadLastActivityAt(withActivity)).toBe("2026-04-06T00:00:00.000Z");
+    // updatedAt (NOW) is newer than the turn stamps: imports, assistant
+    // replies, and subagent work keep a used thread fresh. A thread with no
+    // user message or turn stays null no matter how fresh updatedAt is.
+    expect(threadLastActivityAt(withActivity)).toBe(NOW);
     expect(threadLastActivityAt(shell)).toBeNull();
+    expect(threadLastActivityAt({ ...shell, updatedAt: "2026-04-02T00:00:00.000Z" })).toBeNull();
   });
 });
 
@@ -273,13 +277,16 @@ describe("effectiveSettled", () => {
         ...(running ? { sessionStatus: "running" as const } : {}),
         ...(pending === undefined ? {} : { pending }),
       });
+      // updatedAt counts as activity now: age it with the case so "stale"
+      // still means fully quiet, not "old messages plus a fresh update".
+      const agedShell = activityAt === null ? shell : { ...shell, updatedAt: activityAt };
       const changeRequestOptions =
         changeRequestState === undefined
           ? {}
           : { changeRequest: { state: changeRequestState as ChangeRequestStateLike } };
 
       expect(
-        effectiveSettled(shell, {
+        effectiveSettled(agedShell, {
           now: NOW,
           autoSettleAfterDays: 3,
           ...changeRequestOptions,

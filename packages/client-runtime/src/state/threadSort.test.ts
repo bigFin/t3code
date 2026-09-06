@@ -106,6 +106,26 @@ describe("sortThreads", () => {
 
     expect(sorted.map((thread) => thread.id)).toEqual(["thread-1", "thread-2"]);
   });
+
+  it("floats a thread with fresh imported activity above one with only old user messages", () => {
+    const sorted = sortThreads(
+      [
+        makeThread({
+          id: "quiet",
+          latestUserMessageAt: "2026-03-01T10:00:00.000Z",
+          updatedAt: "2026-03-01T10:00:00.000Z",
+        }),
+        makeThread({
+          id: "imported",
+          latestUserMessageAt: "2026-03-01T10:00:00.000Z",
+          updatedAt: "2026-03-09T10:00:00.000Z",
+        }),
+      ],
+      "updated_at",
+    );
+
+    expect(sorted.map((thread) => thread.id)).toEqual(["imported", "quiet"]);
+  });
 });
 
 describe("planPinnedMove", () => {

@@ -98,7 +98,7 @@ function threadInterruptedAt(
 }
 
 export function threadLastActivityAt(
-  shell: Pick<OrchestrationThreadShell, "latestUserMessageAt" | "latestTurn">,
+  shell: Pick<OrchestrationThreadShell, "latestUserMessageAt" | "latestTurn" | "updatedAt">,
 ): string | null {
   const candidates = [
     shell.latestUserMessageAt,
@@ -118,6 +118,13 @@ export function threadLastActivityAt(
     }
   }
 
+  // No user message or turn: the thread was never used. updatedAt alone
+  // (creation, title refreshes) must not read as activity here.
+  if (latest === null) return null;
+  const updatedAt = Date.parse(shell.updatedAt);
+  if (!Number.isNaN(updatedAt) && updatedAt > latestTimestamp) {
+    return shell.updatedAt;
+  }
   return latest;
 }
 /**

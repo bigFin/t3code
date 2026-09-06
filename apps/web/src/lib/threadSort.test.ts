@@ -40,7 +40,51 @@ function makeThread(overrides: Partial<Thread> = {}): Thread {
 }
 
 describe("sortThreads", () => {
-  it("sorts threads by the latest user message in recency mode", () => {
+  it("sorts threads by the latest user message when thread updates track messages", () => {
+    const sorted = sortThreads(
+      [
+        makeThread({
+          id: ThreadId.make("thread-1"),
+          updatedAt: "2026-03-09T10:01:00.000Z",
+          messages: [
+            {
+              id: "message-1" as never,
+              role: "user",
+              text: "older",
+              turnId: null,
+              createdAt: "2026-03-09T10:01:00.000Z",
+              updatedAt: "2026-03-09T10:01:00.000Z",
+              streaming: false,
+            },
+          ],
+        }),
+        makeThread({
+          id: ThreadId.make("thread-2"),
+          createdAt: "2026-03-09T10:05:00.000Z",
+          updatedAt: "2026-03-09T10:06:00.000Z",
+          messages: [
+            {
+              id: "message-2" as never,
+              role: "user",
+              text: "newer",
+              turnId: null,
+              createdAt: "2026-03-09T10:06:00.000Z",
+              updatedAt: "2026-03-09T10:06:00.000Z",
+              streaming: false,
+            },
+          ],
+        }),
+      ],
+      "updated_at",
+    );
+
+    expect(sorted.map((thread) => thread.id)).toEqual([
+      ThreadId.make("thread-2"),
+      ThreadId.make("thread-1"),
+    ]);
+  });
+
+  it("floats a thread with newer activity above one with a newer user message", () => {
     const sorted = sortThreads(
       [
         makeThread({
@@ -79,8 +123,8 @@ describe("sortThreads", () => {
     );
 
     expect(sorted.map((thread) => thread.id)).toEqual([
-      ThreadId.make("thread-2"),
       ThreadId.make("thread-1"),
+      ThreadId.make("thread-2"),
     ]);
   });
 

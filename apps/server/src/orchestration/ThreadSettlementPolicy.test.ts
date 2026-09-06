@@ -91,6 +91,17 @@ describe("resolveAutoSettlementAt", () => {
     expect(decide(makeThread(), null, { days: null })).toBe(false);
   });
 
+  it("keeps threads with fresh imported activity active despite stale user messages", () => {
+    expect(
+      decide(
+        makeThread({
+          latestUserMessageAt: "2026-08-20T00:00:00.000Z",
+          updatedAt: "2026-08-28T11:00:00.000Z",
+        }),
+      ),
+    ).toBe(false);
+  });
+
   it("keeps a thread active at the exact inactivity boundary", () => {
     expect(decide(makeThread({ latestUserMessageAt: "2026-08-25T12:00:00.000Z" }))).toBe(false);
   });

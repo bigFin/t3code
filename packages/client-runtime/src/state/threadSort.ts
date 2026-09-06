@@ -90,13 +90,21 @@ function getLatestUserMessageTimestamp(thread: ThreadSortInput): number {
 export function getThreadSortTimestamp(
   thread: ThreadSortInput,
   sortOrder: SidebarThreadSortOrder | Exclude<SidebarProjectSortOrder, "manual">,
-): number {
+) {
   if (sortOrder === "created_at") {
     return (
       getFirstSortableTimestamp(thread.createdAt, thread.updatedAt) ?? Number.NEGATIVE_INFINITY
     );
   }
-  return getLatestUserMessageTimestamp(thread);
+  // Recent activity, not just recent user messages: imported transcripts,
+  // assistant replies, and subagent work all advance updatedAt, while
+  // latestUserMessageAt stays behind when the user hasn't spoken lately.
+  // The max keeps either signal floating the thread; threads with neither
+  // still fall back to creation time inside getLatestUserMessageTimestamp.
+  return Math.max(
+    getLatestUserMessageTimestamp(thread),
+    toSortableTimestamp(thread.updatedAt) ?? Number.NEGATIVE_INFINITY,
+  );
 }
 
 /**

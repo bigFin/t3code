@@ -1509,7 +1509,7 @@ describe("sortProjectsForSidebar", () => {
     const threads = [
       makeThread({
         projectId: ProjectId.make("project-1"),
-        updatedAt: "2026-03-09T10:20:00.000Z",
+        updatedAt: "2026-03-09T10:01:00.000Z",
         messages: [
           {
             id: "message-1" as never,
