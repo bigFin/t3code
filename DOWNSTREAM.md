@@ -67,6 +67,10 @@ Update the fixed pnpm dependency hash after lockfile changes with:
 ./scripts/update-nix-pnpm-hash.sh
 ```
 
+CI runs `./scripts/update-nix-pnpm-hash.sh --check` on every push, so a
+stale hash fails fast there instead of surfacing later as
+`ERR_PNPM_NO_OFFLINE_TARBALL` during a system rebuild.
+
 Then run the focused tests and typechecks documented in `AGENTS.md`, followed
 by:
 

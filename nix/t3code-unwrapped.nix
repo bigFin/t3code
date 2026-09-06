@@ -14,6 +14,8 @@
 , copyDesktopItems
 , makeDesktopItem
 , installShellFiles
+, pkg-config
+, libsecret
 , version
 }:
 
@@ -36,7 +38,7 @@ stdenv.mkDerivation {
     inherit version;
     inherit src;
     fetcherVersion = 4;
-    hash = "sha256-g94Gj9+ht6hoT9mWoUM9Fre4gHKNo3seBzWUN/Qad0A=";
+    hash = "sha256-ywR/bTVFQ6Er2xTye5oe2EGEB5Yrc6dPWzmCwHLj0eI=";
   };
 
   nativeBuildInputs = [
@@ -49,7 +51,12 @@ stdenv.mkDerivation {
     pnpmBuildHook
     pnpm_11
     cacert
-  ] ++ lib.optionals stdenv.hostPlatform.isLinux [ copyDesktopItems ];
+  ] ++ lib.optionals stdenv.hostPlatform.isLinux [ copyDesktopItems pkg-config ];
+
+  # System libraries for the Linux browser-secret helper (native/browser-secret).
+  # These live in buildInputs (not nativeBuildInputs) so the pkg-config setup
+  # hook picks up their .pc files, including transitive deps like glib.
+  buildInputs = lib.optionals stdenv.hostPlatform.isLinux [ libsecret ];
 
   preBuild = ''
     substituteInPlace \
@@ -62,6 +69,7 @@ stdenv.mkDerivation {
     export npm_config_nodedir=${nodejs_24}
     export ELECTRON_SKIP_BINARY_DOWNLOAD=1
     pnpm rebuild --pending "''${pnpmInstallFlags[@]}" --filter '!@t3tools/monorepo'
+    pkg-config --cflags --libs libsecret-1 > /dev/null
   '';
 
   pnpmBuildScript = "build:desktop";

@@ -46,6 +46,13 @@ jobs:
 
       - run: nix flake check --all-systems
 
+      # The pnpm fetch hash covers every tarball in pnpm-lock.yaml. Any
+      # lockfile change invalidates it, and without this check the failure
+      # only surfaces later as ERR_PNPM_NO_OFFLINE_TARBALL during a full
+      # build. --check validates the fetch stage only (no package compile).
+      - name: Check pnpm dependency hash
+        run: ./scripts/update-nix-pnpm-hash.sh --check
+
       - name: Build Nix package
         if: github.event_name == 'workflow_dispatch'
         run: nix build --no-link .#t3code
