@@ -1664,7 +1664,7 @@ const make = Effect.gen(function* () {
     }
 
     const now = event.payload.createdAt;
-const wasCompacting = compactingThreadIds.has(thread.id);
+    const wasCompacting = compactingThreadIds.has(thread.id);
     stoppingThreadIds.add(thread.id);
     const clearStopping = Effect.sync(() => void stoppingThreadIds.delete(thread.id));
     yield* (
@@ -1836,7 +1836,7 @@ const wasCompacting = compactingThreadIds.has(thread.id);
       }
     });
 
-// Subscribe eagerly so no events are dropped between start-up and the
+    // Subscribe eagerly so no events are dropped between start-up and the
     // processing loop attaching: the engine publishes as soon as a command
     // dispatches, so a late-attaching consumer can miss events entirely.
     // The subscription is ready when the effect returns; the forked fiber

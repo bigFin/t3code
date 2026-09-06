@@ -132,7 +132,6 @@ const ProviderCliRuntimesLive = Layer.mergeAll(
   PiRuntime.PiRuntimeLive,
 );
 
-
 function selectDescriptor(
   id: string,
   label: string,
@@ -336,7 +335,6 @@ function makeCodexProbeSnapshot(
 const yieldToEventLoop = Effect.callback<void>((resume) => {
   setImmediate(() => resume(Effect.void));
 });
-
 
 function makeMutableServerSettingsService(
   initial: ContractServerSettings = DEFAULT_SERVER_SETTINGS,

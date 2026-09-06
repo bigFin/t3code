@@ -4240,5 +4240,4 @@ describe("ProviderCommandReactor", () => {
       supportsConcurrentAttach: false,
     });
   });
-
 });

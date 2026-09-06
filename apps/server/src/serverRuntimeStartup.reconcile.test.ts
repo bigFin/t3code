@@ -250,7 +250,11 @@ it.effect.each(["marked update", "opt-in restart"] as const)(
           getBinding: (threadId) =>
             Effect.sync(() => {
               const binding = bindings.get(threadId);
-              return binding === undefined ? Option.none() : Option.some(binding as ProviderSessionDirectory.ProviderRuntimeBindingWithMetadata);
+              return binding === undefined
+                ? Option.none()
+                : Option.some(
+                    binding as ProviderSessionDirectory.ProviderRuntimeBindingWithMetadata,
+                  );
             }),
           upsert: (binding) =>
             Effect.sync(() => {
@@ -865,7 +869,10 @@ for (const preparedStatus of [
             }),
         },
         directory: {
-          getBinding: () => Effect.sync(() => Option.some(binding as ProviderSessionDirectory.ProviderRuntimeBindingWithMetadata)),
+          getBinding: () =>
+            Effect.sync(() =>
+              Option.some(binding as ProviderSessionDirectory.ProviderRuntimeBindingWithMetadata),
+            ),
           upsert: (next: ProviderSessionDirectory.ProviderRuntimeBinding) =>
             Effect.gen(function* () {
               binding = next;
@@ -976,7 +983,10 @@ it.effect("settles failed opt-in recovery without retrying the provider turn", (
           }),
       },
       directory: {
-        getBinding: () => Effect.sync(() => Option.some(binding as ProviderSessionDirectory.ProviderRuntimeBindingWithMetadata)),
+        getBinding: () =>
+          Effect.sync(() =>
+            Option.some(binding as ProviderSessionDirectory.ProviderRuntimeBindingWithMetadata),
+          ),
         upsert: (next) =>
           Effect.sync(() => {
             binding = next;

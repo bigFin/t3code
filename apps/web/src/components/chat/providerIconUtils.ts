@@ -5,7 +5,6 @@ import {
   CursorIcon,
   GrokIcon,
   Icon,
-  AntigravityIcon,
   OmpIcon,
   OpenAI,
   OpenCodeIcon,

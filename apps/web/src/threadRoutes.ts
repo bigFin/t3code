@@ -1,5 +1,4 @@
 import {
-  connectionPhaseMessage,
   type EnvironmentConnectionPhase,
   type NetworkStatus,
 } from "@t3tools/client-runtime/connection";
@@ -30,6 +29,28 @@ export interface ThreadRouteLoadingCopy {
   readonly description: string;
 }
 
+function connectionTitleForRouteLoading(
+  phase: EnvironmentConnectionPhase,
+  label: string,
+  networkStatus: NetworkStatus,
+): string {
+  if (networkStatus === "offline" || phase === "offline") {
+    return "You are offline";
+  }
+  switch (phase) {
+    case "available":
+      return "Available";
+    case "connecting":
+      return `Connecting to ${label}...`;
+    case "reconnecting":
+      return `Reconnecting to ${label}...`;
+    case "connected":
+      return "Connected";
+    case "error":
+      return "Connection failed";
+  }
+}
+
 export function resolveThreadRouteLoadingCopy(input: {
   readonly environmentLabel: string;
   readonly connectionPhase: EnvironmentConnectionPhase | null;
@@ -39,7 +60,7 @@ export function resolveThreadRouteLoadingCopy(input: {
 }): ThreadRouteLoadingCopy {
   if (input.connectionPhase !== null && input.connectionPhase !== "connected") {
     return {
-      title: connectionPhaseMessage(
+      title: connectionTitleForRouteLoading(
         input.connectionPhase,
         input.environmentLabel,
         input.networkStatus,

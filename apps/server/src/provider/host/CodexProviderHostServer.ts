@@ -1432,9 +1432,7 @@ export const runCodexProviderHost = Effect.fn("runCodexProviderHost")(function* 
                 );
               case CODEX_PROVIDER_HOST_OPERATIONS.uploadFeedback:
                 return decodeFeedback(command.payload).pipe(
-                  Effect.flatMap((decoded) =>
-                    activeSession.runtime.uploadFeedback(decoded.reason),
-                  ),
+                  Effect.flatMap((decoded) => activeSession.runtime.uploadFeedback(decoded.reason)),
                 );
               case CODEX_PROVIDER_HOST_OPERATIONS.stopSession:
                 return stopSession(command.threadId).pipe(Effect.as(null));

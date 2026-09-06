@@ -76,15 +76,13 @@ export function ompModelsFromCatalog(
   models: ReadonlyArray<OmpModel>,
   customModels: ReadonlyArray<string>,
 ): ReadonlyArray<ServerProviderModel> {
-  const discovered = models.map(
-    (model): ServerProviderModel => ({
-      slug: model.selector,
-      name: model.name,
-      subProvider: model.provider,
-      isCustom: false,
-      capabilities: capabilitiesForOmpModel(model.thinking ?? []),
-    }),
-  );
+  const discovered = models.map((model): ServerProviderModel => ({
+    slug: model.selector,
+    name: model.name,
+    subProvider: model.provider,
+    isCustom: false,
+    capabilities: capabilitiesForOmpModel(model.thinking ?? []),
+  }));
   return providerModelsFromSettings(discovered, customModels, EMPTY_CAPABILITIES);
 }
 

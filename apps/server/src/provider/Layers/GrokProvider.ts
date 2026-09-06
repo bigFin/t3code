@@ -29,7 +29,6 @@ import {
   resolveGrokAcpBaseModelId,
 } from "../acp/GrokAcpSupport.ts";
 
-
 const GROK_PRESENTATION = {
   displayName: "Grok",
   badgeLabel: "Early Access",
@@ -226,7 +225,6 @@ export function buildGrokModelsFromSessionModelState(
   });
 }
 
-
 export const checkGrokProviderStatus = Effect.fn("checkGrokProviderStatus")(function* (
   grokSettings: GrokSettings,
   environment: NodeJS.ProcessEnv = process.env,
@@ -274,7 +272,6 @@ export const checkGrokProviderStatus = Effect.fn("checkGrokProviderStatus")(func
       },
     });
   }
-
 
   return buildServerProvider({
     presentation: GROK_PRESENTATION,

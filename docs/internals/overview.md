@@ -27,6 +27,7 @@ but its renderer follows the same boundary.
 │ OpenCode, Pi                                   │
 └────────────────────────────────────────────────┘
 ```
+
 Provider processes, terminals, Git, and project files belong to the server. Shared connection and
 domain state belongs in `packages/client-runtime`; clients supply platform services and UI.
 Keeping that logic shared prevents reconnect and multi-environment behavior from diverging between

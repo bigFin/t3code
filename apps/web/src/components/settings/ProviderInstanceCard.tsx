@@ -914,7 +914,6 @@ export function ProviderInstanceCard({
                 readOnly && "opacity-50 select-none",
               )}
             >
-
               <ProviderAccentColorPicker
                 layout="inline"
                 displayName={displayName}

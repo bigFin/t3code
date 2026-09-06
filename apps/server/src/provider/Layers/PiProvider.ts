@@ -108,15 +108,13 @@ export function piModelsFromTable(
   rows: ReadonlyArray<PiModelTableRow>,
   customModels: ReadonlyArray<string>,
 ): ReadonlyArray<ServerProviderModel> {
-  const discovered = rows.map(
-    (row): ServerProviderModel => ({
-      slug: `${row.provider}/${row.model}`,
-      name: row.model,
-      subProvider: row.provider,
-      isCustom: false,
-      capabilities: row.thinking === "yes" ? THINKING_CAPABILITIES : EMPTY_CAPABILITIES,
-    }),
-  );
+  const discovered = rows.map((row): ServerProviderModel => ({
+    slug: `${row.provider}/${row.model}`,
+    name: row.model,
+    subProvider: row.provider,
+    isCustom: false,
+    capabilities: row.thinking === "yes" ? THINKING_CAPABILITIES : EMPTY_CAPABILITIES,
+  }));
   return providerModelsFromSettings(discovered, customModels, EMPTY_CAPABILITIES);
 }
 

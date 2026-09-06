@@ -39,6 +39,16 @@ describe("ProviderSettingsForm helpers", () => {
 
   it("offers Pi Agent as a configurable provider driver", () => {
     const piAgent = DRIVER_OPTION_BY_VALUE[ProviderDriverKind.make("piAgent")];
+
+    expect(piAgent).toMatchObject({
+      label: "Pi Agent",
+      badgeLabel: "Early Access",
+    });
+    expect(deriveProviderSettingsFields(piAgent!).map((field) => field.key)).toContain(
+      "binaryPath",
+    );
+  });
+
   it("derives a select control with its choices for the Antigravity sign-in method", () => {
     const antigravity = DRIVER_OPTION_BY_VALUE[ProviderDriverKind.make("antigravity")];
     expect(antigravity).toBeDefined();
@@ -66,13 +76,12 @@ describe("ProviderSettingsForm helpers", () => {
     const claude = DRIVER_OPTION_BY_VALUE[ProviderDriverKind.make("claudeAgent")];
     expect(claude).toBeDefined();
 
-    expect(piAgent).toMatchObject({
-      label: "Pi Agent",
-      badgeLabel: "Early Access",
-    });
-    expect(deriveProviderSettingsFields(piAgent!).map((field) => field.key)).toContain(
+    expect(deriveProviderSettingsFields(claude!).map((field) => field.key)).toEqual([
       "binaryPath",
-    );
+      "homePath",
+      "autoCompactWindow",
+      "launchArgs",
+    ]);
   });
 
   it("offers Oh My Pi as a configurable provider driver", () => {

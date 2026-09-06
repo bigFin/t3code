@@ -899,6 +899,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
   currentEnvironmentId: string | null;
   environmentLabel: string | null;
   environmentConnectionPhase: EnvironmentConnectionPhase | null;
+  environmentMachine: EnvironmentMachineKind;
   projectCwd: string | null;
   projectFaviconPath: string | null;
   projectIcon: ProjectIconOverride | null;
@@ -1831,16 +1832,14 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
                       sidebarEnvironmentConnectionClassName(props.environmentConnectionPhase),
                     )}
                   >
-                    <ServerIcon aria-hidden className="size-3.5 shrink-0" />
-                    {props.environmentLabel ? (
-                      <span className="min-w-0 truncate">{props.environmentLabel}</span>
-                    ) : null}
-                  <span className="inline-flex shrink-0 items-center text-sidebar-muted-foreground/70">
                     <EnvironmentMachineIcon
                       aria-hidden
                       kind={props.environmentMachine}
-                      className="size-3.5"
+                      className="size-3.5 shrink-0"
                     />
+                    {props.environmentLabel ? (
+                      <span className="min-w-0 truncate">{props.environmentLabel}</span>
+                    ) : null}
                   </span>
                 ) : null}
                 {driverKind ? (

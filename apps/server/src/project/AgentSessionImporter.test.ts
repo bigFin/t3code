@@ -423,7 +423,13 @@ it.layer(NodeServices.layer)("AgentSessionImporter", (it) => {
           getProvider: () => Effect.die("unused"),
           recordImportedTranscript: () => Effect.void,
           getBinding: () =>
-            Effect.succeed(bindings[0] === undefined ? Option.none() : Option.some(bindings[0] as ProviderSessionDirectory.ProviderRuntimeBindingWithMetadata)),
+            Effect.succeed(
+              bindings[0] === undefined
+                ? Option.none()
+                : Option.some(
+                    bindings[0] as ProviderSessionDirectory.ProviderRuntimeBindingWithMetadata,
+                  ),
+            ),
           listThreadIds: () => Effect.die("unused"),
           listBindings: () => Effect.die("unused"),
           insertIfAbsent: () => Effect.die("unused"),

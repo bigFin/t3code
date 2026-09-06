@@ -67,16 +67,16 @@ and enable the provider you want. Installation, login, and configuration belong
 to that environment's machine, even when you connect from a phone or another
 computer.
 
-| Provider   | CLI                                                   | Default binary | Log in with             |
-| ---------- | ----------------------------------------------------- | -------------- | ----------------------- |
-| Codex      | [Codex CLI](https://developers.openai.com/codex/cli)  | `codex`        | `codex login`           |
-| Claude     | [Claude Code](https://claude.com/product/claude-code) | `claude`       | `claude auth login`     |
-| Cursor     | [Cursor CLI](https://cursor.com/cli)                  | `cursor-agent` | `agent login`           |
-| Grok Build | [Grok Build CLI](https://x.ai/cli)                    | `grok`         | `grok login`            |
-| Oh My Pi   | [Oh My Pi](https://omp.sh)                            | `omp`          | `omp auth-broker login` |
-| OpenCode   | [OpenCode](https://opencode.ai)                       | `opencode`     | `opencode auth login`   |
-| Pi         | [Pi](https://pi.dev)                                  | `pi`           | Run `pi`, then `/login` |
-| Antigravity | Managed in T3 Code                                | —              | Sign in with Google      |
+| Provider    | CLI                                                   | Default binary | Log in with             |
+| ----------- | ----------------------------------------------------- | -------------- | ----------------------- |
+| Codex       | [Codex CLI](https://developers.openai.com/codex/cli)  | `codex`        | `codex login`           |
+| Claude      | [Claude Code](https://claude.com/product/claude-code) | `claude`       | `claude auth login`     |
+| Cursor      | [Cursor CLI](https://cursor.com/cli)                  | `cursor-agent` | `agent login`           |
+| Grok Build  | [Grok Build CLI](https://x.ai/cli)                    | `grok`         | `grok login`            |
+| Oh My Pi    | [Oh My Pi](https://omp.sh)                            | `omp`          | `omp auth-broker login` |
+| OpenCode    | [OpenCode](https://opencode.ai)                       | `opencode`     | `opencode auth login`   |
+| Pi          | [Pi](https://pi.dev)                                  | `pi`           | Run `pi`, then `/login` |
+| Antigravity | Managed in T3 Code                                    | —              | Sign in with Google     |
 
 Provider CLIs must be on the server's `PATH`. If T3 Code cannot find one, set its
 **Binary path** in provider settings, especially when using a version manager.

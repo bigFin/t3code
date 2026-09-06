@@ -2320,7 +2320,7 @@ const make = Effect.gen(function* () {
         });
       }
 
-if (isTerminalTurn && !truncatedReplayAssistantMutation) {
+      if (isTerminalTurn && !truncatedReplayAssistantMutation) {
         const detailedThread = yield* getLoadedThreadDetail();
         const messages = detailedThread?.messages ?? [];
         const proposedPlans = detailedThread?.proposedPlans ?? [];

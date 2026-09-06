@@ -53,7 +53,7 @@ import {
   LoaderCircleIcon,
   MessageSquareIcon,
   PaletteIcon,
-RefreshCwIcon,
+  RefreshCwIcon,
   SettingsIcon,
   SquarePenIcon,
   TextSearchIcon,
@@ -78,7 +78,6 @@ import { useHandleNewThread } from "../hooks/useHandleNewThread";
 import { useClientSettings, useUpdateClientSettings } from "../hooks/useSettings";
 import { useOpenPanelPullRequestUrl } from "../hooks/useOpenPanelPullRequestUrl";
 import { writeTextToClipboard } from "../hooks/useCopyToClipboard";
-import { useClientSettings } from "../hooks/useSettings";
 import { useTheme } from "../hooks/useTheme";
 import { readLocalApi } from "../localApi";
 import { desktopLocalBackendId } from "../connection/desktopLocal";

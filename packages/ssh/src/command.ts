@@ -110,12 +110,7 @@ export function baseSshArgs(
   target: DesktopSshEnvironmentTarget,
   input?: { readonly batchMode?: "yes" | "no" },
 ): string[] {
-  const args = [
-    "-o",
-    `BatchMode=${input?.batchMode ?? "no"}`,
-    "-o",
-    "ConnectTimeout=10",
-  ];
+  const args = ["-o", `BatchMode=${input?.batchMode ?? "no"}`, "-o", "ConnectTimeout=10"];
   if (process.platform === "win32") {
     // Windows OpenSSH has no portable unix-socket ControlPath; every command
     // pays its own handshake there.

@@ -178,47 +178,49 @@ it.layer(makeDirectoryLayer(SqlitePersistenceMemory))("ProviderSessionDirectoryL
     }),
   );
 
-  it.effect("inserts bindings conditionally and patches payload metadata without lifecycle rewrites", () =>
-    Effect.gen(function* () {
-      const directory = yield* ProviderSessionDirectory;
-      const threadId = ThreadId.make("thread-conditional-runtime");
+  it.effect(
+    "inserts bindings conditionally and patches payload metadata without lifecycle rewrites",
+    () =>
+      Effect.gen(function* () {
+        const directory = yield* ProviderSessionDirectory;
+        const threadId = ThreadId.make("thread-conditional-runtime");
 
-      const inserted = yield* directory.insertIfAbsent({
-        provider: ProviderDriverKind.make("codex"),
-        threadId,
-        status: "running",
-        runtimePayload: {
-          activeTurnId: "turn-live",
-          sessionPersistence: "detached",
-        },
-      });
-      const duplicate = yield* directory.insertIfAbsent({
-        provider: ProviderDriverKind.make("codex"),
-        threadId,
-        status: "stopped",
-        runtimePayload: {
-          activeTurnId: null,
-        },
-      });
-      yield* directory.mergeRuntimePayload(threadId, {
-        importedAt: "2026-08-02T12:00:00.000Z",
-        codexCliUpdatedAt: 1_785_691_200,
-      });
-
-      assert.equal(inserted, true);
-      assert.equal(duplicate, false);
-      const binding = yield* directory.getBinding(threadId);
-      assert.equal(Option.isSome(binding), true);
-      if (Option.isSome(binding)) {
-        assert.equal(binding.value.status, "running");
-        assert.deepEqual(binding.value.runtimePayload, {
-          activeTurnId: "turn-live",
-          sessionPersistence: "detached",
+        const inserted = yield* directory.insertIfAbsent({
+          provider: ProviderDriverKind.make("codex"),
+          threadId,
+          status: "running",
+          runtimePayload: {
+            activeTurnId: "turn-live",
+            sessionPersistence: "detached",
+          },
+        });
+        const duplicate = yield* directory.insertIfAbsent({
+          provider: ProviderDriverKind.make("codex"),
+          threadId,
+          status: "stopped",
+          runtimePayload: {
+            activeTurnId: null,
+          },
+        });
+        yield* directory.mergeRuntimePayload(threadId, {
           importedAt: "2026-08-02T12:00:00.000Z",
           codexCliUpdatedAt: 1_785_691_200,
         });
-      }
-    }),
+
+        assert.equal(inserted, true);
+        assert.equal(duplicate, false);
+        const binding = yield* directory.getBinding(threadId);
+        assert.equal(Option.isSome(binding), true);
+        if (Option.isSome(binding)) {
+          assert.equal(binding.value.status, "running");
+          assert.deepEqual(binding.value.runtimePayload, {
+            activeTurnId: "turn-live",
+            sessionPersistence: "detached",
+            importedAt: "2026-08-02T12:00:00.000Z",
+            codexCliUpdatedAt: 1_785_691_200,
+          });
+        }
+      }),
   );
 
   it.effect("patches import metadata only while the observed runtime binding is current", () =>

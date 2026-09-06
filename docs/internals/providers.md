@@ -13,16 +13,16 @@ session or catalog state.
 
 [`builtInDrivers.ts`][drivers] exports `BUILT_IN_DRIVERS` with eight entries:
 
-| Driver kind    | Driver source                                      |
-| -------------- | -------------------------------------------------- |
-| `codex`        | [`Drivers/CodexDriver.ts`][codex]                  |
-| `claudeAgent`  | [`Drivers/ClaudeDriver.ts`][claude]                |
-| `cursor`       | [`Drivers/CursorDriver.ts`][cursor]                |
-| `grok`         | [`Drivers/GrokDriver.ts`][grok]                    |
-| `omp`          | [`Drivers/OmpDriver.ts`][omp]                      |
-| `opencode`     | [`Drivers/OpenCodeDriver.ts`][opencode]            |
-| `piAgent`      | [`Drivers/PiDriver.ts`][pi]                        |
-| `antigravity`  | [`Drivers/AntigravityDriver.ts`][antigravity]      |
+| Driver kind   | Driver source                                 |
+| ------------- | --------------------------------------------- |
+| `codex`       | [`Drivers/CodexDriver.ts`][codex]             |
+| `claudeAgent` | [`Drivers/ClaudeDriver.ts`][claude]           |
+| `cursor`      | [`Drivers/CursorDriver.ts`][cursor]           |
+| `grok`        | [`Drivers/GrokDriver.ts`][grok]               |
+| `omp`         | [`Drivers/OmpDriver.ts`][omp]                 |
+| `opencode`    | [`Drivers/OpenCodeDriver.ts`][opencode]       |
+| `piAgent`     | [`Drivers/PiDriver.ts`][pi]                   |
+| `antigravity` | [`Drivers/AntigravityDriver.ts`][antigravity] |
 
 T3-managed OpenCode chat uses one server per thread. Its MCP registrations are directory-scoped, while
 T3's MCP connection is thread-scoped. Sharing a chat server between threads in one directory would
@@ -48,6 +48,7 @@ native session, and copies the provider's resume command; a later message may ta
 Sessions discovered from CLI history remain externally owned and are never stopped by T3.
 
 ## Registry and routing
+
 The [Antigravity installer](../../apps/server/src/provider/AntigravityInstallation.ts) outlives
 client connections and provider-instance rebuilds. Releases are immutable, with an atomic pointer
 selecting the version for new processes. Running processes hold leases on their version. Updates

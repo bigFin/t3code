@@ -221,20 +221,18 @@ class FakeCodexRuntime implements CodexSessionRuntimeShape {
   );
   readonly interruptTurnImpl = vi.fn((_turnId?: TurnId) => Promise.resolve());
   interruptTurnEffect: Effect.Effect<void, never> | undefined;
-  readonly readThreadImpl = vi.fn(
-    (): Promise<CodexThreadSnapshot> =>
-      Promise.resolve({
-        threadId: "provider-thread-1",
-        turns: [],
-      }),
+  readonly readThreadImpl = vi.fn((): Promise<CodexThreadSnapshot> =>
+    Promise.resolve({
+      threadId: "provider-thread-1",
+      turns: [],
+    }),
   );
   readThreadEffect: Effect.Effect<CodexThreadSnapshot, never> | undefined;
-  readonly rollbackThreadImpl = vi.fn(
-    (_numTurns: number): Promise<CodexThreadSnapshot> =>
-      Promise.resolve({
-        threadId: "provider-thread-1",
-        turns: [],
-      }),
+  readonly rollbackThreadImpl = vi.fn((_numTurns: number): Promise<CodexThreadSnapshot> =>
+    Promise.resolve({
+      threadId: "provider-thread-1",
+      turns: [],
+    }),
   );
   readonly respondToRequestImpl = vi.fn(
     (_requestId: ApprovalRequestId, _decision: ProviderApprovalDecision) => Promise.resolve(),

@@ -8,7 +8,6 @@ import {
 import { canSnooze, effectiveSnoozed } from "@t3tools/client-runtime/state/thread-settled";
 import type { ScopedThreadRef, ThreadId } from "@t3tools/contracts";
 import { formatNativeSessionCliCommand } from "@t3tools/shared/nativeSessionCli";
-import { useCallback } from "react";
 import { useRouter } from "@tanstack/react-router";
 import { useCallback, useMemo } from "react";
 

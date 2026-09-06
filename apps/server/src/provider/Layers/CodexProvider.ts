@@ -544,14 +544,18 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
         Effect.timeoutOption(Duration.millis(RATE_LIMITS_PROBE_TIMEOUT_MS)),
         Effect.map(
           Option.getOrElse(() => ({
-            rateLimits: { failure: "Codex did not answer the usage request." } satisfies CodexRateLimitsProbe,
+            rateLimits: {
+              failure: "Codex did not answer the usage request.",
+            } satisfies CodexRateLimitsProbe,
             usage: undefined,
           })),
         ),
         Effect.catch((error) =>
           Effect.logDebug("Codex rate-limit read failed.", { cause: error }).pipe(
             Effect.as({
-              rateLimits: { failure: codexRateLimitsFailureMessage(error) } satisfies CodexRateLimitsProbe,
+              rateLimits: {
+                failure: codexRateLimitsFailureMessage(error),
+              } satisfies CodexRateLimitsProbe,
               usage: undefined,
             }),
           ),

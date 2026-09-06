@@ -2123,7 +2123,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           ),
         );
 
-const projectEvents: OrchestrationProjectionPipelineShape["projectEvents"] = (events) =>
+    const projectEvents: OrchestrationProjectionPipelineShape["projectEvents"] = (events) =>
       Effect.forEach(projectors, (projector) => runProjectorForEvents(projector, events), {
         concurrency: 1,
       }).pipe(
@@ -2168,7 +2168,7 @@ const projectEvents: OrchestrationProjectionPipelineShape["projectEvents"] = (ev
         Effect.provideService(Path.Path, path),
         Effect.provideService(ServerConfig, serverConfig),
         Effect.catchTag("SqlError", (sqlError) =>
-        Effect.fail(toPersistenceSqlError("ProjectionPipeline.projectEvent:query")(sqlError)),
+          Effect.fail(toPersistenceSqlError("ProjectionPipeline.projectEvent:query")(sqlError)),
         ),
       );
 
