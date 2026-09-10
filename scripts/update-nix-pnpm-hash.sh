@@ -41,10 +41,10 @@ trap restore EXIT
 
 sed -i -E 's#hash = "sha256-[A-Za-z0-9+/=]+";#hash = lib.fakeHash;#' "$package"
 
-# Build only the dependency-fetch derivation: enough to learn the correct
-# hash without compiling the package.
-fetch_drv="$(nix eval --raw "$root#t3code-unwrapped.pnpmDeps.drvPath")"
-if nix build "$fetch_drv" --no-link 2>"$log"; then
+# Build the fetcher via its flake installable so Nix actually runs it.
+# (Passing the .drv store path to `nix build` merely realizes the path
+# and always succeeds, which made --check blind to stale hashes.)
+if nix build "$root#t3code-unwrapped.pnpmDeps" --no-link 2>"$log"; then
   echo "dependency hash was already valid"
   exit 0
 fi
