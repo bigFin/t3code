@@ -907,32 +907,36 @@ export const openCodexThread = (input: {
   }
 
   // Ignore historical items so they cannot prevent resuming a valid thread.
-  const resume = input.client.raw.request("thread/resume", {
-    threadId: resumeThreadId,
-    ...startParams,
-    excludeTurns: true,
-  }).pipe(
-    Effect.flatMap((response) =>
-      decodeCodexThreadResumeMetadata(response).pipe(
-        Effect.mapError((error) =>
-          CodexErrors.CodexAppServerRequestError.invalidPayload(
-            "thread/resume", "decode-payload", error,
+  const resume = input.client.raw
+    .request("thread/resume", {
+      threadId: resumeThreadId,
+      ...startParams,
+      excludeTurns: true,
+    })
+    .pipe(
+      Effect.flatMap((response) =>
+        decodeCodexThreadResumeMetadata(response).pipe(
+          Effect.mapError((error) =>
+            CodexErrors.CodexAppServerRequestError.invalidPayload(
+              "thread/resume",
+              "decode-payload",
+              error,
+            ),
           ),
         ),
       ),
-    ),
-  );
-  if (input.resumePolicy === "resume-only") {
-    return input.client.request("thread/resume", {
-      threadId: resumeThreadId,
-      ...startParams,
-    }).pipe(
-      Effect.catchIf(isRecoverableThreadResumeError, () =>
-        Effect.fail(
-          new CodexSessionRuntimeThreadIdMissingError({ threadId: input.threadId }),
-        ),
-      ),
     );
+  if (input.resumePolicy === "resume-only") {
+    return input.client
+      .request("thread/resume", {
+        threadId: resumeThreadId,
+        ...startParams,
+      })
+      .pipe(
+        Effect.catchIf(isRecoverableThreadResumeError, () =>
+          Effect.fail(new CodexSessionRuntimeThreadIdMissingError({ threadId: input.threadId })),
+        ),
+      );
   }
 
   return resume.pipe(
@@ -2511,9 +2515,10 @@ export const makeCodexSessionRuntime = (
       });
 
       const providerThreadId = opened.thread.id;
-      const recoveredState = "status" in opened.thread
-        ? resolveCodexRecoveredThreadState(opened.thread)
-        : resolveCodexRecoveredThreadState({ status: { type: "idle" }, turns: [] });
+      const recoveredState =
+        "status" in opened.thread
+          ? resolveCodexRecoveredThreadState(opened.thread)
+          : resolveCodexRecoveredThreadState({ status: { type: "idle" }, turns: [] });
       const session = {
         ...(yield* Ref.get(sessionRef)),
         status: recoveredState.sessionStatus,
@@ -2543,9 +2548,10 @@ export const makeCodexSessionRuntime = (
       }
       if (options.resumeCursor !== undefined && recoveredState.lifecycle) {
         const recoveredLifecycle = recoveredState.lifecycle;
-        const recoveredTurn = "turns" in opened.thread
-          ? opened.thread.turns.find((turn) => turn.id === recoveredLifecycle.turnId)
-          : undefined;
+        const recoveredTurn =
+          "turns" in opened.thread
+            ? opened.thread.turns.find((turn) => turn.id === recoveredLifecycle.turnId)
+            : undefined;
         if (recoveredTurn) {
           const emitRecoveredTurnLifecycle = emitEvent({
             kind: "notification",

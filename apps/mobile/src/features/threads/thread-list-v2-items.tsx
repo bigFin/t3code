@@ -9,10 +9,7 @@ import type {
 import { classifyThreadFailure } from "@t3tools/client-runtime/state/thread-failure";
 import type { EnvironmentThreadSearchMatch } from "@t3tools/client-runtime/state/thread-search";
 import type { EnvironmentMachineKind } from "@t3tools/contracts";
-import {
-  canSnooze,
-  resolveSnoozePresets,
-} from "@t3tools/client-runtime/state/thread-settled";
+import { canSnooze, resolveSnoozePresets } from "@t3tools/client-runtime/state/thread-settled";
 import { resolveSettledThreadTimestamp } from "@t3tools/client-runtime/state/thread-sort";
 import type { MenuAction } from "@react-native-menu/menu";
 import { memo, useCallback, useEffect, useMemo, useState, type ComponentProps } from "react";

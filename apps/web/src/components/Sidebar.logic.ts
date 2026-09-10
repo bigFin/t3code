@@ -10,7 +10,10 @@ import {
 import type { ContextMenuItem } from "@t3tools/contracts";
 import type { SidebarProjectSortOrder, SidebarThreadSortOrder } from "@t3tools/contracts/settings";
 import type { AsyncResult } from "effect/unstable/reactivity";
-import { planPinnedReorder, sortActiveThreadsByOrderKey } from "@t3tools/client-runtime/state/thread-sort";
+import {
+  planPinnedReorder,
+  sortActiveThreadsByOrderKey,
+} from "@t3tools/client-runtime/state/thread-sort";
 import {
   getThreadSortTimestamp,
   resolveSettledThreadTimestamp,
@@ -221,10 +224,17 @@ export function resolveSidebarDropTarget(
   if (!items.some((item) => item.kind === "marker")) {
     const over = items[overIndex];
     if (over?.kind !== "thread" || over.section === "snoozed") return null;
-    const orderFor = (section: SidebarSection) => moved.flatMap((item) =>
-      item.kind === "thread" && (item.key === activeKey ? over.section : item.section) === section
-        ? [item.key] : []);
-    return { section: over.section, pinnedOrder: orderFor("pinned"), activeOrder: orderFor("active") };
+    const orderFor = (section: SidebarSection) =>
+      moved.flatMap((item) =>
+        item.kind === "thread" && (item.key === activeKey ? over.section : item.section) === section
+          ? [item.key]
+          : [],
+      );
+    return {
+      section: over.section,
+      pinnedOrder: orderFor("pinned"),
+      activeOrder: orderFor("active"),
+    };
   }
   const section = sectionAtSidebarSlot(moved, overIndex);
   if (section === "snoozed") return null;

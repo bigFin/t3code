@@ -127,10 +127,7 @@ import { useThreadActions } from "../hooks/useThreadActions";
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
 import { isCommandPaletteOpen, openCommandPalette } from "../commandPaletteBus";
 import { startNewThreadFromContext } from "../lib/chatThreadActions";
-import {
-  useClientSettings,
-  useUpdateClientSettings,
-} from "../hooks/useSettings";
+import { useClientSettings, useUpdateClientSettings } from "../hooks/useSettings";
 import { useCopyToClipboard } from "../hooks/useCopyToClipboard";
 import { useLocalStorage } from "../hooks/useLocalStorage";
 import { useNowMinute } from "../hooks/useNowMinute";
@@ -2832,7 +2829,15 @@ export default function Sidebar() {
       settledThreads: sortSettledThreadsForSidebar(settled),
       snoozeNow: preciseNow,
     };
-  }, [nowMinute, optimisticDrop, scopedProjectKeys, serverConfigs, snoozeWakeTick, hostFilteredThreads, sidebarThreadSortOrder]);
+  }, [
+    nowMinute,
+    optimisticDrop,
+    scopedProjectKeys,
+    serverConfigs,
+    snoozeWakeTick,
+    hostFilteredThreads,
+    sidebarThreadSortOrder,
+  ]);
 
   const threadSearchInputRef = useRef<HTMLInputElement>(null);
   const [threadSearchQuery, setThreadSearchQuery] = useState("");
@@ -2989,29 +2994,48 @@ export default function Sidebar() {
   }, [routeThreadKey, snoozedShelfExpanded, snoozedThreads]);
 
   const hostThreadGroups = useMemo(
-    () => groupSidebarThreadsByHost(
-      [...pinnedThreads, ...activeThreads, ...snoozedThreads, ...settledThreads],
-      hostOptions.map((host) => host.environmentId),
-    ),
+    () =>
+      groupSidebarThreadsByHost(
+        [...pinnedThreads, ...activeThreads, ...snoozedThreads, ...settledThreads],
+        hostOptions.map((host) => host.environmentId),
+      ),
     [pinnedThreads, activeThreads, snoozedThreads, settledThreads, hostOptions],
   );
   const orderedThreads = useMemo(() => {
     if (!groupedHostView) {
-      return [...pinnedThreads, ...activeThreads, ...visibleSnoozedThreads, ...renderedSettledThreads];
+      return [
+        ...pinnedThreads,
+        ...activeThreads,
+        ...visibleSnoozedThreads,
+        ...renderedSettledThreads,
+      ];
     }
     const inactiveKeys = new Set(
       [...snoozedThreads, ...settledThreads].map((thread) =>
-        scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id))),
+        scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
+      ),
     );
-    return hostThreadGroups.flatMap((group) => group.threads.filter((thread) => {
-      const key = scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
-      if (key === routeThreadKey) return true;
-      if (collapsedHostGroups.includes(group.environmentId)) return false;
-      return !inactiveKeys.has(key) || expandedInactiveHosts.includes(group.environmentId);
-    }));
-  }, [groupedHostView, pinnedThreads, activeThreads, visibleSnoozedThreads,
-    renderedSettledThreads, snoozedThreads, settledThreads, hostThreadGroups,
-    collapsedHostGroups, expandedInactiveHosts, routeThreadKey]);
+    return hostThreadGroups.flatMap((group) =>
+      group.threads.filter((thread) => {
+        const key = scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
+        if (key === routeThreadKey) return true;
+        if (collapsedHostGroups.includes(group.environmentId)) return false;
+        return !inactiveKeys.has(key) || expandedInactiveHosts.includes(group.environmentId);
+      }),
+    );
+  }, [
+    groupedHostView,
+    pinnedThreads,
+    activeThreads,
+    visibleSnoozedThreads,
+    renderedSettledThreads,
+    snoozedThreads,
+    settledThreads,
+    hostThreadGroups,
+    collapsedHostGroups,
+    expandedInactiveHosts,
+    routeThreadKey,
+  ]);
   const orderedThreadKeys = useMemo(
     () =>
       orderedThreads.map((thread) =>
@@ -5058,7 +5082,10 @@ export default function Sidebar() {
                 onDragEnd={handleThreadDragEnd}
               >
                 <SidebarDragLifecycle onUnmount={cancelThreadDrag} />
-                <SortableContext items={sortableIds} strategy={groupedHostView ? verticalListSortingStrategy : sidebarSortingStrategy}>
+                <SortableContext
+                  items={sortableIds}
+                  strategy={groupedHostView ? verticalListSortingStrategy : sidebarSortingStrategy}
+                >
                   <ul
                     ref={attachListMotionRef}
                     role="list"
@@ -5210,36 +5237,80 @@ export default function Sidebar() {
                       if (groupedHostView) {
                         const visibleKeys = new Set(orderedThreadKeys);
                         for (const group of hostThreadGroups) {
-                          const expanded = __omp_shell("collapsedHostGroups.includes(group.environmentId);")
+                          const expanded = __omp_shell(
+                            "collapsedHostGroups.includes(group.environmentId);",
+                          );
                           items.push(
-                            <li key={`host:${group.environmentId}`} className="list-none" data-thread-selection-safe>
-                              <button type="button" onClick={() => toggleHostGroup(group.environmentId)}
+                            <li
+                              key={`host:${group.environmentId}`}
+                              className="list-none"
+                              data-thread-selection-safe
+                            >
+                              <button
+                                type="button"
+                                onClick={() => toggleHostGroup(group.environmentId)}
                                 aria-expanded={expanded}
-                                className="mt-3 flex w-full items-center gap-2 px-2.5 py-1 text-left text-xs font-medium">
-                                <ChevronDownIcon className={cn("size-3 transition-transform", !expanded && "-rotate-90")} />
-                                <span className={sidebarEnvironmentConnectionClassName(environmentConnectionPhaseById.get(group.environmentId) ?? null)}>
-                                  {environmentLabelById.get(group.environmentId) ?? group.environmentId}
+                                className="mt-3 flex w-full items-center gap-2 px-2.5 py-1 text-left text-xs font-medium"
+                              >
+                                <ChevronDownIcon
+                                  className={cn(
+                                    "size-3 transition-transform",
+                                    !expanded && "-rotate-90",
+                                  )}
+                                />
+                                <span
+                                  className={sidebarEnvironmentConnectionClassName(
+                                    environmentConnectionPhaseById.get(group.environmentId) ?? null,
+                                  )}
+                                >
+                                  {environmentLabelById.get(group.environmentId) ??
+                                    group.environmentId}
                                 </span>
-                                <span className="text-muted-foreground">{group.threads.length}</span>
+                                <span className="text-muted-foreground">
+                                  {group.threads.length}
+                                </span>
                               </button>
                             </li>,
                           );
                           let inactiveHeaderShown = false;
                           const inactiveCount = group.threads.filter((thread) => {
-                            const section = sectionByThreadKey.get(scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)));
+                            const section = sectionByThreadKey.get(
+                              scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
+                            );
                             return section === "snoozed" || section === "settled";
                           }).length;
                           for (const thread of group.threads) {
-                            const key = scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
+                            const key = scopedThreadKey(
+                              scopeThreadRef(thread.environmentId, thread.id),
+                            );
                             const section = sectionByThreadKey.get(key)!;
-                            if (expanded && !inactiveHeaderShown && (section === "snoozed" || section === "settled")) {
+                            if (
+                              expanded &&
+                              !inactiveHeaderShown &&
+                              (section === "snoozed" || section === "settled")
+                            ) {
                               inactiveHeaderShown = true;
                               items.push(
-                                <li key={`inactive:${group.environmentId}`} className="list-none" data-thread-selection-safe>
-                                  <button type="button" onClick={() => toggleHostInactiveFold(group.environmentId)}
-                                    aria-expanded={expandedInactiveHosts.includes(group.environmentId)}
-                                    className="flex w-full items-center gap-2 px-2.5 py-1 text-left text-xs text-muted-foreground">
-                                    <ChevronDownIcon className={cn("size-3", !expandedInactiveHosts.includes(group.environmentId) && "-rotate-90")} />
+                                <li
+                                  key={`inactive:${group.environmentId}`}
+                                  className="list-none"
+                                  data-thread-selection-safe
+                                >
+                                  <button
+                                    type="button"
+                                    onClick={() => toggleHostInactiveFold(group.environmentId)}
+                                    aria-expanded={expandedInactiveHosts.includes(
+                                      group.environmentId,
+                                    )}
+                                    className="flex w-full items-center gap-2 px-2.5 py-1 text-left text-xs text-muted-foreground"
+                                  >
+                                    <ChevronDownIcon
+                                      className={cn(
+                                        "size-3",
+                                        !expandedInactiveHosts.includes(group.environmentId) &&
+                                          "-rotate-90",
+                                      )}
+                                    />
                                     Inactive ({inactiveCount})
                                   </button>
                                 </li>,

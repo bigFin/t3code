@@ -2162,9 +2162,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         threadShellSummaryRefreshIds: new Set<ThreadId>(),
       };
 
-      yield* sql.withTransaction(
-        applyProjectorForEvent(projector, event, attachmentSideEffects),
-      );
+      yield* sql.withTransaction(applyProjectorForEvent(projector, event, attachmentSideEffects));
     });
 
     const runProjectorForEvents = Effect.fn("runProjectorForEvents")(function* (

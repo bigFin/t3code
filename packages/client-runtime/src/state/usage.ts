@@ -1,7 +1,10 @@
 import type { EnvironmentId, UsageSummaryInput, UsageSummary } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/unstable/reactivity";
-import { isEnvironmentUnavailable, type EnvironmentConnectionPresentation } from "../connection/presentation.ts";
+import {
+  isEnvironmentUnavailable,
+  type EnvironmentConnectionPresentation,
+} from "../connection/presentation.ts";
 import * as Schema from "effect/Schema";
 import type { AtomRegistry } from "effect/unstable/reactivity";
 

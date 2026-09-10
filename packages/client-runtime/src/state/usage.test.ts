@@ -9,7 +9,10 @@ import * as Effect from "effect/Effect";
 import { AsyncResult, Atom, AtomRegistry } from "effect/unstable/reactivity";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
-import type { EnvironmentPresentation, EnvironmentConnectionPresentation } from "../connection/presentation.ts";
+import type {
+  EnvironmentPresentation,
+  EnvironmentConnectionPresentation,
+} from "../connection/presentation.ts";
 import { EnvironmentRpcUnavailableError } from "../rpc/client.ts";
 import { refreshUsage, readEnvironmentUsageQueryState } from "./usage.ts";
 

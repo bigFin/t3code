@@ -103,7 +103,6 @@ Clients render the persisted settlement state and do not derive settlement from 
 state. A committed `thread.settled` event also lets `ProviderCommandReactor` stop an idle provider
 session.
 
-
 ## Waiting for asynchronous work
 
 Tests use [drainable workers](../../packages/shared/src/DrainableWorker.ts) to wait until both the
@@ -133,8 +132,6 @@ snapshot feature keeps are isolated: `@crowecawcaw/xa11y` runs only in forked No
 lazily inside `WindowsForeground.ts` for a handful of Win32 calls. macOS window lookup shells out
 to `osascript` instead of a native addon. A crash or stall in any of these must not take the app
 down, so new native capability goes in a child with a deadline, not an `import` in main.
-
-
 
 ## Provider drivers
 

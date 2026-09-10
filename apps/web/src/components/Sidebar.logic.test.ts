@@ -2649,7 +2649,6 @@ describe("resolveSidebarDropVerb", () => {
   });
 });
 
-
 describe("host-first manual thread ordering", () => {
   it("resolves a section change from row metadata without global dividers", () => {
     const items: SidebarListItem[] = [
@@ -2667,10 +2666,22 @@ describe("host-first manual thread ordering", () => {
 
   it("keeps a saved manual arrangement ahead of the activity sort preference", () => {
     const threads = [
-      { id: "fresh", createdAt: "2026-09-10T12:00:00Z", updatedAt: "2026-09-10T12:00:00Z", activeOrderKey: "b" },
-      { id: "arranged-first", createdAt: "2026-09-09T12:00:00Z", updatedAt: "2026-09-09T12:00:00Z", activeOrderKey: "a" },
+      {
+        id: "fresh",
+        createdAt: "2026-09-10T12:00:00Z",
+        updatedAt: "2026-09-10T12:00:00Z",
+        activeOrderKey: "b",
+      },
+      {
+        id: "arranged-first",
+        createdAt: "2026-09-09T12:00:00Z",
+        updatedAt: "2026-09-09T12:00:00Z",
+        activeOrderKey: "a",
+      },
     ];
-    expect(sortThreadsForSidebar(threads, "updated_at").map((thread) => thread.id))
-      .toEqual(["arranged-first", "fresh"]);
+    expect(sortThreadsForSidebar(threads, "updated_at").map((thread) => thread.id)).toEqual([
+      "arranged-first",
+      "fresh",
+    ]);
   });
 });

@@ -58,7 +58,6 @@ import {
   resolveThreadMetadataUpdateForNextTurn,
   resolveSendEnvMode,
   shouldMarkThreadUpdateVisited,
-
   threadShellHasStarted,
   resolveDraftHeroState,
   scheduleEnvironmentReconnectWarning,

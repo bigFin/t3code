@@ -565,7 +565,12 @@ export const ThreadListRow = memo(function ThreadListRow(props: {
       }),
       { id: "delete", title: "Delete", image: "trash", attributes: { destructive: true } },
     ],
-    [props.titleRegenerationSupported, thread.branch, thread.session?.nativeSession, thread.titleRegeneration],
+    [
+      props.titleRegenerationSupported,
+      thread.branch,
+      thread.session?.nativeSession,
+      thread.titleRegeneration,
+    ],
   );
   const primaryAction = useMemo(
     () => ({

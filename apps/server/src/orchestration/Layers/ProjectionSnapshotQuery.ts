@@ -3396,42 +3396,50 @@ pending_approval_requests AS (
             ),
           ),
           listThreadPullRequestRowsByIds({ threadIds: uniqueThreadIds }).pipe(
-            Effect.mapError(toPersistenceSqlOrDecodeError(
-              "ProjectionSnapshotQuery.getThreadShellsByIds:listPullRequests:query",
-              "ProjectionSnapshotQuery.getThreadShellsByIds:listPullRequests:decodeRows",
-            )),
+            Effect.mapError(
+              toPersistenceSqlOrDecodeError(
+                "ProjectionSnapshotQuery.getThreadShellsByIds:listPullRequests:query",
+                "ProjectionSnapshotQuery.getThreadShellsByIds:listPullRequests:decodeRows",
+              ),
+            ),
           ),
         ]),
       )
       .pipe(
-        Effect.flatMap(([threadRows, latestTurnRows, sessionRows, pullRequestRows]) => Effect.gen(function* () {
-          const pullRequestsByThread = groupPullRequestRowsByThread(pullRequestRows);
-          const projectIds = [...new Set(threadRows.map((row) => row.projectId))];
-          const projectShells = yield* Effect.forEach(projectIds, getProjectShellById);
-          const identities = new Map(projectShells.flatMap((project) => Option.isSome(project)
-            ? [[project.value.id, project.value.repositoryIdentity] as const]
-            : []));
-          const latestTurnByThread = new Map(
-            latestTurnRows.map((row) => [row.threadId, mapLatestTurn(row)] as const),
-          );
-          const sessionByThread = new Map(
-            sessionRows.map((row) => [row.threadId, mapSessionRow(row)] as const),
-          );
-          return new Map(
-            threadRows.map((row) => [
-              row.threadId,
-              mapThreadShellRow(
-                row,
-                latestTurnByThread.get(row.threadId) ?? null,
-                sessionByThread.get(row.threadId) ?? null,
-                threadBackgroundLiveness.getThreadBackgroundLiveness(row.threadId),
-                threadPlanProgress.getThreadPlanProgress(row.threadId),
-                pullRequestsByThread.get(row.threadId) ?? [],
-                identities.get(row.projectId) ?? null,
+        Effect.flatMap(([threadRows, latestTurnRows, sessionRows, pullRequestRows]) =>
+          Effect.gen(function* () {
+            const pullRequestsByThread = groupPullRequestRowsByThread(pullRequestRows);
+            const projectIds = [...new Set(threadRows.map((row) => row.projectId))];
+            const projectShells = yield* Effect.forEach(projectIds, getProjectShellById);
+            const identities = new Map(
+              projectShells.flatMap((project) =>
+                Option.isSome(project)
+                  ? [[project.value.id, project.value.repositoryIdentity] as const]
+                  : [],
               ),
-            ]),
-          );
-        })),
+            );
+            const latestTurnByThread = new Map(
+              latestTurnRows.map((row) => [row.threadId, mapLatestTurn(row)] as const),
+            );
+            const sessionByThread = new Map(
+              sessionRows.map((row) => [row.threadId, mapSessionRow(row)] as const),
+            );
+            return new Map(
+              threadRows.map((row) => [
+                row.threadId,
+                mapThreadShellRow(
+                  row,
+                  latestTurnByThread.get(row.threadId) ?? null,
+                  sessionByThread.get(row.threadId) ?? null,
+                  threadBackgroundLiveness.getThreadBackgroundLiveness(row.threadId),
+                  threadPlanProgress.getThreadPlanProgress(row.threadId),
+                  pullRequestsByThread.get(row.threadId) ?? [],
+                  identities.get(row.projectId) ?? null,
+                ),
+              ]),
+            );
+          }),
+        ),
         Effect.mapError((error) =>
           isPersistenceError(error)
             ? error

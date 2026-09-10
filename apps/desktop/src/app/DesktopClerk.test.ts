@@ -148,12 +148,14 @@ describe("DesktopClerk", () => {
       createClerkBridgeMock.mockReturnValue({ cleanup: vi.fn(), isPrimaryInstance: true });
       yield* Effect.scoped(Layer.build(makeDesktopClerkLayer(false)));
       assert.deepEqual(createClerkBridgeMock.mock.calls, [
-        [{
-          storage: storageAdapter,
-          passkeys: true,
-          renderer: { scheme: "t3code", host: "app" },
-          manageSingleInstanceLock: false,
-        }],
+        [
+          {
+            storage: storageAdapter,
+            passkeys: true,
+            renderer: { scheme: "t3code", host: "app" },
+            manageSingleInstanceLock: false,
+          },
+        ],
       ]);
     }),
   );

@@ -11,9 +11,9 @@ import {
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Deferred from "effect/Deferred";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as DateTime from "effect/DateTime";
-import * as Deferred from "effect/Deferred";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as ManagedRuntime from "effect/ManagedRuntime";
@@ -189,8 +189,12 @@ describe("ProviderSessionReaper", () => {
             currentTimeNanosUnsafe: () => BigInt(nowMs) * 1_000_000n,
             monotonicTimeNanos: clock.monotonicTimeNanos,
             monotonicTimeNanosUnsafe: () => clock.monotonicTimeNanosUnsafe(),
-            // Reaching the next scheduled sleep proves this sweep has finished.
-            sleep: () => Deferred.succeed(swept, undefined).pipe(Effect.andThen(Effect.never)),
+            // Ignore the detached-reattach retry fiber's sleep; only the sweep's
+            // next scheduled sleep proves its database work has finished.
+            sleep: (duration) =>
+              Duration.toMillis(duration) === 60_000
+                ? Deferred.succeed(swept, undefined).pipe(Effect.andThen(Effect.never))
+                : Effect.never,
           }),
         );
         yield* Deferred.await(swept);
@@ -2049,7 +2053,10 @@ describe("ProviderSessionReaper", () => {
           },
         },
       ]);
-      const harness = await createHarness({ readModel });
+      const harness = await createHarness({
+        readModel,
+        liveSessions: [makeLiveSession(threadId, "claudeAgent")],
+      });
       const repository = await runtime!.runPromise(
         Effect.service(ProviderSessionRuntime.ProviderSessionRuntimeRepository),
       );
@@ -2057,7 +2064,7 @@ describe("ProviderSessionReaper", () => {
         repository.upsert({
           threadId,
           providerName: "claudeAgent",
-          providerInstanceId: null,
+          providerInstanceId: ProviderInstanceId.make("claudeAgent"),
           adapterKey: "claudeAgent",
           runtimeMode: "full-access",
           status: "running",
@@ -2093,6 +2100,7 @@ describe("ProviderSessionReaper", () => {
       const now = "2026-04-14T01:00:00.000Z";
       const nowMs = Date.parse(now);
       const harness = await createHarness({
+        liveSessions: [makeLiveSession(threadId, "claudeAgent")],
         readModel: makeReadModel([
           {
             id: threadId,
@@ -2117,7 +2125,7 @@ describe("ProviderSessionReaper", () => {
         repository.upsert({
           threadId,
           providerName: "claudeAgent",
-          providerInstanceId: null,
+          providerInstanceId: ProviderInstanceId.make("claudeAgent"),
           adapterKey: "claudeAgent",
           runtimeMode: "full-access",
           status: "running",
@@ -2161,7 +2169,7 @@ describe("ProviderSessionReaper", () => {
       repository.upsert({
         threadId,
         providerName: "claudeAgent",
-        providerInstanceId: null,
+        providerInstanceId: ProviderInstanceId.make("claudeAgent"),
         adapterKey: "claudeAgent",
         runtimeMode: "full-access",
         status: "stopped",
@@ -2186,6 +2194,10 @@ describe("ProviderSessionReaper", () => {
     const reapedThreadId = ThreadId.make("thread-reaper-stop-success");
     const now = "2026-01-01T00:00:00.000Z";
     const harness = await createHarness({
+      liveSessions: [
+        makeLiveSession(failedThreadId, "claudeAgent"),
+        makeLiveSession(reapedThreadId, "codex"),
+      ],
       readModel: makeReadModel([
         {
           id: failedThreadId,
@@ -2230,7 +2242,7 @@ describe("ProviderSessionReaper", () => {
       repository.upsert({
         threadId: failedThreadId,
         providerName: "claudeAgent",
-        providerInstanceId: null,
+        providerInstanceId: ProviderInstanceId.make("claudeAgent"),
         adapterKey: "claudeAgent",
         runtimeMode: "full-access",
         status: "running",
@@ -2245,7 +2257,7 @@ describe("ProviderSessionReaper", () => {
       repository.upsert({
         threadId: reapedThreadId,
         providerName: "codex",
-        providerInstanceId: null,
+        providerInstanceId: ProviderInstanceId.make("codex"),
         adapterKey: "codex",
         runtimeMode: "full-access",
         status: "running",
@@ -2272,6 +2284,10 @@ describe("ProviderSessionReaper", () => {
     const reapedThreadId = ThreadId.make("thread-reaper-stop-after-defect");
     const now = "2026-01-01T00:00:00.000Z";
     const harness = await createHarness({
+      liveSessions: [
+        makeLiveSession(defectThreadId, "claudeAgent"),
+        makeLiveSession(reapedThreadId, "codex"),
+      ],
       readModel: makeReadModel([
         {
           id: defectThreadId,
@@ -2311,7 +2327,7 @@ describe("ProviderSessionReaper", () => {
       repository.upsert({
         threadId: defectThreadId,
         providerName: "claudeAgent",
-        providerInstanceId: null,
+        providerInstanceId: ProviderInstanceId.make("claudeAgent"),
         adapterKey: "claudeAgent",
         runtimeMode: "full-access",
         status: "running",
@@ -2326,7 +2342,7 @@ describe("ProviderSessionReaper", () => {
       repository.upsert({
         threadId: reapedThreadId,
         providerName: "codex",
-        providerInstanceId: null,
+        providerInstanceId: ProviderInstanceId.make("codex"),
         adapterKey: "codex",
         runtimeMode: "full-access",
         status: "running",
