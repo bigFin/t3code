@@ -11,6 +11,7 @@ import type {
   ApprovalRequestId,
   CheckpointRef,
   EventId,
+  MessageId,
   OrchestrationCheckpointSummary,
   OrchestrationLatestTurn,
   OrchestrationMessage,
@@ -243,6 +244,21 @@ export interface ProjectionSnapshotQueryShape {
     readonly threadId: ThreadId;
     readonly activityIds: ReadonlyArray<EventId>;
   }) => Effect.Effect<ReadonlySet<EventId>, ProjectionRepositoryError>;
+
+  /**
+   * Read one requested message and whether another non-compaction user message exists.
+   * Newer queued messages count too, preserving first-turn title eligibility.
+   */
+  readonly getTurnStartMessage: (input: {
+    readonly threadId: ThreadId;
+    readonly messageId: MessageId;
+  }) => Effect.Effect<
+    Option.Option<{
+      readonly message: OrchestrationMessage;
+      readonly hasOtherUserMessages: boolean;
+    }>,
+    ProjectionRepositoryError
+  >;
 
   /**
    * Read a single active thread detail snapshot by id.

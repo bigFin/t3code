@@ -2,6 +2,7 @@ import { assert, describe, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NetService from "@t3tools/shared/Net";
 import * as NodeCrypto from "node:crypto";
+import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -16,6 +17,7 @@ import { HttpClient, HttpClientResponse } from "effect/unstable/http";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 import { SshPasswordPrompt } from "./auth.ts";
+import { SshCommandError } from "./errors.ts";
 import {
   buildRemoteLaunchScript,
   buildRemotePairingScript,
@@ -1028,9 +1030,6 @@ describe("ssh tunnel lifecycle", () => {
     let tunnelSpawnCount = 0;
     let launchCount = 0;
     let readinessRequestCount = 0;
-    let staleProbesArmed = false;
-    let arrivedStaleChecks = 0;
-    let replacementReleased = false;
 
     const spawner = ChildProcessSpawner.make((command) =>
       Effect.sync(() => {
@@ -1053,20 +1052,6 @@ describe("ssh tunnel lifecycle", () => {
           Effect.succeed(HttpClientResponse.fromWeb(request, new Response("", { status })));
         if (readinessRequestCount === 1 || tunnelSpawnCount >= 2) {
           return yield* respond(200);
-        }
-        if (!staleProbesArmed) {
-          return yield* respond(503);
-        }
-        arrivedStaleChecks += 1;
-        if (arrivedStaleChecks === 2) {
-          // Both reconnecting fibers are now inside their stale-entry
-          // checks; release them into the close/create race together.
-          replacementReleased = true;
-          return yield* respond(503);
-        }
-        // Hold the first fiber until the second one arrives.
-        while (!replacementReleased) {
-          yield* Effect.sleep(Duration.millis(100));
         }
         return yield* respond(503);
       }),
@@ -1091,7 +1076,6 @@ describe("ssh tunnel lifecycle", () => {
       const manager = yield* SshEnvironmentManager;
       yield* manager.ensureEnvironment(target);
 
-      staleProbesArmed = true;
       const fiberA = yield* Effect.forkChild(manager.ensureEnvironment(target));
       const fiberB = yield* Effect.forkChild(manager.ensureEnvironment(target));
 
@@ -1115,4 +1099,69 @@ describe("ssh tunnel lifecycle", () => {
       assert.equal(resultB.httpBaseUrl, resultA.httpBaseUrl);
     }).pipe(Effect.provide(layer), Effect.scoped);
   });
+});
+
+describe("serialized tunnel shutdown", () => {
+  it.effect("waits for local shutdown before reconnecting the same target", () =>
+    Effect.gen(function* () {
+      const shutdownStarted = yield* Deferred.make<void>();
+      const finishShutdown = yield* Deferred.make<void>();
+      let tunnels = 0;
+      let launches = 0;
+      const target = { alias: "devbox", hostname: "devbox", username: null, port: null };
+      const spawner = ChildProcessSpawner.make((command) =>
+        Effect.sync(() => {
+          const args = commandArgs(command);
+          if (args.includes("-N")) {
+            const tunnel = makeRunningProcess(() => undefined);
+            if (++tunnels === 1) {
+              return {
+                ...tunnel,
+                kill: (options?: ChildProcess.KillOptions) =>
+                  Deferred.succeed(shutdownStarted, undefined).pipe(
+                    Effect.andThen(Deferred.await(finishShutdown)),
+                    Effect.andThen(tunnel.kill(options)),
+                  ),
+              };
+            }
+            return tunnel;
+          }
+          if (args.includes("--")) {
+            launches += 1;
+            return makeSuccessfulProcess('{"remotePort":3773}\n');
+          }
+          return makeSuccessfulProcess("\n");
+        }),
+      );
+      const layer = Layer.mergeAll(
+        NodeServices.layer,
+        Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner),
+        Layer.succeed(HttpClient.HttpClient, testHttpClient),
+        Layer.succeed(NetService.NetService, testNetService),
+        SshPasswordPrompt.disabledLayer,
+        SshEnvironmentManager.layer(),
+      );
+      yield* Effect.gen(function* () {
+        const manager = yield* SshEnvironmentManager;
+        yield* manager.ensureEnvironment(target);
+        const disconnect = yield* Effect.forkChild(manager.disconnectEnvironment(target));
+        yield* Deferred.await(shutdownStarted);
+        const firstReconnect = yield* Effect.forkChild(manager.ensureEnvironment(target));
+        const secondReconnect = yield* Effect.forkChild(manager.ensureEnvironment(target));
+        yield* TestClock.adjust(Duration.zero);
+        assert.equal(launches, 1);
+        yield* Deferred.succeed(finishShutdown, undefined);
+        yield* Fiber.join(disconnect);
+        const first = yield* Fiber.join(firstReconnect);
+        const second = yield* Fiber.join(secondReconnect);
+        assert.equal(launches, 2);
+        assert.equal(tunnels, 2);
+        assert.equal(first.httpBaseUrl, second.httpBaseUrl);
+      }).pipe(
+        Effect.ensuring(Deferred.succeed(finishShutdown, undefined)),
+        Effect.provide(layer),
+        Effect.scoped,
+      );
+    }),
+  );
 });
