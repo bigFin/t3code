@@ -92,6 +92,10 @@ const makeRunningProcess = (onKill: () => void) => {
   });
 };
 
+const testHttpClient = HttpClient.make((request) =>
+  Effect.succeed(HttpClientResponse.fromWeb(request, new Response("", { status: 200 }))),
+);
+
 const hangingHttpClient = HttpClient.make(() => Effect.never);
 
 const testNetService = NetService.NetService.of({
@@ -375,7 +379,8 @@ describe("ssh tunnel scripts", () => {
     assert.include(buildRemoteStopScript(target), 'execFileSync("ps", ["-eo", "pid=,ppid="]');
     assert.include(buildRemoteStopScript(target), "managedRuntimeComponentPids");
     assert.notInclude(buildRemoteStopScript(target), "descendant_pids");
-    assert.include(buildRemoteStopScript(target), 'kill -KILL "$PID_TO_SIGNAL"');
+    assert.include(buildRemoteStopScript(target), "did not stop within 2 seconds");
+    assert.notInclude(buildRemoteStopScript(target), "kill -KILL");
     assert.include(buildRemoteStopScript(target), 'rm -f "$PID_FILE" "$PORT_FILE" "$MANAGED_FILE"');
     assert.include(
       buildRemoteLaunchScript(),
@@ -452,7 +457,6 @@ describe("ssh tunnel scripts", () => {
     assert.deepEqual(staleManagedRuntimePids(processes), [100, 101, 200]);
     assert.deepEqual(managedRuntimeComponentPids(processes, 102), []);
   });
-
   it("never replaces a healthy runtime with an equal or older packaged build", () => {
     assert.equal(decideRemoteT3Version("0.0.32", "0.0.31"), "upgrade");
     assert.equal(decideRemoteT3Version("0.0.32", "0.0.32"), "reuse");

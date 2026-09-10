@@ -456,7 +456,7 @@ function tryPort(port) {
 })().catch(() => process.exit(1));
 `;
 
-const REMOTE_WAIT_READY_SCRIPT = `const http = require("node:http");
+export const REMOTE_WAIT_READY_SCRIPT = `const http = require("node:http");
 const port = Number.parseInt(process.argv[2] ?? "", 10);
 const timeoutMs = Number.parseInt(process.argv[3] ?? "", 10);
 const probeTimeoutMs = Number.parseInt(process.argv[4] ?? "", 10);
@@ -2026,39 +2026,39 @@ const makeSshEnvironmentManager = Effect.fn("ssh/tunnel.SshEnvironmentManager.ma
   ): Effect.fn.Return<SshTunnelEntry, SshEnvironmentEffectError, SshEnvironmentEffectContext> {
     const entry = tunnels.get(key) ?? null;
 
-      if (entry !== null) {
-        yield* Effect.logDebug("ssh.environment.tunnel.existing.check", {
+    if (entry !== null) {
+      yield* Effect.logDebug("ssh.environment.tunnel.existing.check", {
+        ...sshTargetLogFields(resolvedTarget),
+        key,
+        localPort: entry.localPort,
+        remotePort: entry.remotePort,
+      });
+      const readinessExit = yield* Effect.exit(
+        waitForHttpReady({
+          baseUrl: entry.httpBaseUrl,
+          path: T3_SERVER_READINESS_PATH,
+          timeoutMs: EXISTING_TUNNEL_READY_TIMEOUT_MS,
+          probeTimeoutMs: EXISTING_TUNNEL_READY_PROBE_TIMEOUT_MS,
+        }),
+      );
+      if (Exit.isSuccess(readinessExit)) {
+        yield* Effect.logDebug("ssh.environment.tunnel.reused", {
           ...sshTargetLogFields(resolvedTarget),
           key,
           localPort: entry.localPort,
           remotePort: entry.remotePort,
         });
-        const readinessExit = yield* Effect.exit(
-          waitForHttpReady({
-            baseUrl: entry.httpBaseUrl,
-            path: T3_SERVER_READINESS_PATH,
-            timeoutMs: EXISTING_TUNNEL_READY_TIMEOUT_MS,
-            probeTimeoutMs: EXISTING_TUNNEL_READY_PROBE_TIMEOUT_MS,
-          }),
-        );
-        if (Exit.isSuccess(readinessExit)) {
-          yield* Effect.logDebug("ssh.environment.tunnel.reused", {
-            ...sshTargetLogFields(resolvedTarget),
-            key,
-            localPort: entry.localPort,
-            remotePort: entry.remotePort,
-          });
-          return entry;
-        }
-        yield* Effect.logWarning("ssh.environment.tunnel.existing.stale", {
-          ...sshTargetLogFields(resolvedTarget),
-          key,
-          localPort: entry.localPort,
-          remotePort: entry.remotePort,
-          cause: readinessExit.cause,
-        });
-        yield* closeTunnelEntry(entry);
+        return entry;
       }
+      yield* Effect.logWarning("ssh.environment.tunnel.existing.stale", {
+        ...sshTargetLogFields(resolvedTarget),
+        key,
+        localPort: entry.localPort,
+        remotePort: entry.remotePort,
+        cause: readinessExit.cause,
+      });
+      yield* closeTunnelEntry(entry);
+    }
 
     return yield* createTunnelEntry({
       key,
