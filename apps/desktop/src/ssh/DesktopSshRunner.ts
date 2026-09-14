@@ -45,7 +45,9 @@ export const resolveDesktopSshCliRunner = Effect.fn("desktop.sshRunner.resolve")
 
   const localPackageArchivePath = yield* findBundledServerPackage(environment);
   return {
-    ...(localPackageArchivePath === undefined ? {} : { localPackageArchivePath }),
+    ...(localPackageArchivePath === undefined
+      ? { archiveVersion: environment.appVersion }
+      : { localPackageArchivePath }),
     nodeEngineRange: serverPackageJson.engines.node,
     requireExactBuild: true,
     version: environment.appVersion,

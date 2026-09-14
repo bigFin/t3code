@@ -2547,17 +2547,20 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
           ...(serviceTier ? { serviceTier } : {}),
           ...(mcpSession
             ? {
-                threadConfig: {
-                  mcp_servers: {
-                    "t3-code": {
-                      url: mcpSession.endpoint,
-                      http_headers: {
-                        Authorization: mcpSession.authorizationHeader,
-                      },
-                    },
-                  },
+                environment: {
+                  ...McpProviderSession.withAgentDeviceEnvironment(
+                    options?.environment ?? process.env,
+                    mcpSession,
+                  ),
+                  T3_MCP_BEARER_TOKEN: mcpSession.authorizationHeader.replace(/^Bearer\s+/, ""),
                 },
-                browserToolsAvailable: mcpSession.preview,
+                appServerArgs: [
+                  "-c",
+                  `mcp_servers.t3-code.url=${mcpSession.endpoint}`,
+                  "-c",
+                  'mcp_servers.t3-code.bearer_token_env_var="T3_MCP_BEARER_TOKEN"',
+                ],
+                mcpCapabilities: mcpSession.capabilities,
               }
             : {}),
         };

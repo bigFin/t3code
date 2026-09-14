@@ -27,6 +27,12 @@ export const PersistedServerRuntimeState = Schema.Struct({
       runnerId: Schema.String,
     }),
   ),
+  /**
+   * Set when the boot-service launcher supervises this server. Lets a CLI
+   * tell a service-managed server apart from one started by hand, which is
+   * the difference between "restart the service" and "stop your terminal".
+   */
+  serviceManaged: Schema.optional(Schema.Boolean),
 });
 export type PersistedServerRuntimeState = typeof PersistedServerRuntimeState.Type;
 
@@ -69,6 +75,7 @@ export const sshLaunchIdentityFromEnvironment = (
 export const makePersistedServerRuntimeState = (input: {
   readonly config: Pick<ServerConfig.ServerConfig["Service"], "host" | "devUrl">;
   readonly port: number;
+  readonly serviceManaged?: boolean;
 }): Effect.Effect<PersistedServerRuntimeState> =>
   Effect.map(DateTime.now, (now) => {
     const sshLaunch = sshLaunchIdentityFromEnvironment(process.env);
@@ -83,6 +90,7 @@ export const makePersistedServerRuntimeState = (input: {
       startedAt: DateTime.formatIso(now),
       serverVersion: packageJson.version,
       ...(sshLaunch ? { sshLaunch } : {}),
+      ...(input.serviceManaged ? { serviceManaged: true } : {}),
     };
   });
 

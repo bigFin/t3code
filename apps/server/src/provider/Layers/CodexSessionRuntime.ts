@@ -42,7 +42,10 @@ import { buildCodexInitializeParams } from "./CodexProvider.ts";
 import { makeCodexAppServerWebSocketConnection } from "./CodexAppServerWebSocket.ts";
 import { codexAppServerArgs } from "./codexLaunchArgs.ts";
 import { expandHomePath } from "../../pathExpansion.ts";
-import { buildCodexDeveloperInstructions } from "../CodexDeveloperInstructions.ts";
+import {
+  buildCodexDeveloperInstructions,
+  type T3CodeToolAvailability,
+} from "../CodexDeveloperInstructions.ts";
 const decodeV2TurnStartResponse = Schema.decodeUnknownEffect(EffectCodexSchema.V2TurnStartResponse);
 
 const PROVIDER = ProviderDriverKind.make("codex");
@@ -67,6 +70,16 @@ const RECOVERABLE_THREAD_RESUME_ERROR_SNIPPETS = [
 
 export function hasConfiguredMcpServer(appServerArgs: ReadonlyArray<string> | undefined): boolean {
   return appServerArgs?.some((argument) => argument.includes("mcp_servers.")) === true;
+}
+
+function configuredMcpToolAvailability(
+  appServerArgs: ReadonlyArray<string> | undefined,
+  mcpCapabilities: ReadonlySet<string> | undefined,
+): T3CodeToolAvailability {
+  if (!hasConfiguredMcpServer(appServerArgs)) return { browser: false, device: false };
+  // Callers predating the capability set attached the browser toolkit only.
+  if (mcpCapabilities === undefined) return { browser: true, device: false };
+  return { browser: mcpCapabilities.has("preview"), device: mcpCapabilities.has("device") };
 }
 
 export const CodexResumeCursorSchema = Schema.Struct({
@@ -180,13 +193,8 @@ export interface CodexSessionRuntimeOptions {
   readonly threadConfig?: Readonly<Record<string, unknown>>;
   readonly appServerSocketPath?: string;
   readonly appServerArgs?: ReadonlyArray<string>;
-  /**
-   * Whether the attached `t3-code` MCP server exposes the preview tools. The
-   * server is attached for every session now (the pull request toolkit is
-   * always on), so its presence in `appServerArgs` no longer implies browser
-   * access; the credential's own capability decides the developer prompt.
-   */
-  readonly browserToolsAvailable?: boolean;
+  /** Capabilities the session's `t3-code` MCP credential grants; drives the prompt blocks. */
+  readonly mcpCapabilities?: ReadonlySet<string>;
 }
 
 export interface CodexSessionRuntimeSendTurnInput {
@@ -740,7 +748,7 @@ function buildCodexCollaborationMode(input: {
   readonly interactionMode?: ProviderInteractionMode;
   readonly model?: string;
   readonly effort?: EffectCodexSchema.V2TurnStartParams__ReasoningEffort;
-  readonly browserToolsAvailable?: boolean;
+  readonly browserToolsAvailable?: boolean | T3CodeToolAvailability;
 }): EffectCodexSchema.V2TurnStartParams__CollaborationMode | undefined {
   if (input.interactionMode === undefined) {
     return undefined;
@@ -774,7 +782,7 @@ export function buildTurnStartParams(input: {
   readonly effort?: EffectCodexSchema.V2TurnStartParams__ReasoningEffort;
   readonly interactionMode?: ProviderInteractionMode;
   /** Defaults to true so callers that predate the agent-access gate are unchanged. */
-  readonly browserToolsAvailable?: boolean;
+  readonly browserToolsAvailable?: boolean | T3CodeToolAvailability;
 }): Effect.Effect<
   CodexTurnStartParamsWithCollaborationMode,
   CodexErrors.CodexAppServerProtocolParseError
@@ -846,7 +854,6 @@ export function isRecoverableThreadResumeError(error: unknown): boolean {
   }
   return RECOVERABLE_THREAD_RESUME_ERROR_SNIPPETS.some((snippet) => message.includes(snippet));
 }
-
 
 const isThreadResumeDecodeError = (error: unknown): boolean =>
   Schema.is(CodexErrors.CodexAppServerRequestError)(error) && error.operation === "decode-payload";
@@ -1408,15 +1415,106 @@ function parseThreadSnapshot(
 ): CodexThreadSnapshot {
   return {
     threadId: response.thread.id,
-    status: response.thread.status,
+    ...(response.thread.status !== undefined ? { status: response.thread.status } : {}),
     turns: response.thread.turns.map((turn) => ({
       id: TurnId.make(turn.id),
       items: turn.items,
-      status: turn.status,
+      ...(turn.status !== undefined ? { status: turn.status } : {}),
       ...(turn.error ? { error: turn.error } : {}),
     })),
   };
 }
+
+const CodexThreadHistoryMetadata = Schema.Struct({
+  thread: Schema.Struct({
+    historyMode: Schema.optionalKey(Schema.Literals(["legacy", "paginated"])),
+  }),
+});
+const CodexTurnsPage = Schema.Struct({
+  data: Schema.Array(EffectCodexSchema.V2ThreadReadResponse__Turn),
+  nextCursor: Schema.NullOr(Schema.String),
+});
+const decodeCodexHistoryMetadata = Schema.decodeUnknownEffect(CodexThreadHistoryMetadata);
+const decodeCodexTurnsPage = Schema.decodeUnknownEffect(CodexTurnsPage);
+type CodexHistoryClient = {
+  readonly raw: Pick<CodexClient.CodexAppServerClient["Service"]["raw"], "request">;
+  readonly request: CodexClient.CodexAppServerClient["Service"]["request"];
+};
+
+const readCodexHistoryMode = Effect.fn("readCodexHistoryMode")(function* (
+  client: CodexHistoryClient,
+  threadId: string,
+) {
+  const response = yield* client.raw.request("thread/read", { threadId, includeTurns: false });
+  const metadata = yield* decodeCodexHistoryMetadata(response).pipe(
+    Effect.mapError((error) =>
+      CodexErrors.CodexAppServerRequestError.invalidPayload("thread/read", "decode-payload", error),
+    ),
+  );
+  return metadata.thread.historyMode;
+});
+
+export const readCodexThread = Effect.fn("readCodexThread")(function* (
+  client: CodexHistoryClient,
+  threadId: string,
+): Effect.fn.Return<CodexThreadSnapshot, CodexErrors.CodexAppServerError> {
+  if ((yield* readCodexHistoryMode(client, threadId)) !== "paginated") {
+    return parseThreadSnapshot(
+      yield* client.request("thread/read", { threadId, includeTurns: true }),
+    );
+  }
+  const turns: Array<CodexThreadTurnSnapshot> = [];
+  const requestedCursors = new Set<string | null>();
+  let cursor: string | null = null;
+  do {
+    if (requestedCursors.has(cursor)) {
+      return yield* CodexErrors.CodexAppServerRequestError.internalError(
+        "Thread history pagination repeated a cursor.",
+        undefined,
+        { method: "thread/turns/list", operation: "decode-payload" },
+      );
+    }
+    requestedCursors.add(cursor);
+    const response: unknown = yield* client.raw.request("thread/turns/list", {
+      threadId,
+      cursor,
+      limit: 100,
+      sortDirection: "asc",
+      itemsView: "full",
+    });
+    const page = yield* decodeCodexTurnsPage(response).pipe(
+      Effect.mapError((error) =>
+        CodexErrors.CodexAppServerRequestError.invalidPayload(
+          "thread/turns/list",
+          "decode-payload",
+          error,
+        ),
+      ),
+    );
+    turns.push(...page.data.map((turn) => ({ id: TurnId.make(turn.id), items: turn.items })));
+    cursor = page.nextCursor;
+  } while (cursor !== null);
+  return { threadId, turns };
+});
+
+export const rollbackCodexThread = Effect.fn("rollbackCodexThread")(function* (
+  client: CodexHistoryClient,
+  threadId: string,
+  numTurns: number,
+): Effect.fn.Return<CodexThreadSnapshot, CodexErrors.CodexAppServerError> {
+  if ((yield* readCodexHistoryMode(client, threadId)) !== "paginated") {
+    return parseThreadSnapshot(yield* client.request("thread/rollback", { threadId, numTurns }));
+  }
+  // Paginated threads replace history at a turn boundary instead of supporting
+  // the legacy count-based rollback endpoint.
+  const snapshot = yield* readCodexThread(client, threadId);
+  const retainedCount = Math.max(0, snapshot.turns.length - numTurns);
+  const firstRemoved = snapshot.turns[retainedCount];
+  if (firstRemoved) {
+    yield* client.raw.request("thread/revert", { threadId, beforeTurnId: firstRemoved.id });
+  }
+  return { threadId, turns: snapshot.turns.slice(0, retainedCount) };
+});
 
 export const makeCodexSessionRuntime = (
   options: CodexSessionRuntimeOptions,
@@ -2700,10 +2798,11 @@ export const makeCodexSessionRuntime = (
             // Derived from the session's own credential rather than the
             // setting, so the prompt describes the tools this turn actually
             // has even if the setting changed after the session started.
-            browserToolsAvailable:
-              options.browserToolsAvailable ??
-              (hasConfiguredMcpServer(options.appServerArgs) ||
-                hasConfiguredMcpServer(codexAppServerArgs(options.launchArgs))),
+            browserToolsAvailable: configuredMcpToolAvailability(
+              options.appServerArgs ??
+                (options.launchArgs ? codexAppServerArgs(options.launchArgs) : undefined),
+              options.mcpCapabilities,
+            ),
           });
           const rawResponse = yield* client.raw.request("turn/start", params);
           const response = yield* decodeV2TurnStartResponse(rawResponse).pipe(
@@ -2768,24 +2867,17 @@ export const makeCodexSessionRuntime = (
         }),
       readThread: Effect.gen(function* () {
         const providerThreadId = yield* readProviderThreadId;
-        const response = yield* client.request("thread/read", {
-          threadId: providerThreadId,
-          includeTurns: true,
-        });
-        return parseThreadSnapshot(response);
+        return yield* readCodexThread(client, providerThreadId);
       }),
       rollbackThread: (numTurns) =>
         Effect.gen(function* () {
           const providerThreadId = yield* readProviderThreadId;
-          const response = yield* client.request("thread/rollback", {
-            threadId: providerThreadId,
-            numTurns,
-          });
+          const snapshot = yield* rollbackCodexThread(client, providerThreadId, numTurns);
           yield* updateSession(sessionRef, {
             status: "ready",
             activeTurnId: undefined,
           });
-          return parseThreadSnapshot(response);
+          return snapshot;
         }),
       uploadFeedback: (reason) =>
         Effect.gen(function* () {

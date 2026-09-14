@@ -19,11 +19,7 @@ import * as McpProviderSession from "./McpProviderSession.ts";
 export interface McpCredentialRequest {
   readonly threadId: ThreadId;
   readonly providerInstanceId: ProviderInstanceId;
-  /**
-   * Whether the credential may drive the user's browser. The pull request
-   * toolkit is always granted: it only touches the thread's own links.
-   */
-  readonly preview: boolean;
+  readonly capabilities?: Iterable<McpInvocationContext.McpCapability>;
 }
 
 export interface McpIssuedCredential {
@@ -75,7 +71,7 @@ const PersistedCredentialRecord = Schema.Struct({
     threadId: ThreadId,
     providerSessionId: Schema.String,
     providerInstanceId: ProviderInstanceId,
-    capabilities: Schema.Array(Schema.Literal("preview")),
+    capabilities: Schema.Array(Schema.Literals(["preview", "device"])),
     issuedAt: Schema.Number,
   }),
   lastAliveAt: Schema.Number,
@@ -190,9 +186,12 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
           providerSessionId: record.scope.providerSessionId,
           providerInstanceId: record.scope.providerInstanceId,
           // Pull-requests access is always granted (not a stored grant), so
-          // only the preview capability round-trips through persistence.
+          // only the preview and device capabilities round-trip through persistence.
           capabilities: Array.from(record.scope.capabilities)
-            .filter((capability) => capability === "preview")
+            .filter(
+              (capability): capability is "preview" | "device" =>
+                capability === "preview" || capability === "device",
+            )
             .toSorted(),
           issuedAt: record.scope.issuedAt,
         },
@@ -267,7 +266,10 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
               threadId: record.scope.threadId,
               providerSessionId: record.scope.providerSessionId,
               providerInstanceId: record.scope.providerInstanceId,
-              capabilities: new Set(record.scope.capabilities),
+              capabilities: new Set<McpInvocationContext.McpCapability>([
+                "pull-requests",
+                ...record.scope.capabilities,
+              ]),
               issuedAt: record.scope.issuedAt,
             },
             lastAliveAt: record.lastAliveAt,
@@ -318,9 +320,10 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
         threadId: ThreadId.make(request.threadId),
         providerSessionId,
         providerInstanceId: ProviderInstanceId.make(request.providerInstanceId),
-        capabilities: new Set<McpInvocationContext.McpCapability>(
-          request.preview ? ["pull-requests", "preview"] : ["pull-requests"],
-        ),
+        capabilities: new Set<McpInvocationContext.McpCapability>([
+          "pull-requests",
+          ...(request.capabilities ?? []),
+        ]),
         issuedAt,
       };
       yield* SynchronizedRef.updateEffect(state, () =>
@@ -338,7 +341,7 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
           providerInstanceId: scope.providerInstanceId,
           endpoint,
           authorizationHeader: `Bearer ${rawToken}`,
-          preview: request.preview,
+          capabilities: scope.capabilities,
         },
       };
     },

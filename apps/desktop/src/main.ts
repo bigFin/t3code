@@ -1,3 +1,4 @@
+import * as MacPermissions from "./permissions/MacPermissions.ts";
 for (const stream of [process.stdout, process.stderr]) {
   stream.on("error", (err: NodeJS.ErrnoException) => {
     if (err.code !== "EPIPE") throw err;
@@ -15,6 +16,9 @@ import * as Electron from "electron";
 
 import * as NetService from "@t3tools/shared/Net";
 import { HostProcessArchitecture, HostProcessPlatform } from "@t3tools/shared/hostProcess";
+import type { RemoteT3RunnerOptions } from "@t3tools/ssh/tunnel";
+import serverPackageJson from "../../server/package.json" with { type: "json" };
+import * as DesktopSshRunner from "./ssh/DesktopSshRunner.ts";
 
 import * as DesktopIpc from "./ipc/DesktopIpc.ts";
 import * as ElectronApp from "./electron/ElectronApp.ts";
@@ -108,6 +112,7 @@ const electronLayer = Layer.mergeAll(
 );
 
 const desktopFoundationLayer = Layer.mergeAll(
+  MacPermissions.layer,
   DesktopState.layer,
   DesktopShutdown.layer,
   DesktopAppSettings.layer,

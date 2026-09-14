@@ -456,6 +456,7 @@ describe("OrchestrationEngine", () => {
           getEventReplayStats: () => Effect.die("unused"),
           getActiveProjectByWorkspaceRoot: () => Effect.succeed(Option.none()),
           getProjectShellById: () => Effect.succeed(Option.none()),
+          getProjectShells: () => Effect.succeed([]),
           getFirstActiveThreadIdByProjectId: () => Effect.succeed(Option.none()),
           getImportedAgentSessionSources: () => Effect.die("unused"),
           getThreadCheckpointContext: () => Effect.succeed(Option.none()),
@@ -1033,7 +1034,6 @@ describe("OrchestrationEngine", () => {
     await system.dispose();
   });
 
-
   it("accepts stale session compare-and-swap commands without emitting an event", async () => {
     const system = await createOrchestrationSystem();
     const { engine } = system;
@@ -1517,7 +1517,6 @@ describe("OrchestrationEngine", () => {
     ).toBe("interrupted");
     await system.dispose();
   });
-
 
   it.each(["unlink", "relink", "branch", "worktree", "project", "delete"] as const)(
     "rejects PR discovery completed after a newer %s command",

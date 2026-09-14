@@ -19,7 +19,6 @@ import {
   getLastNonEmptyOutputLine,
   parseSshResolveOutput,
   remoteStateKey,
-  resolveRemoteT3CliPackageSpec,
   runSshCommand,
   targetConnectionKey,
 } from "./command.ts";
@@ -139,41 +138,6 @@ describe("ssh command", () => {
     assert.notEqual(targetConnectionKey(first), targetConnectionKey(second));
     assert.equal(remoteStateKey(first), remoteStateKey(second));
   });
-
-  it.effect("resolves the remote t3 package spec from the desktop release channel", () =>
-    Effect.sync(() => {
-      assert.equal(
-        resolveRemoteT3CliPackageSpec({
-          appVersion: "0.0.17",
-          updateChannel: "latest",
-        }),
-        "t3@0.0.17",
-      );
-      assert.equal(
-        resolveRemoteT3CliPackageSpec({
-          appVersion: "0.0.17-nightly.20260415.44",
-          updateChannel: "nightly",
-        }),
-        "t3@0.0.17-nightly.20260415.44",
-      );
-      assert.equal(
-        resolveRemoteT3CliPackageSpec({
-          appVersion: "0.0.0-dev",
-          updateChannel: "nightly",
-          isDevelopment: true,
-        }),
-        "t3@nightly",
-      );
-      assert.equal(
-        resolveRemoteT3CliPackageSpec({
-          appVersion: "0.0.0-dev",
-          updateChannel: "latest",
-          isDevelopment: true,
-        }),
-        "t3@nightly",
-      );
-    }),
-  );
 
   it.effect("reads the last non-empty ssh output line", () =>
     Effect.sync(() => {

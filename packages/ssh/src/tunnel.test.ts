@@ -2,6 +2,7 @@ import { assert, describe, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NetService from "@t3tools/shared/Net";
 import * as NodeCrypto from "node:crypto";
+import { HostProcessArchitecture, HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -25,6 +26,8 @@ import {
   buildRemoteT3RunnerScript,
   compareRemoteT3Versions,
   decideRemoteT3Version,
+  SshInvalidArchiveVersionError,
+  SshMissingRunnerError,
   describeReadinessCause,
   issueRemotePairingToken,
   launchOrReuseRemoteServer,
@@ -95,7 +98,6 @@ const testHttpClient = HttpClient.make((request) =>
   Effect.succeed(HttpClientResponse.fromWeb(request, new Response("", { status: 200 }))),
 );
 
-
 const hangingHttpClient = HttpClient.make(() => Effect.never);
 
 const testNetService = NetService.NetService.of({
@@ -138,19 +140,123 @@ const readCommandStdin = (command: ChildProcess.Command) =>
     return Uint8Array.from(bytes);
   });
 
-describe("ssh tunnel scripts", () => {
-  it("builds the remote t3 runner with npx and npm fallbacks", () => {
-    const script = buildRemoteT3RunnerScript({ nodeEngineRange: TEST_NODE_ENGINE_RANGE });
+const ARCHIVE = { archiveVersion: "1.2.3-preview.20260911.4" } as const;
+const NODE_SCRIPT = {
+  nodeScriptPath: "/Users/julius/Development/Work/codething-mvp/apps/server/dist/bin.mjs",
+} as const;
 
+describe("ssh tunnel scripts", () => {
+  it("installs and runs the release archive without Node, npm, or npx", () => {
+    const script = buildRemoteT3RunnerScript(ARCHIVE);
+
+    assert.include(script, "T3_ARCHIVE_VERSION='1.2.3-preview.20260911.4'");
     assert.include(script, "T3_NODE_SCRIPT_PATH=''");
-    assert.include(script, "T3_PACKAGE_SPEC='t3@latest'");
-    assert.include(script, "T3_PACKAGE_CACHE_DIR=''");
-    assert.include(script, 'exec t3 "$@"');
-    assert.include(script, 'exec "$T3_CLI_PATH" "$@"');
-    assert.include(script, "could not install 't3@latest'");
-    assert.include(script, "require_installed_t3_cli npx --yes --package 't3@latest'");
-    assert.include(script, "require_installed_t3_cli npm exec --yes --package 't3@latest'");
-    assert.include(script, "npm produced no t3 executable");
+    assert.include(
+      script,
+      "T3_RELEASE_BASE_URL='https://github.com/pingdotgg/t3code/releases/download'",
+    );
+    assert.include(script, 'T3_RUNTIME_DIR="$HOME/.t3/runtime/versions/$T3_ARCHIVE_VERSION"');
+    assert.include(script, 'T3_ARCHIVE="t3-$T3_ARCHIVE_VERSION-$T3_PLATFORM-$T3_ARCH.tar.gz"');
+    assert.include(script, "SHA256SUMS");
+    assert.include(script, 'exec "$T3_RUNTIME_DIR/t3" "$@"');
+    assert.notInclude(script, "npx");
+    assert.notInclude(script, "npm exec");
+    assert.notInclude(script, "t3@latest");
+    assert.notInclude(script, 'exec t3 "$@"');
+    // Concurrent launches serialize on a per-version mkdir lock and recheck
+    // the completion marker after acquiring it.
+    assert.include(
+      script,
+      'T3_LOCK="$HOME/.t3/runtime/versions/.$T3_ARCHIVE_VERSION.install.lock"',
+    );
+    // mkdir is the exclusive create; the pid follows atomically. A dead owner
+    // is reclaimed at once, a never-published owner after a short grace.
+    assert.include(script, 'while ! mkdir "$T3_LOCK" 2>/dev/null; do');
+    assert.include(script, 'mv "$T3_LOCK/pid.tmp" "$T3_LOCK/pid"');
+    assert.include(script, 'if ! kill -0 "$T3_LOCK_OWNER" 2>/dev/null; then');
+    assert.include(script, 'if [ "$T3_LOCK_UNOWNED" -ge 5 ]; then');
+    assert.include(script, 'if [ "$T3_LOCK_WAITED" -ge 360 ]; then');
+    assert.include(script, '"$T3_STAGING/SHA256SUMS" 30');
+    assert.include(script, '"$T3_STAGING/$T3_ARCHIVE" 240');
+    assert.notInclude(script, "T3_LOCK_CANDIDATE");
+    assert.notInclude(script, "-mmin");
+    assert.equal(script.split("if ! t3_runtime_ready; then").length - 1, 2);
+    assert.isBelow(
+      script.indexOf('"$T3_STAGING/t3" --version'),
+      script.indexOf('> "$T3_STAGING/.install-complete"'),
+    );
+    // Node discovery is defined for the dev path but only ever invoked inside
+    // the node-script branch, which the archive path skips entirely.
+    assert.equal(script.split("ensure_remote_node_path || true").length - 1, 1);
+    assert.isBelow(
+      script.indexOf("ensure_remote_node_path || true"),
+      script.indexOf('exec node "$T3_NODE_SCRIPT_PATH" "$@"'),
+    );
+    assert.isBelow(
+      script.indexOf('exec node "$T3_NODE_SCRIPT_PATH" "$@"'),
+      script.indexOf("T3_ARCHIVE_VERSION="),
+    );
+
+    const launch = buildRemoteLaunchScript({
+      ...ARCHIVE,
+      releaseBaseUrl: "https://mirror.example/t3/",
+    });
+    assert.include(launch, "T3_ARCHIVE_MODE=1");
+    assert.include(launch, "T3_RELEASE_BASE_URL='https://mirror.example/t3'");
+    assert.include(launch, '"$RUNNER_FILE" __ssh-helper pick-port "$PORT_FILE"');
+    assert.include(launch, '"$RUNNER_FILE" __ssh-helper wait-ready "$REMOTE_PORT"');
+    assert.include(launch, '"$RUNNER_FILE" __ssh-helper runtime-port "$DEFAULT_RUNTIME_FILE"');
+    assert.include(buildRemoteLaunchScript(NODE_SCRIPT), "T3_ARCHIVE_MODE=0");
+  });
+
+  it("rejects archive versions that are not a single exact version segment", () => {
+    for (const archiveVersion of [
+      "../other",
+      "1.2.3/evil",
+      "1.2.3\\evil",
+      "1.2.3-preview.1 x",
+      "1.2.3-preview.1\nrm -rf /",
+      "v1.2.3",
+    ]) {
+      assert.throws(
+        () => buildRemoteT3RunnerScript({ archiveVersion }),
+        SshInvalidArchiveVersionError,
+        undefined,
+        archiveVersion,
+      );
+    }
+    assert.include(
+      buildRemoteT3RunnerScript(ARCHIVE),
+      "T3_ARCHIVE_VERSION='1.2.3-preview.20260911.4'",
+    );
+  });
+
+  it("refuses to build a runner with neither an archive version nor a node script", () => {
+    for (const input of [undefined, {}, { archiveVersion: "  " }, { nodeScriptPath: null }]) {
+      assert.throws(() => buildRemoteT3RunnerScript(input), SshMissingRunnerError);
+    }
+    assert.throws(() => buildRemoteLaunchScript(), SshMissingRunnerError);
+  });
+
+  it("does not hard-code a remote node engine range", () => {
+    const script = buildRemoteT3RunnerScript(NODE_SCRIPT);
+
+    assert.include(script, "T3_NODE_ENGINE_RANGE=''");
+    assert.notInclude(script, TEST_NODE_ENGINE_RANGE);
+  });
+
+  it("builds the remote t3 runner with a node script override", () => {
+    const script = buildRemoteT3RunnerScript({
+      ...NODE_SCRIPT,
+      nodeEngineRange: TEST_NODE_ENGINE_RANGE,
+    });
+
+    assert.include(
+      script,
+      "T3_NODE_SCRIPT_PATH='/Users/julius/Development/Work/codething-mvp/apps/server/dist/bin.mjs'",
+    );
+    assert.include(script, 'exec node "$T3_NODE_SCRIPT_PATH" "$@"');
+    assert.include(script, "T3_ARCHIVE_VERSION=''");
     assert.include(script, 'prepend_path_if_dir "$HOME/.local/bin"');
     assert.isBelow(
       script.indexOf('prepend_path_if_dir "$HOME/.local/bin"'),
@@ -170,14 +276,6 @@ describe("ssh tunnel scripts", () => {
     assert.include(script, 'NVM_DIR="$HOME/.nvm"');
     assert.include(script, "nvm use --silent default");
     assert.include(script, 'for T3_NODE_BIN in "$NVM_DIR"/versions/node/*/bin');
-    assert.notInclude(script, "ensure $NVM_DIR/nvm.sh is available");
-  });
-
-  it("does not hard-code a remote node engine range", () => {
-    const script = buildRemoteT3RunnerScript();
-
-    assert.include(script, "T3_NODE_ENGINE_RANGE=''");
-    assert.notInclude(script, TEST_NODE_ENGINE_RANGE);
   });
 
   it("does not fall back to a public or ambient CLI for an exact-build runner", () => {
@@ -248,15 +346,14 @@ describe("ssh tunnel scripts", () => {
   });
 
   it("builds the remote t3 runner with a node script override", () => {
-    const script = buildRemoteT3RunnerScript({
-      nodeScriptPath: "/Users/julius/Development/Work/codething-mvp/apps/server/dist/bin.mjs",
-    });
+    const script = buildRemoteT3RunnerScript(NODE_SCRIPT);
 
     assert.include(
       script,
       "T3_NODE_SCRIPT_PATH='/Users/julius/Development/Work/codething-mvp/apps/server/dist/bin.mjs'",
     );
     assert.include(script, 'exec node "$T3_NODE_SCRIPT_PATH" "$@"');
+    assert.notInclude(script, "npx");
   });
 
   it("uses the active remote t3 runner for launch and pairing scripts", () => {
@@ -266,22 +363,27 @@ describe("ssh tunnel scripts", () => {
       username: "julius",
       port: 2222,
     } as const;
+    const launch = buildRemoteLaunchScript(ARCHIVE);
+    const devLaunch = buildRemoteLaunchScript({
+      ...NODE_SCRIPT,
+      nodeEngineRange: TEST_NODE_ENGINE_RANGE,
+    });
 
     assert.include(
-      buildRemoteLaunchScript({ nodeEngineRange: TEST_NODE_ENGINE_RANGE }),
+      launch,
       '[ -n "$REMOTE_PID" ] && [ -n "$REMOTE_PORT" ] && kill -0 "$REMOTE_PID" 2>/dev/null',
     );
-    assert.include(buildRemoteLaunchScript(), "RUNNER_CHANGED=1");
-    assert.match(buildRemoteLaunchScript(), /RUNNER_ID='[0-9a-f]{64}'/u);
+    assert.include(launch, "RUNNER_CHANGED=1");
+    assert.match(launch, /RUNNER_ID='[0-9a-f]{64}'/u);
     assert.include(
-      buildRemoteLaunchScript({ version: "0.0.30" }),
+      buildRemoteLaunchScript({ ...ARCHIVE, version: "0.0.30" }),
       "DESIRED_SERVER_VERSION='0.0.30'",
     );
-    assert.include(buildRemoteLaunchScript(), "runtime.serverVersion");
-    assert.include(buildRemoteLaunchScript(), 'if [ "$VERSION_DECISION" != "reuse" ]; then');
-    assert.include(buildRemoteLaunchScript(), 'comparison > 0 ? "upgrade" : "reuse"');
-    assert.include(buildRemoteLaunchScript(), "RUNNER_CHANGED=0");
-    assert.include(buildRemoteLaunchScript(), 'rm -f "$RUNNER_NEXT"');
+    assert.include(launch, "runtime.serverVersion");
+    assert.include(launch, 'if [ "$VERSION_DECISION" != "reuse" ]; then');
+    assert.include(launch, 'comparison > 0 ? "upgrade" : "reuse"');
+    assert.include(launch, "RUNNER_CHANGED=0");
+    assert.include(launch, 'rm -f "$RUNNER_NEXT"');
     const archivePath = "/home/julius/.t3/ssh-runtime/packages/t3-test.tgz";
     const cacheDir = "/home/julius/.t3/ssh-runtime/npm-cache/t3-test";
     const archiveLaunchScript = buildRemoteLaunchScript({
@@ -308,60 +410,41 @@ describe("ssh tunnel scripts", () => {
       archiveLaunchScript.lastIndexOf('printf \'{"remotePort"'),
     );
     assert.isBelow(
-      buildRemoteLaunchScript().indexOf('if [ "$VERSION_DECISION" != "reuse" ]; then'),
-      buildRemoteLaunchScript().indexOf(
-        'elif [ -n "$REMOTE_PID" ] && [ -n "$REMOTE_PORT" ] && kill -0 "$REMOTE_PID"',
-      ),
+      launch.indexOf('if [ "$VERSION_DECISION" != "reuse" ]; then'),
+      launch.indexOf('elif [ -n "$REMOTE_PID" ] && [ -n "$REMOTE_PORT" ] && kill -0 "$REMOTE_PID"'),
     );
-    assert.include(
-      buildRemoteLaunchScript(),
-      'LAUNCH_LOCK_DIR="$HOME/.t3/ssh-launch/server-launch.lock"',
-    );
-    assert.include(buildRemoteLaunchScript(), "acquire_launch_lock()");
-    assert.include(buildRemoteLaunchScript(), 'while ! mkdir "$LAUNCH_LOCK_DIR"');
-    assert.include(buildRemoteLaunchScript(), 'kill -0 "$LOCK_OWNER"');
-    assert.include(
-      buildRemoteLaunchScript(),
-      'if [ -z "$LOCK_OWNER" ] && [ "$WAIT_COUNT" -ge 50 ]; then',
-    );
-    assert.include(
-      buildRemoteLaunchScript(),
-      "Timed out waiting for another T3 remote server launch",
-    );
+    assert.include(launch, 'LAUNCH_LOCK_DIR="$HOME/.t3/ssh-launch/server-launch.lock"');
+    assert.include(launch, "acquire_launch_lock()");
+    assert.include(launch, 'while ! mkdir "$LAUNCH_LOCK_DIR"');
+    assert.include(launch, 'kill -0 "$LOCK_OWNER"');
+    assert.include(launch, 'if [ -z "$LOCK_OWNER" ] && [ "$WAIT_COUNT" -ge 50 ]; then');
+    assert.include(launch, "Timed out waiting for another T3 remote server launch");
     assert.isBelow(
-      buildRemoteLaunchScript().indexOf("acquire_launch_lock"),
-      buildRemoteLaunchScript().indexOf('DEFAULT_RUNTIME_INFO="$(resolve_default_runtime_port'),
+      launch.indexOf("acquire_launch_lock"),
+      launch.indexOf('DEFAULT_RUNTIME_INFO="$(resolve_default_runtime_port'),
     );
-    assert.include(buildRemoteLaunchScript(), "ensure_remote_node_path()");
-    assert.include(buildRemoteLaunchScript(), "if ! ensure_remote_node_path; then");
-    assert.include(
-      buildRemoteLaunchScript({ nodeEngineRange: TEST_NODE_ENGINE_RANGE }),
-      `T3_NODE_ENGINE_RANGE='${TEST_NODE_ENGINE_RANGE}'`,
-    );
-    assert.include(
-      buildRemoteLaunchScript({ nodeEngineRange: TEST_NODE_ENGINE_RANGE }),
-      "does not satisfy required range ",
-    );
-    assert.include(buildRemoteLaunchScript(), 'stop_pid "$REMOTE_PID"');
-    assert.include(buildRemoteLaunchScript(), 'execFileSync("ps", ["-eo", "pid=,ppid="]');
-    assert.include(buildRemoteLaunchScript(), "stop_stale_managed_runtimes");
-    assert.include(buildRemoteLaunchScript(), "managedRuntimeComponentPids");
-    assert.include(buildRemoteLaunchScript(), "staleManagedRuntimePids");
-    assert.include(buildRemoteLaunchScript(), "fs.realpathSync(`/proc/${pid}/fd/${fd}`)");
-    assert.notInclude(buildRemoteLaunchScript(), "descendant_pids");
-    assert.include(buildRemoteLaunchScript(), 'kill -KILL "$PID_TO_SIGNAL"');
-    assert.include(buildRemoteLaunchScript(), "wait_ready");
-    assert.include(buildRemoteLaunchScript(), '"$RUNNER_FILE" serve --host 127.0.0.1');
-    assert.include(
-      buildRemoteLaunchScript(),
-      'T3CODE_SSH_STATE_KEY="$STATE_KEY" T3CODE_SSH_RUNNER_ID="$RUNNER_ID"',
-    );
-    assert.include(buildRemoteLaunchScript(), '--base-dir "$DEFAULT_SERVER_HOME"');
-    assert.notInclude(buildRemoteLaunchScript(), "server-home");
-    assert.include(buildRemoteLaunchScript(), "Remote T3 server did not become ready");
-    assert.include(buildRemoteLaunchScript(), 'wait_ready "60000"');
-    assert.include(buildRemoteLaunchScript(), 'if [ -s "$LOG_FILE" ]; then');
-    assert.include(buildRemoteLaunchScript(), "It wrote nothing to %s");
+    assert.include(launch, "ensure_remote_node_path()");
+    assert.include(launch, "if ! ensure_remote_node_path; then");
+    assert.include(devLaunch, `T3_NODE_ENGINE_RANGE='${TEST_NODE_ENGINE_RANGE}'`);
+    assert.include(devLaunch, "does not satisfy required range ");
+    assert.include(launch, 'stop_pid "$REMOTE_PID"');
+    assert.include(launch, 'execFileSync("ps", ["-eo", "pid=,ppid="]');
+    assert.include(launch, "stop_stale_managed_runtimes");
+    assert.include(launch, "managedRuntimeComponentPids");
+    assert.include(launch, "staleManagedRuntimePids");
+    assert.include(launch, "fs.realpathSync(`/proc/${pid}/fd/${fd}`)");
+    assert.notInclude(launch, "descendant_pids");
+    assert.include(launch, 'kill -KILL "$PID_TO_SIGNAL"');
+    assert.include(launch, "wait_ready");
+    assert.include(launch, '"$RUNNER_FILE" serve --host 127.0.0.1');
+    assert.include(launch, 'T3CODE_SSH_STATE_KEY="$STATE_KEY" T3CODE_SSH_RUNNER_ID="$RUNNER_ID"');
+    assert.include(launch, '--base-dir "$DEFAULT_SERVER_HOME"');
+    assert.notInclude(launch, "server-home");
+    assert.include(launch, "Remote T3 server did not become ready");
+    assert.include(launch, 'wait_ready "60000"');
+    assert.include(launch, 'if [ -s "$LOG_FILE" ]; then');
+    assert.include(launch, "It wrote nothing to %s");
+    assert.include(launch, "T3_ARCHIVE_VERSION='1.2.3-preview.20260911.4'");
     assert.include(buildRemoteLaunchScript({ packageSpec: "t3@nightly" }), "t3@nightly");
     assert.include(
       buildRemotePairingScript(target),
@@ -370,7 +453,19 @@ describe("ssh tunnel scripts", () => {
     assert.include(buildRemotePairingScript(target), 'PAIRING_BASE_DIR="$DEFAULT_SERVER_HOME"');
     assert.notInclude(buildRemotePairingScript(target), "server-home");
     assert.include(buildRemotePairingScript(target), 'if [ ! -x "$RUNNER_FILE" ]; then');
-    assert.notInclude(buildRemotePairingScript(target), "cat >");
+    assert.include(
+      buildRemotePairingScript(target, ARCHIVE),
+      '"$RUNNER_FILE" auth pairing create --base-dir "$PAIRING_BASE_DIR" --json',
+    );
+    assert.include(
+      buildRemotePairingScript(target, ARCHIVE),
+      'PAIRING_BASE_DIR="$DEFAULT_SERVER_HOME"',
+    );
+    assert.notInclude(buildRemotePairingScript(target, ARCHIVE), "server-home");
+    assert.include(
+      buildRemotePairingScript(target, ARCHIVE),
+      "T3_ARCHIVE_VERSION='1.2.3-preview.20260911.4'",
+    );
     assert.include(
       buildRemoteStopScript(target),
       'if [ "$REMOTE_MANAGED" != "external" ] && [ -n "$REMOTE_PID" ]',
@@ -385,39 +480,30 @@ describe("ssh tunnel scripts", () => {
     assert.notInclude(buildRemoteStopScript(target), "kill -KILL");
     assert.include(buildRemoteStopScript(target), 'rm -f "$PID_FILE" "$PORT_FILE" "$MANAGED_FILE"');
     assert.include(
-      buildRemoteLaunchScript(),
+      launch,
       'DEFAULT_RUNTIME_FILE="$DEFAULT_SERVER_HOME/userdata/server-runtime.json"',
     );
-    assert.include(buildRemoteLaunchScript(), "resolve_default_runtime_port()");
-    assert.include(
-      buildRemoteLaunchScript(),
-      'DEFAULT_RUNTIME_INFO="$(resolve_default_runtime_port',
-    );
-    assert.include(
-      buildRemoteLaunchScript(),
-      "if (!Number.isInteger(pid) || pid <= 0 || !Number.isInteger(port))",
-    );
-    assert.include(buildRemoteLaunchScript(), "runtime.sshLaunch.stateKey");
-    assert.include(buildRemoteLaunchScript(), "runtime.sshLaunch.runnerId");
-    assert.include(buildRemoteLaunchScript(), "is_legacy_managed_runtime()");
-    assert.include(buildRemoteLaunchScript(), "fs.realpathSync(`/proc/${pid}/fd/${fd}`)");
-    assert.include(buildRemoteLaunchScript(), 'elif [ "$LEGACY_MANAGED" -eq 1 ]; then');
-    assert.include(buildRemoteLaunchScript(), 'if [ -n "$DEFAULT_RUNTIME_STATE_KEY" ]; then');
-    assert.include(
-      buildRemoteLaunchScript(),
-      'if [ "$DEFAULT_RUNTIME_RUNNER_ID" != "$RUNNER_ID" ]; then',
-    );
-    assert.include(buildRemoteLaunchScript(), 'stop_pid "$DEFAULT_RUNTIME_PID"');
-    assert.include(buildRemoteLaunchScript(), 'REMOTE_PORT="$DEFAULT_REMOTE_PORT"');
-    assert.include(buildRemoteLaunchScript(), "printf 'external\\n' >\"$MANAGED_FILE\"");
-    assert.include(buildRemoteLaunchScript(), 'if [ -z "$REMOTE_PORT" ]; then');
+    assert.include(launch, "resolve_default_runtime_port()");
+    assert.include(launch, 'DEFAULT_RUNTIME_INFO="$(resolve_default_runtime_port');
+    assert.include(launch, "if (!Number.isInteger(pid) || pid <= 0 || !Number.isInteger(port))");
+    assert.include(launch, "runtime.sshLaunch.stateKey");
+    assert.include(launch, "runtime.sshLaunch.runnerId");
+    assert.include(launch, "is_legacy_managed_runtime()");
+    assert.include(launch, "fs.realpathSync(`/proc/${pid}/fd/${fd}`)");
+    assert.include(launch, 'elif [ "$LEGACY_MANAGED" -eq 1 ]; then');
+    assert.include(launch, 'if [ -n "$DEFAULT_RUNTIME_STATE_KEY" ]; then');
+    assert.include(launch, 'if [ "$DEFAULT_RUNTIME_RUNNER_ID" != "$RUNNER_ID" ]; then');
+    assert.include(launch, 'stop_pid "$DEFAULT_RUNTIME_PID"');
+    assert.include(launch, 'REMOTE_PORT="$DEFAULT_REMOTE_PORT"');
+    assert.include(launch, "printf 'external\\n' >\"$MANAGED_FILE\"");
+    assert.include(launch, 'if [ -z "$REMOTE_PORT" ]; then');
     assert.isBelow(
-      buildRemoteLaunchScript().indexOf('if [ -n "$DEFAULT_RUNTIME_STATE_KEY" ]; then'),
-      buildRemoteLaunchScript().indexOf("printf 'external\\n' >\"$MANAGED_FILE\""),
+      launch.indexOf('if [ -n "$DEFAULT_RUNTIME_STATE_KEY" ]; then'),
+      launch.indexOf("printf 'external\\n' >\"$MANAGED_FILE\""),
     );
     assert.isBelow(
-      buildRemoteLaunchScript().indexOf('DEFAULT_RUNTIME_INFO="$(resolve_default_runtime_port'),
-      buildRemoteLaunchScript().indexOf('elif [ -n "$REMOTE_PID" ]'),
+      launch.indexOf('DEFAULT_RUNTIME_INFO="$(resolve_default_runtime_port'),
+      launch.indexOf('elif [ -n "$REMOTE_PID" ]'),
     );
   });
 
@@ -492,7 +578,7 @@ describe("ssh tunnel scripts", () => {
     const processLayer = Layer.merge(NodeServices.layer, spawnerLayer);
 
     return Effect.gen(function* () {
-      const result = yield* launchOrReuseRemoteServer(target);
+      const result = yield* launchOrReuseRemoteServer(target, undefined, ARCHIVE);
       assert.equal(result.remotePort, 3774);
       assert.deepEqual(spawnedCommands[0]?.slice(-5, -1), ["sh", "-l", "-s", "--"]);
     }).pipe(Effect.provide(processLayer));
@@ -598,9 +684,34 @@ describe("ssh tunnel scripts", () => {
     const processLayer = Layer.mergeAll(NodeServices.layer, spawnerLayer, TestClock.layer());
 
     return Effect.gen(function* () {
-      const fiber = yield* Effect.forkChild(launchOrReuseRemoteServer(target));
+      const fiber = yield* Effect.forkChild(
+        launchOrReuseRemoteServer(target, undefined, NODE_SCRIPT),
+      );
       yield* Effect.yieldNow;
       yield* TestClock.adjust(Duration.seconds(75));
+
+      const result = yield* Fiber.join(fiber);
+      assert.equal(result.remotePort, 3774);
+    }).pipe(Effect.provide(processLayer));
+  });
+
+  it.effect("gives cold archive launches a larger budget than node-script launches", () => {
+    const target = {
+      alias: "devbox",
+      hostname: "devbox.example.com",
+      username: "julius",
+      port: 2222,
+    } as const;
+    const spawner = ChildProcessSpawner.make(() =>
+      Effect.succeed(makeDelayedSuccessfulProcess('{"remotePort":3774}\n', 800_000)),
+    );
+    const spawnerLayer = Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner);
+    const processLayer = Layer.mergeAll(NodeServices.layer, spawnerLayer, TestClock.layer());
+
+    return Effect.gen(function* () {
+      const fiber = yield* Effect.forkChild(launchOrReuseRemoteServer(target, undefined, ARCHIVE));
+      yield* Effect.yieldNow;
+      yield* TestClock.adjust(Duration.seconds(800));
 
       const result = yield* Fiber.join(fiber);
       assert.equal(result.remotePort, 3774);
@@ -662,7 +773,7 @@ describe("ssh tunnel scripts", () => {
   });
 
   it("steals stale remote launch locks atomically", () => {
-    const script = buildRemoteLaunchScript();
+    const script = buildRemoteLaunchScript(ARCHIVE);
     assert.include(script, 'mv "$LAUNCH_LOCK_DIR" "$LAUNCH_LOCK_DIR.stale.$$"');
     // The old two-step rm/rmdir steals could delete a freshly acquired
     // launch lock; the only remaining rmdir is the holder's own cleanup.
@@ -691,7 +802,7 @@ describe("ssh tunnel scripts", () => {
     const spawnerLayer = Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner);
     const processLayer = Layer.merge(NodeServices.layer, spawnerLayer);
     return Effect.gen(function* () {
-      const result = yield* issueRemotePairingToken(target);
+      const result = yield* issueRemotePairingToken(target, undefined, ARCHIVE);
       assert.equal(result.credential, "LCL4R2TPHDKQ");
     }).pipe(Effect.provide(processLayer));
   });
@@ -719,7 +830,7 @@ describe("ssh tunnel scripts", () => {
     const spawnerLayer = Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner);
     const processLayer = Layer.merge(NodeServices.layer, spawnerLayer);
     return Effect.gen(function* () {
-      const result = yield* issueRemotePairingToken(target);
+      const result = yield* issueRemotePairingToken(target, undefined, ARCHIVE);
       assert.equal(result.credential, "LCL4R2TPHDKQ");
     }).pipe(Effect.provide(processLayer));
   });
@@ -766,7 +877,7 @@ describe("ssh tunnel scripts", () => {
       Layer.succeed(HttpClient.HttpClient, descriptorOnlyHttpClient),
       Layer.succeed(NetService.NetService, testNetService),
       SshPasswordPrompt.disabledLayer,
-      SshEnvironmentManager.layer(),
+      SshEnvironmentManager.layer({ resolveCliRunner: Effect.succeed(ARCHIVE) }),
     );
     const target = {
       alias: "devbox",
@@ -832,7 +943,7 @@ describe("ssh tunnel scripts", () => {
       Layer.succeed(HttpClient.HttpClient, descriptorOnlyHttpClient),
       Layer.succeed(NetService.NetService, testNetService),
       SshPasswordPrompt.disabledLayer,
-      SshEnvironmentManager.layer(),
+      SshEnvironmentManager.layer({ resolveCliRunner: Effect.succeed(ARCHIVE) }),
     );
     const target = {
       alias: "devbox",
@@ -885,7 +996,7 @@ describe("ssh tunnel scripts", () => {
       Layer.succeed(HttpClient.HttpClient, temporarilyUnavailableHttpClient),
       Layer.succeed(NetService.NetService, testNetService),
       SshPasswordPrompt.disabledLayer,
-      SshEnvironmentManager.layer(),
+      SshEnvironmentManager.layer({ resolveCliRunner: Effect.succeed(ARCHIVE) }),
     );
     const target = {
       alias: "devbox",
@@ -943,7 +1054,7 @@ describe("ssh tunnel scripts", () => {
       Layer.succeed(HttpClient.HttpClient, replayCongestedHttpClient),
       Layer.succeed(NetService.NetService, testNetService),
       SshPasswordPrompt.disabledLayer,
-      SshEnvironmentManager.layer(),
+      SshEnvironmentManager.layer({ resolveCliRunner: Effect.succeed(ARCHIVE) }),
     );
     const target = {
       alias: "devbox",
@@ -1006,7 +1117,7 @@ describe("ssh tunnel scripts", () => {
       Layer.succeed(HttpClient.HttpClient, staleTunnelHttpClient),
       Layer.succeed(NetService.NetService, testNetService),
       SshPasswordPrompt.disabledLayer,
-      SshEnvironmentManager.layer(),
+      SshEnvironmentManager.layer({ resolveCliRunner: Effect.succeed(ARCHIVE) }),
     );
     const target = {
       alias: "devbox",
@@ -1069,7 +1180,7 @@ describe("ssh tunnel lifecycle", () => {
       Layer.succeed(HttpClient.HttpClient, staleDuringReconnectHttpClient),
       Layer.succeed(NetService.NetService, testNetService),
       SshPasswordPrompt.disabledLayer,
-      SshEnvironmentManager.layer(),
+      SshEnvironmentManager.layer({ resolveCliRunner: Effect.succeed(ARCHIVE) }),
     );
     const target = {
       alias: "devbox",
@@ -1145,7 +1256,7 @@ describe("serialized tunnel shutdown", () => {
         Layer.succeed(HttpClient.HttpClient, testHttpClient),
         Layer.succeed(NetService.NetService, testNetService),
         SshPasswordPrompt.disabledLayer,
-        SshEnvironmentManager.layer(),
+        SshEnvironmentManager.layer({ resolveCliRunner: Effect.succeed(ARCHIVE) }),
       );
       yield* Effect.gen(function* () {
         const manager = yield* SshEnvironmentManager;
@@ -1169,5 +1280,118 @@ describe("serialized tunnel shutdown", () => {
         Effect.scoped,
       );
     }),
+  );
+});
+
+// The archive runner is generated shell; string assertions cannot prove the
+// lock excludes concurrent installers. Run the real script against a tiny
+// fake archive served from a file:// mirror.
+describe("archive runner script", () => {
+  const hostPlatform = HostProcessPlatform.defaultValue();
+  const hostArch = HostProcessArchitecture.defaultValue();
+  const windowsHost = hostPlatform === "win32";
+  const archiveVersion = "1.2.3-preview.20260911.4";
+
+  const runRunner = (home: string, runner: string) =>
+    Effect.gen(function* () {
+      const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+      const child = yield* spawner.spawn(
+        ChildProcess.make("sh", [runner, "--version"], {
+          env: { PATH: process.env.PATH ?? "", HOME: home },
+          extendEnv: false,
+        }),
+      );
+      const [stdout, stderr, exitCode] = yield* Effect.all(
+        [
+          child.stdout.pipe(
+            Stream.decodeText(),
+            Stream.runFold(
+              () => "",
+              (acc, chunk) => acc + chunk,
+            ),
+          ),
+          child.stderr.pipe(
+            Stream.decodeText(),
+            Stream.runFold(
+              () => "",
+              (acc, chunk) => acc + chunk,
+            ),
+          ),
+          child.exitCode.pipe(Effect.map(Number)),
+        ],
+        { concurrency: "unbounded" },
+      );
+      return { stdout, stderr, exitCode };
+    });
+
+  // A fake "executable" that answers --version, packed the way the release
+  // workflow packs the real archive: one top-level directory named after the
+  // stem, checksummed in SHA256SUMS.
+  const makeMirror = Effect.fn("makeMirror")(function* (root: string) {
+    const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+    const platform = hostPlatform === "darwin" ? "darwin" : "linux";
+    const arch = hostArch === "arm64" ? "arm64" : "x64";
+    const stem = `t3-${archiveVersion}-${platform}-${arch}`;
+    const stage = `${root}/stage/${stem}`;
+    const release = `${root}/mirror/v${archiveVersion}`;
+    const script = [
+      "set -eu",
+      `mkdir -p '${stage}' '${release}'`,
+      `printf '#!/bin/sh\\necho t3 v${archiveVersion}\\n' > '${stage}/t3'`,
+      `chmod +x '${stage}/t3'`,
+      `tar -czf '${release}/${stem}.tar.gz' -C '${root}/stage' '${stem}'`,
+      `cd '${release}' && (sha256sum '${stem}.tar.gz' 2>/dev/null || shasum -a 256 '${stem}.tar.gz') > SHA256SUMS`,
+    ].join("\n");
+    const child = yield* spawner.spawn(ChildProcess.make("sh", ["-c", script]));
+    assert.equal(Number(yield* child.exitCode), 0);
+    return `file://${root}/mirror`;
+  });
+
+  it.effect.skipIf(windowsHost)(
+    "installs once when several launches race, and reclaims stale locks",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-archive-runner-" });
+        const releaseBaseUrl = yield* makeMirror(root);
+        const runner = `${root}/run-t3.sh`;
+        yield* fs.writeFileString(
+          runner,
+          buildRemoteT3RunnerScript({ archiveVersion, releaseBaseUrl }),
+        );
+        const home = `${root}/home`;
+        yield* fs.makeDirectory(home, { recursive: true });
+
+        const results = yield* Effect.all(
+          [runRunner(home, runner), runRunner(home, runner), runRunner(home, runner)],
+          { concurrency: "unbounded" },
+        );
+        for (const result of results) {
+          assert.equal(result.exitCode, 0, result.stderr);
+          assert.include(result.stdout, `t3 v${archiveVersion}`);
+        }
+        const versionsDir = `${home}/.t3/runtime/versions`;
+        assert.deepEqual(yield* fs.readDirectory(versionsDir), [archiveVersion]);
+        assert.equal(
+          (yield* fs.readFileString(`${versionsDir}/${archiveVersion}/.install-complete`)).trim(),
+          archiveVersion,
+        );
+
+        // A lock left by a crashed installer (dead pid) must not block the
+        // next launch, and neither must one that never published a pid.
+        const lock = `${versionsDir}/.${archiveVersion}.install.lock`;
+        yield* fs.remove(`${versionsDir}/${archiveVersion}`, { recursive: true });
+        yield* fs.makeDirectory(lock);
+        yield* fs.writeFileString(`${lock}/pid`, "999999\n");
+        const afterDead = yield* runRunner(home, runner);
+        assert.equal(afterDead.exitCode, 0, afterDead.stderr);
+
+        yield* fs.remove(`${versionsDir}/${archiveVersion}`, { recursive: true });
+        yield* fs.makeDirectory(lock);
+        const afterUnowned = yield* runRunner(home, runner);
+        assert.equal(afterUnowned.exitCode, 0, afterUnowned.stderr);
+        assert.isFalse(yield* fs.exists(lock));
+      }).pipe(Effect.provide(NodeServices.layer)),
+    60_000,
   );
 });

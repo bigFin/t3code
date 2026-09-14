@@ -63,11 +63,13 @@ const SSH_TARGET = new SshConnectionTarget({
 const TARGET_ENTRY: ConnectionCatalogEntry = {
   target: TARGET,
   profile: Option.none(),
+  enabled: true,
 };
 
 const RELAY_ENTRY: ConnectionCatalogEntry = {
   target: RELAY_TARGET,
   profile: Option.none(),
+  enabled: true,
 };
 
 const SSH_ENTRY: ConnectionCatalogEntry = {
