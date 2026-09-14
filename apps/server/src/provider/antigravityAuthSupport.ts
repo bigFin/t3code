@@ -275,6 +275,68 @@ const linkAntigravityUserSkills = Effect.fn("linkAntigravityUserSkills")(functio
   }
 });
 
+/**
+ * Links conversation database and brain directory from the user's ~/.gemini/antigravity-cli
+ * into the isolated private ACP profile directory, allowing imported CLI sessions to be resumed.
+ */
+export const linkAntigravitySessionFiles = Effect.fn("linkAntigravitySessionFiles")(
+  function* (input: {
+    readonly acpDirectory: string;
+    readonly sessionId: string;
+    readonly userHome: string;
+    readonly platform: NodeJS.Platform;
+  }): Effect.fn.Return<void, never, FileSystem.FileSystem | Path.Path> {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const cliDir = path.join(input.userHome, ".gemini", "antigravity-cli");
+    const cliDbPath = path.join(cliDir, "conversations", `${input.sessionId}.db`);
+    const acpConversationsDir = path.join(input.acpDirectory, "conversations");
+    const acpDbPath = path.join(acpConversationsDir, `${input.sessionId}.db`);
+
+    const dbExists = yield* fs.exists(cliDbPath).pipe(Effect.orElseSucceed(() => false));
+    if (!dbExists) return;
+
+    yield* Effect.gen(function* () {
+      yield* fs.makeDirectory(acpConversationsDir, { recursive: true });
+      const targetDbExists = yield* fs.exists(acpDbPath).pipe(Effect.orElseSucceed(() => false));
+      if (!targetDbExists) {
+        yield* Effect.tryPromise(() =>
+          NodeFSP.symlink(cliDbPath, acpDbPath, input.platform === "win32" ? "file" : undefined),
+        ).pipe(Effect.ignore);
+      }
+      const cliWalPath = `${cliDbPath}-wal`;
+      const acpWalPath = `${acpDbPath}-wal`;
+      if (yield* fs.exists(cliWalPath).pipe(Effect.orElseSucceed(() => false))) {
+        if (!(yield* fs.exists(acpWalPath).pipe(Effect.orElseSucceed(() => false)))) {
+          yield* Effect.tryPromise(() =>
+            NodeFSP.symlink(
+              cliWalPath,
+              acpWalPath,
+              input.platform === "win32" ? "file" : undefined,
+            ),
+          ).pipe(Effect.ignore);
+        }
+      }
+
+      const cliBrainPath = path.join(cliDir, "brain", input.sessionId);
+      const acpBrainDir = path.join(input.acpDirectory, "brain");
+      const acpBrainPath = path.join(acpBrainDir, input.sessionId);
+      if (yield* fs.exists(cliBrainPath).pipe(Effect.orElseSucceed(() => false))) {
+        yield* fs.makeDirectory(acpBrainDir, { recursive: true });
+        if (!(yield* fs.exists(acpBrainPath).pipe(Effect.orElseSucceed(() => false)))) {
+          yield* Effect.tryPromise(() =>
+            NodeFSP.symlink(
+              cliBrainPath,
+              acpBrainPath,
+              input.platform === "win32" ? "junction" : "dir",
+            ),
+          ).pipe(Effect.ignore);
+        }
+      }
+    }).pipe(Effect.catch(() => Effect.void));
+  },
+);
+
 /** Prepares a private profile without reading or copying Google credentials. */
 export const prepareAntigravityProfile = Effect.fn("prepareAntigravityProfile")(function* (input: {
   readonly profileDirectory: string;

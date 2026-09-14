@@ -40,6 +40,7 @@ import * as AnalyticsService from "./telemetry/AnalyticsService.ts";
 import * as ServerEnvironment from "./environment/ServerEnvironment.ts";
 import * as CodexCliSessionImporter from "./provider/Services/CodexCliSessionImporter.ts";
 import * as PiCompatibleSessionImporter from "./provider/Services/PiCompatibleSessionImporter.ts";
+import * as AntigravitySessionImporter from "./provider/Services/AntigravitySessionImporter.ts";
 import * as EnvironmentAuth from "./auth/EnvironmentAuth.ts";
 import * as ProviderService from "./provider/Services/ProviderService.ts";
 import * as ProviderSessionDirectory from "./provider/Services/ProviderSessionDirectory.ts";
@@ -825,6 +826,7 @@ export const make = (options?: StartupOptions) =>
     const codexCliSessionImporter = yield* CodexCliSessionImporter.CodexCliSessionImporter;
     const piCompatibleSessionImporter =
       yield* PiCompatibleSessionImporter.PiCompatibleSessionImporter;
+    const antigravitySessionImporter = yield* AntigravitySessionImporter.AntigravitySessionImporter;
     const lifecycleEvents = yield* ServerLifecycleEvents.ServerLifecycleEvents;
     const serverSettings = yield* ServerSettings.ServerSettingsService;
     const serverEnvironment = yield* ServerEnvironment.ServerEnvironment;
@@ -889,6 +891,7 @@ export const make = (options?: StartupOptions) =>
           yield* providerSessionReaper.start().pipe(Scope.provide(reactorScope));
           yield* codexCliSessionImporter.start().pipe(Scope.provide(reactorScope));
           yield* piCompatibleSessionImporter.start().pipe(Scope.provide(reactorScope));
+          yield* antigravitySessionImporter.start().pipe(Scope.provide(reactorScope));
         }),
       );
 

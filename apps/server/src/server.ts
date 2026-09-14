@@ -55,6 +55,7 @@ import { ProviderRegistry } from "./provider/Services/ProviderRegistry.ts";
 import { ProviderSessionReaperLive } from "./provider/Layers/ProviderSessionReaper.ts";
 import { CodexCliSessionImporterLive } from "./provider/Drivers/CodexCliSessionImporter.ts";
 import { PiCompatibleSessionImporterLive } from "./provider/Drivers/PiCompatibleSessionImporter.ts";
+import { AntigravitySessionImporterLive } from "./provider/Drivers/AntigravitySessionImporter.ts";
 import { ProviderUsageLimitsIngestionLive } from "./provider/Layers/ProviderUsageLimitsIngestion.ts";
 import * as OpenCodeRuntime from "./provider/opencodeRuntime.ts";
 import * as PiRuntime from "./provider/piRuntime.ts";
@@ -450,6 +451,7 @@ const ProviderRuntimeLayerLive = Layer.mergeAll(
   ProviderSessionReaperLive,
   CodexCliSessionImporterLive,
   PiCompatibleSessionImporterLive,
+  AntigravitySessionImporterLive,
 ).pipe(
   // Subscribes to `account.rate-limits.updated` so usage bars track live
   // telemetry instead of waiting for the next status probe.

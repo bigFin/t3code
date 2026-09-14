@@ -28,6 +28,7 @@ import {
   antigravityAuthUsesBrowser,
   buildAntigravityAcpSpawnInput,
   isAntigravitySignInRequiredError,
+  linkAntigravitySessionFiles,
   prepareAntigravityProfile,
   resolveAntigravityProfileDirectory,
   type AntigravityAuthConfig,
@@ -155,6 +156,18 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
           Effect.provideService(Path.Path, path),
           Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
         );
+        if (input.resumeSessionId) {
+          yield* linkAntigravitySessionFiles({
+            acpDirectory: profile.acpDirectory,
+            sessionId: input.resumeSessionId,
+            userHome,
+            platform: yield* HostProcessPlatform,
+          }).pipe(
+            Effect.provideService(FileSystem.FileSystem, fileSystem),
+            Effect.provideService(Path.Path, path),
+            Effect.ignore,
+          );
+        }
         const runtime = yield* makeAntigravityAcpRuntime({
           ...input,
           authMethod: auth.authMethod,
