@@ -314,7 +314,7 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
         schemaVersion: 1,
         sessionId: "mock-session-1",
       });
-      assert.deepStrictEqual(discoveredModelIds, [["grok-build", "grok-mock-alt"]]);
+      assert.deepStrictEqual(discoveredModelIds, [["grok-4.6", "grok-mock-alt"]]);
 
       yield* adapter.sendTurn({
         threadId,

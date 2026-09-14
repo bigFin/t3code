@@ -75,7 +75,6 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
   const lastAuthoritativeSession = yield* Ref.make<RpcSession | null>(null);
   const activeSubscriptionSession = yield* Ref.make<RpcSession | null>(null);
   const persistence = yield* Queue.sliding<OrchestrationShellSnapshot>(1);
-  const reconciliationRequests = yield* Queue.sliding<void>(1);
 
   const persist = Effect.fn("EnvironmentShellState.persist")(function* (
     snapshot: OrchestrationShellSnapshot,
@@ -136,85 +135,61 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
       ),
     );
 
-  const applyItem = Effect.fn("EnvironmentShellState.applyItem")(function* (
-    item: OrchestrationShellStreamItem,
+  // Apply each received batch with one state write. The RPC client's bounded
+  // buffer can split a server chunk, so a bulk action can still need several
+  // writes, but each write includes every event in that batch.
+  const applyItems = Effect.fn("EnvironmentShellState.applyItems")(function* (
+    items: ReadonlyArray<OrchestrationShellStreamItem>,
   ) {
-    if (item.kind === "synchronized") {
-      yield* Ref.set(awaitingCompletion, false);
-      yield* SubscriptionRef.update(state, (current) =>
-        Option.isSome(current.snapshot)
-          ? { ...current, status: "live" as const, error: Option.none() }
-          : current,
-      );
-      return;
+    const initial = yield* SubscriptionRef.get(state);
+    let waiting = yield* Ref.get(awaitingCompletion);
+    let next = initial;
+    let receivedSnapshot = false;
+    for (const item of items) {
+      if (item.kind === "synchronized") {
+        waiting = false;
+        if (Option.isSome(next.snapshot)) {
+          next = { ...next, status: "live", error: Option.none() };
+        }
+        continue;
+      }
+      const nextSnapshot =
+        item.kind === "snapshot"
+          ? item.snapshot
+          : Option.match(next.snapshot, {
+              onNone: () => null,
+              onSome: (snapshot) =>
+                item.sequence > snapshot.snapshotSequence
+                  ? applyShellStreamEvent(snapshot, item)
+                  : snapshot,
+            });
+      if (nextSnapshot === null) continue;
+      receivedSnapshot ||= item.kind === "snapshot";
+      next = {
+        snapshot: Option.some(nextSnapshot),
+        status: waiting ? "synchronizing" : "live",
+        error: Option.none(),
+      };
     }
-
-    const current = yield* SubscriptionRef.get(state);
-    const nextSnapshot =
-      item.kind === "snapshot"
-        ? Option.match(current.snapshot, {
-            onNone: () => item.snapshot,
-            onSome: (snapshot) =>
-              item.snapshot.snapshotSequence >= snapshot.snapshotSequence
-                ? item.snapshot
-                : snapshot,
-          })
-        : Option.match(current.snapshot, {
-            onNone: () => null,
-            onSome: (snapshot) =>
-              item.sequence > snapshot.snapshotSequence
-                ? applyShellStreamEvent(snapshot, item)
-                : snapshot,
-          });
-    if (nextSnapshot === null) {
-      return;
-    }
-
-    const waiting = yield* Ref.get(awaitingCompletion);
-    yield* SubscriptionRef.set(state, {
-      snapshot: Option.some(nextSnapshot),
-      status: waiting ? "synchronizing" : "live",
-      error: Option.none(),
-    });
-    if (item.kind === "snapshot") {
+    yield* Ref.set(awaitingCompletion, waiting);
+    if (next === initial) return;
+    yield* SubscriptionRef.set(state, next);
+    if (receivedSnapshot) {
       const session = yield* Ref.get(activeSubscriptionSession);
       if (session !== null) {
         yield* Ref.set(lastAuthoritativeSession, session);
       }
     }
-    yield* Queue.offer(persistence, nextSnapshot);
-  });
-
-  const getPrepared = SubscriptionRef.get(supervisor.prepared).pipe(
-    Effect.flatMap(
-      Option.match({
-        onSome: Effect.succeed,
-        onNone: () =>
-          SubscriptionRef.changes(supervisor.prepared).pipe(
-            Stream.filter(Option.isSome),
-            Stream.map((value) => value.value),
-            Stream.runHead,
-            Effect.map(Option.getOrThrow),
-          ),
-      }),
-    ),
-  );
-  const reconcileSnapshot = Effect.fn("EnvironmentShellState.reconcileSnapshot")(function* () {
-    const prepared = yield* getPrepared;
-    const httpSnapshot = yield* snapshotLoader.load(prepared);
-    if (Option.isSome(httpSnapshot)) {
-      yield* applyItem({ kind: "snapshot", snapshot: httpSnapshot.value });
+    if (next.snapshot !== initial.snapshot && Option.isSome(next.snapshot)) {
+      yield* Queue.offer(persistence, next.snapshot.value);
     }
   });
+
   const foregroundResubscriptions = Option.match(wakeups, {
     onNone: () => Stream.never,
     onSome: (service) =>
-      service.changes.pipe(Stream.filter((reason) => reason === "application-active-probe")),
+      service.changes.pipe(Stream.filter(ConnectionWakeups.shouldResubscribeAfterWakeup)),
   });
-  yield* Stream.fromQueue(reconciliationRequests).pipe(
-    Stream.runForEach(() => reconcileSnapshot()),
-    Effect.forkScoped,
-  );
 
   yield* setSynchronizing;
   yield* Effect.forkScoped(
@@ -252,7 +227,7 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
           );
           const httpSnapshot = yield* snapshotLoader.load(prepared);
           if (Option.isSome(httpSnapshot)) {
-            yield* applyItem({ kind: "snapshot", snapshot: httpSnapshot.value });
+            yield* applyItems([{ kind: "snapshot", snapshot: httpSnapshot.value }]);
             canResume = true;
             current = yield* SubscriptionRef.get(state);
           }
@@ -272,14 +247,6 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
             error: Option.none(),
           }));
         }
-        // A cursor resume trusts the server to replay everything after the
-        // stored sequence. Anything missed outside that replay window —
-        // sleep, dropped frames, a dead subscription — would stay stale
-        // forever, so schedule an authoritative HTTP reconcile in the
-        // background to heal any gap.
-        if (canResume && Option.isSome(current.snapshot)) {
-          yield* Queue.offer(reconciliationRequests, undefined).pipe(Effect.ignore);
-        }
         return {
           afterSequence: current.snapshot.value.snapshotSequence,
           ...(supportsCompletionMarker ? { requestCompletionMarker: true as const } : {}),
@@ -290,15 +257,8 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
         retryExpectedFailureAfter: "250 millis",
         resubscribe: foregroundResubscriptions,
       },
-    ).pipe(Stream.runForEach(applyItem)),
+    ).pipe(Stream.runForEachArray(applyItems)),
   );
-  if (Option.isSome(wakeups)) {
-    yield* wakeups.value.changes.pipe(
-      Stream.filter((reason) => reason === "application-active"),
-      Stream.runForEach(() => Queue.offer(reconciliationRequests, undefined)),
-      Effect.forkScoped,
-    );
-  }
   yield* SubscriptionRef.changes(supervisor.state).pipe(
     Stream.runForEach((connectionState) => {
       switch (connectionProjectionPhase(connectionState)) {
@@ -316,7 +276,7 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
   return state;
 });
 
-export function shellStateChanges(environmentId: EnvironmentId) {
+function shellStateChanges(environmentId: EnvironmentId) {
   return followStreamInEnvironment(
     environmentId,
     Stream.unwrap(makeEnvironmentShellState().pipe(Effect.map(SubscriptionRef.changes))),

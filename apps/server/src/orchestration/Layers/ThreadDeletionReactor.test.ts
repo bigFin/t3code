@@ -89,6 +89,7 @@ describe("ThreadDeletionReactor drain", () => {
       const latestSequence = yield* Ref.make(0);
       const engine = {
         latestSequence: Ref.get(latestSequence),
+        subscribeDomainEvents: Effect.succeed(Stream.empty),
         streamDomainEvents: Stream.concat(
           Stream.make(deletedEvent(1)),
           Stream.fromEffect(Deferred.await(releaseSecondEvent)).pipe(

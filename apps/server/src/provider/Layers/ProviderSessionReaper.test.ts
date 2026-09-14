@@ -299,6 +299,7 @@ describe("ProviderSessionReaper", () => {
                   .map((thread) => [thread.id, thread]),
               ),
             ),
+          getTurnStartMessage: () => Effect.die("unused"),
           getThreadShellById: (threadId) =>
             Effect.succeed(
               input.readModel.threads.find((thread) => thread.id === threadId)

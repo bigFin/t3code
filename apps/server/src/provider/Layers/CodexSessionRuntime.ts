@@ -839,13 +839,40 @@ export function isRecoverableThreadResumeError(error: unknown): boolean {
   return RECOVERABLE_THREAD_RESUME_ERROR_SNIPPETS.some((snippet) => message.includes(snippet));
 }
 
+const isThreadResumeDecodeError = (error: unknown): boolean =>
+  Schema.is(CodexErrors.CodexAppServerRequestError)(error) && error.operation === "decode-payload";
+
+const CodexThreadResumeMetadata = Schema.Struct({
+  cwd: Schema.String,
+  model: Schema.String,
+  thread: Schema.Struct({ id: Schema.String }),
+});
+const decodeCodexThreadResumeMetadata = Schema.decodeUnknownEffect(CodexThreadResumeMetadata);
+
 type CodexThreadOpenResponse =
   | CodexRpc.ClientRequestResponsesByMethod["thread/start"]
-  | CodexRpc.ClientRequestResponsesByMethod["thread/resume"];
+  | CodexRpc.ClientRequestResponsesByMethod["thread/resume"]
+  | {
+      readonly cwd: string;
+      readonly model: string;
+      readonly thread: {
+        readonly id: string;
+        readonly status: { readonly type: "idle" };
+        readonly turns: readonly [];
+      };
+    };
 
 type CodexThreadOpenMethod = "thread/start" | "thread/resume";
 
 interface CodexThreadOpenClient {
+  readonly raw: {
+    readonly request: (
+      method: "thread/resume",
+      payload: CodexRpc.ClientRequestParamsByMethod["thread/resume"] & {
+        readonly excludeTurns?: boolean;
+      },
+    ) => Effect.Effect<unknown, CodexErrors.CodexAppServerError>;
+  };
   readonly request: <M extends CodexThreadOpenMethod>(
     method: M,
     payload: CodexRpc.ClientRequestParamsByMethod[M],
@@ -886,10 +913,49 @@ export const openCodexThread = (input: {
     return input.client.request("thread/start", startParams);
   }
 
-  const resume = input.client.request("thread/resume", {
-    threadId: resumeThreadId,
-    ...startParams,
-  });
+  // A provider that sends turns this client cannot decode (new error shapes,
+  // unknown item payloads) must not take the whole resume down. Fall back to
+  // a metadata-only resume that skips turn history instead of losing the
+  // session or starting fresh.
+  const resumeWithMetadataFallback = input.client
+    .request("thread/resume", {
+      threadId: resumeThreadId,
+      ...startParams,
+    })
+    .pipe(
+      Effect.catchIf(isThreadResumeDecodeError, () =>
+        input.client.raw
+          .request("thread/resume", {
+            threadId: resumeThreadId,
+            ...startParams,
+            excludeTurns: true,
+          })
+          .pipe(
+            Effect.flatMap((response) =>
+              decodeCodexThreadResumeMetadata(response).pipe(
+                Effect.mapError((error) =>
+                  CodexErrors.CodexAppServerRequestError.invalidPayload(
+                    "thread/resume",
+                    "decode-payload",
+                    error,
+                  ),
+                ),
+              ),
+            ),
+            // Degraded resume: no turn history survived decoding, so recovery
+            // starts clean and the callers see a ready session.
+            Effect.map((metadata) => ({
+              ...metadata,
+              thread: {
+                ...metadata.thread,
+                status: { type: "idle" as const },
+                turns: [] as const,
+              },
+            })),
+          ),
+      ),
+    );
+  const resume = resumeWithMetadataFallback;
   if (input.resumePolicy === "resume-only") {
     return resume.pipe(
       Effect.catchIf(isRecoverableThreadResumeError, () =>

@@ -128,7 +128,7 @@ const wakeupsLayer = Layer.effect(
       ),
     ).pipe(Stream.share({ capacity: "unbounded" }));
 
-    return Wakeups.make({ changes });
+    return Wakeups.ConnectionWakeups.of({ changes });
   }),
 );
 

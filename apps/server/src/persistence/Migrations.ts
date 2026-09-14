@@ -53,14 +53,16 @@ import Migration0038 from "./Migrations/038_ProjectionThreadsPinOrderKey.ts";
 import Migration0039 from "./Migrations/039_ProjectionProjectsDefaultThreadEnvMode.ts";
 import Migration0040 from "./Migrations/040_ProjectionProjectFaviconPath.ts";
 import Migration0041 from "./Migrations/041_AuthSessionClientConnection.ts";
-import Migration0042 from "./Migrations/042_ProjectionThreadSessionRetrying.ts";
-import Migration0043 from "./Migrations/043_ProjectionThreadSessionNativeIdentity.ts";
-import Migration0044 from "./Migrations/042_ProjectionThreadLinkedPullRequest.ts";
-import Migration0045 from "./Migrations/043_ProjectionThreadsUnsettledAt.ts";
-import Migration0046 from "./Migrations/044_ClearAutomaticProjectModelDefaults.ts";
-import Migration0047 from "./Migrations/045_ProjectionProjectsAutoPull.ts";
-import Migration0048 from "./Migrations/046_RepairAutomaticSettlementTimestamps.ts";
-import Migration0049 from "./Migrations/047_ProjectionProjectIcon.ts";
+import Migration0042 from "./Migrations/042_ProjectionThreadLinkedPullRequest.ts";
+import Migration0043 from "./Migrations/043_ProjectionThreadsUnsettledAt.ts";
+import Migration0044 from "./Migrations/044_ClearAutomaticProjectModelDefaults.ts";
+import Migration0045 from "./Migrations/045_ProjectionProjectsAutoPull.ts";
+import Migration0046 from "./Migrations/046_RepairAutomaticSettlementTimestamps.ts";
+import Migration0047 from "./Migrations/047_ProjectionProjectIcon.ts";
+import Migration0048 from "./Migrations/048_ProjectionThreadBranchPullRequest.ts";
+import Migration0049 from "./Migrations/049_ProjectionThreadsActiveOrderKey.ts";
+import Migration0050 from "./Migrations/042_ProjectionThreadSessionRetrying.ts";
+import Migration0051 from "./Migrations/043_ProjectionThreadSessionNativeIdentity.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -114,14 +116,16 @@ export const migrationEntries = [
   [39, "ProjectionProjectsDefaultThreadEnvMode", Migration0039],
   [40, "ProjectionProjectFaviconPath", Migration0040],
   [41, "AuthSessionClientConnection", Migration0041],
-  [42, "ProjectionThreadSessionRetrying", Migration0042],
-  [43, "ProjectionThreadSessionNativeIdentity", Migration0043],
-  [44, "ProjectionThreadLinkedPullRequest", Migration0044],
-  [45, "ProjectionThreadsUnsettledAt", Migration0045],
-  [46, "ClearAutomaticProjectModelDefaults", Migration0046],
-  [47, "ProjectionProjectsAutoPull", Migration0047],
-  [48, "RepairAutomaticSettlementTimestamps", Migration0048],
-  [49, "ProjectionProjectIcon", Migration0049],
+  [42, "ProjectionThreadLinkedPullRequest", Migration0042],
+  [43, "ProjectionThreadsUnsettledAt", Migration0043],
+  [44, "ClearAutomaticProjectModelDefaults", Migration0044],
+  [45, "ProjectionProjectsAutoPull", Migration0045],
+  [46, "RepairAutomaticSettlementTimestamps", Migration0046],
+  [47, "ProjectionProjectIcon", Migration0047],
+  [48, "ProjectionThreadBranchPullRequest", Migration0048],
+  [49, "ProjectionThreadsActiveOrderKey", Migration0049],
+  [50, "ProjectionThreadSessionRetrying", Migration0050],
+  [51, "ProjectionThreadSessionNativeIdentity", Migration0051],
 ] as const;
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);
