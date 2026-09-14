@@ -25,14 +25,14 @@ export interface ServerInstanceLock {
   readonly release: () => Promise<void>;
 }
 
-class ServerInstanceLockAcquireError extends Schema.TaggedErrorClass<ServerInstanceLockAcquireError>()(
+class ServerInstanceLockAcquireError extends Schema.TaggedError<ServerInstanceLockAcquireError>()(
   "ServerInstanceLockAcquireError",
   {
     cause: Schema.Defect(),
   },
 ) {}
 
-export class ServerInstanceLockError extends Schema.TaggedErrorClass<ServerInstanceLockError>()(
+export class ServerInstanceLockError extends Schema.TaggedError<ServerInstanceLockError>()(
   "ServerInstanceLockError",
   {
     reason: Schema.Literals(["already-running", "acquire"]),

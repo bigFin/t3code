@@ -55,8 +55,8 @@ const usageByWindowAtom = Atom.family((windowKey: string) =>
       statuses.push({
         environmentId,
         label: presentation.entry.target.label,
-        isConnected: presentation.connection.phase === "connected",
         ...query,
+        isConnected: presentation.connection.phase === "connected",
       });
     }
     return statuses;

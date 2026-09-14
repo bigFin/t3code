@@ -31,7 +31,7 @@ import {
   resolveWorkingStartedAt,
   sidebarEnvironmentConnectionClassName,
   toggleSidebarHostScope,
-  searchSidebarThreadsByTitle,
+  searchSidebarThreads,
   formatWorkingDurationLabel,
   shouldClearThreadSelectionOnMouseDown,
   shouldRecedeSidebarThread,
@@ -73,6 +73,77 @@ import {
 
 const localEnvironmentId = EnvironmentId.make("environment-local");
 
+describe("sidebarEnvironmentConnectionClassName", () => {
+  it("distinguishes connected, transitional, failed, and offline environments", () => {
+    expect(sidebarEnvironmentConnectionClassName("connected")).toBe("text-success");
+    expect(sidebarEnvironmentConnectionClassName("connecting")).toBe("text-info");
+    expect(sidebarEnvironmentConnectionClassName("reconnecting")).toBe("text-info");
+    expect(sidebarEnvironmentConnectionClassName("error")).toBe("text-destructive");
+    expect(sidebarEnvironmentConnectionClassName("offline")).toBe(
+      "text-sidebar-muted-foreground/70",
+    );
+  });
+});
+describe("toggleSidebarHostScope", () => {
+  it("supports an implicit all-host state and additive host selection", () => {
+    const sikaOnly = toggleSidebarHostScope(new Set<string>(), "sika");
+    expect([...sikaOnly]).toEqual(["sika"]);
+
+    const twoHosts = toggleSidebarHostScope(sikaOnly, "kitu");
+    expect([...twoHosts]).toEqual(["sika", "kitu"]);
+
+    expect([...toggleSidebarHostScope(twoHosts, "sika")]).toEqual(["kitu"]);
+    expect(toggleSidebarHostScope(new Set(["sika"]), "sika").size).toBe(0);
+  });
+});
+
+describe("resolveSidebarHostDisplayLabels", () => {
+  it("adds environment qualifiers only when hostnames collide", () => {
+    const labels = resolveSidebarHostDisplayLabels([
+      {
+        environmentId: "primary",
+        label: "Primary",
+        hostLabel: "sika",
+      },
+      {
+        environmentId: "remote",
+        label: "Remote",
+        hostLabel: "sika",
+      },
+      {
+        environmentId: "other",
+        label: "Kitu",
+        hostLabel: "kitu",
+      },
+    ]);
+
+    expect([...labels]).toEqual([
+      ["primary", "Primary · sika"],
+      ["remote", "Remote · sika"],
+      ["other", "Kitu"],
+    ]);
+  });
+
+  it("falls back to connection context when a saved label matches the hostname", () => {
+    const labels = resolveSidebarHostDisplayLabels([
+      {
+        environmentId: "environment-primary",
+        label: "sika",
+        hostLabel: "sika",
+        fallbackLabel: "Primary",
+      },
+      {
+        environmentId: "environment-remote",
+        label: "sika",
+        hostLabel: "sika",
+        fallbackLabel: "http://localhost:5734",
+      },
+    ]);
+
+    expect(labels.get("environment-primary")).toBe("Primary · sika");
+    expect(labels.get("environment-remote")).toBe("http://localhost:5734 · sika");
+  });
+});
 describe("animateSidebarLayoutChanges", () => {
   const baseArgs: Parameters<AnimateLayoutChanges>[0] = {
     active: null,
@@ -807,7 +878,7 @@ describe("resolveSidebarThreadStatus", () => {
   });
 });
 
-describe("searchSidebarThreadsByTitle", () => {
+describe("searchSidebarThreads", () => {
   const threads = [
     { id: "thread-1", title: "Fix workspace search", project: "Alpha" },
     { id: "thread-2", title: "Review providers", project: "Workspace" },
@@ -815,15 +886,15 @@ describe("searchSidebarThreadsByTitle", () => {
   ];
 
   it("matches thread titles case-insensitively and preserves their order", () => {
-    expect(searchSidebarThreadsByTitle(threads, "work")).toEqual([threads[0], threads[2]]);
+    expect(searchSidebarThreads(threads, "work")).toEqual([threads[0], threads[2]]);
   });
 
   it("does not match project metadata", () => {
-    expect(searchSidebarThreadsByTitle(threads, "workspace")).toEqual([threads[0]]);
+    expect(searchSidebarThreads(threads, "workspace")).toEqual([threads[0]]);
   });
 
   it("returns no results for an empty query", () => {
-    expect(searchSidebarThreadsByTitle(threads, "   ")).toEqual([]);
+    expect(searchSidebarThreads(threads, "   ")).toEqual([]);
   });
 });
 
@@ -2175,6 +2246,7 @@ function makeThread(overrides: Partial<Thread> = {}): Thread {
     branch: null,
     worktreePath: null,
     checkpoints: [],
+    pullRequests: [],
     activities: [],
     ...overrides,
   };
@@ -2573,5 +2645,42 @@ describe("resolveSidebarDropVerb", () => {
     expect(resolveSidebarDropVerb("pinned", "pinned")).toBeNull();
     expect(resolveSidebarDropVerb("active", null)).toBeNull();
     expect(resolveSidebarDropVerb("active", "snoozed")).toBeNull();
+  });
+});
+
+describe("host-first manual thread ordering", () => {
+  it("resolves a section change from row metadata without global dividers", () => {
+    const items: SidebarListItem[] = [
+      { kind: "thread", key: "host-a:active", section: "active" },
+      { kind: "thread", key: "host-a:settled", section: "settled" },
+      { kind: "thread", key: "host-b:pinned", section: "pinned" },
+      { kind: "thread", key: "host-b:active", section: "active" },
+    ];
+    expect(resolveSidebarDropTarget(items, "host-a:settled", "host-b:active")).toEqual({
+      section: "active",
+      pinnedOrder: ["host-b:pinned"],
+      activeOrder: ["host-a:active", "host-b:active", "host-a:settled"],
+    });
+  });
+
+  it("keeps a saved manual arrangement ahead of the activity sort preference", () => {
+    const threads = [
+      {
+        id: "fresh",
+        createdAt: "2026-09-10T12:00:00Z",
+        updatedAt: "2026-09-10T12:00:00Z",
+        activeOrderKey: "b",
+      },
+      {
+        id: "arranged-first",
+        createdAt: "2026-09-09T12:00:00Z",
+        updatedAt: "2026-09-09T12:00:00Z",
+        activeOrderKey: "a",
+      },
+    ];
+    expect(sortThreadsForSidebar(threads, "updated_at").map((thread) => thread.id)).toEqual([
+      "arranged-first",
+      "fresh",
+    ]);
   });
 });

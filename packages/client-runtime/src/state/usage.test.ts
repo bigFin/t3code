@@ -10,11 +10,11 @@ import { AsyncResult, Atom, AtomRegistry } from "effect/unstable/reactivity";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
 import type {
-  EnvironmentConnectionPresentation,
   EnvironmentPresentation,
+  EnvironmentConnectionPresentation,
 } from "../connection/presentation.ts";
 import { EnvironmentRpcUnavailableError } from "../rpc/client.ts";
-import { readEnvironmentUsageQueryState, refreshUsage } from "./usage.ts";
+import { refreshUsage, readEnvironmentUsageQueryState } from "./usage.ts";
 
 const input = {
   sinceDay: UsageDay.make("2026-09-05"),
@@ -187,19 +187,7 @@ describe("manual usage refresh", () => {
   });
 });
 
-const offlineSummary: UsageSummary = {
-  contractVersion: USAGE_CONTRACT_VERSION,
-  readAt: "2026-08-09T00:00:00.000Z",
-  timeZone: "UTC",
-  sinceDay: "2026-08-01" as UsageDay,
-  untilDay: "2026-08-09" as UsageDay,
-  buckets: [],
-  sources: [],
-  pricing: { status: "fresh", source: "litellm", fetchedAt: null, knownModels: 0 },
-  scanDurationMs: 1,
-};
-
-function offlineConnection(
+function connection(
   phase: EnvironmentConnectionPresentation["phase"],
   error: string | null = null,
 ): EnvironmentConnectionPresentation {
@@ -210,7 +198,7 @@ describe("readEnvironmentUsageQueryState", () => {
   it("makes an unavailable environment terminal without starting its query", () => {
     const readResult = vi.fn(() => AsyncResult.initial<UsageSummary>(true));
 
-    expect(readEnvironmentUsageQueryState(offlineConnection("offline"), readResult)).toEqual({
+    expect(readEnvironmentUsageQueryState(connection("offline"), readResult)).toEqual({
       isPending: false,
       error: "This environment could not report usage.",
       summary: null,
@@ -220,7 +208,7 @@ describe("readEnvironmentUsageQueryState", () => {
 
   it("keeps a connecting environment pending", () => {
     expect(
-      readEnvironmentUsageQueryState(offlineConnection("connecting"), () =>
+      readEnvironmentUsageQueryState(connection("connecting"), () =>
         AsyncResult.initial<UsageSummary>(true),
       ),
     ).toEqual({ isPending: true, error: null, summary: null });
@@ -228,7 +216,7 @@ describe("readEnvironmentUsageQueryState", () => {
 
   it("isolates a failed environment query", () => {
     expect(
-      readEnvironmentUsageQueryState(offlineConnection("connected"), () =>
+      readEnvironmentUsageQueryState(connection("connected"), () =>
         AsyncResult.failure<UsageSummary, Error>(Cause.fail(new Error("unsupported RPC"))),
       ),
     ).toEqual({
@@ -240,9 +228,7 @@ describe("readEnvironmentUsageQueryState", () => {
 
   it("returns a successful environment summary", () => {
     expect(
-      readEnvironmentUsageQueryState(offlineConnection("connected"), () =>
-        AsyncResult.success(offlineSummary),
-      ),
-    ).toEqual({ isPending: false, error: null, summary: offlineSummary });
+      readEnvironmentUsageQueryState(connection("connected"), () => AsyncResult.success(summary)),
+    ).toEqual({ isPending: false, error: null, summary });
   });
 });

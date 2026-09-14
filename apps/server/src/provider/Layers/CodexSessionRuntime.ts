@@ -179,6 +179,14 @@ export interface CodexSessionRuntimeOptions {
   readonly resumePolicy?: CodexThreadResumePolicy;
   readonly threadConfig?: Readonly<Record<string, unknown>>;
   readonly appServerSocketPath?: string;
+  readonly appServerArgs?: ReadonlyArray<string>;
+  /**
+   * Whether the attached `t3-code` MCP server exposes the preview tools. The
+   * server is attached for every session now (the pull request toolkit is
+   * always on), so its presence in `appServerArgs` no longer implies browser
+   * access; the credential's own capability decides the developer prompt.
+   */
+  readonly browserToolsAvailable?: boolean;
 }
 
 export interface CodexSessionRuntimeSendTurnInput {
@@ -354,7 +362,7 @@ export function resolveCodexRecoveredThreadState(input: {
     : { sessionStatus: "ready" };
 }
 
-export class CodexSessionRuntimePendingApprovalNotFoundError extends Schema.TaggedErrorClass<CodexSessionRuntimePendingApprovalNotFoundError>()(
+export class CodexSessionRuntimePendingApprovalNotFoundError extends Schema.TaggedError<CodexSessionRuntimePendingApprovalNotFoundError>()(
   "CodexSessionRuntimePendingApprovalNotFoundError",
   {
     requestId: Schema.String,
@@ -365,7 +373,7 @@ export class CodexSessionRuntimePendingApprovalNotFoundError extends Schema.Tagg
   }
 }
 
-export class CodexSessionRuntimePendingUserInputNotFoundError extends Schema.TaggedErrorClass<CodexSessionRuntimePendingUserInputNotFoundError>()(
+export class CodexSessionRuntimePendingUserInputNotFoundError extends Schema.TaggedError<CodexSessionRuntimePendingUserInputNotFoundError>()(
   "CodexSessionRuntimePendingUserInputNotFoundError",
   {
     requestId: Schema.String,
@@ -376,7 +384,7 @@ export class CodexSessionRuntimePendingUserInputNotFoundError extends Schema.Tag
   }
 }
 
-export class CodexSessionRuntimeInvalidUserInputAnswersError extends Schema.TaggedErrorClass<CodexSessionRuntimeInvalidUserInputAnswersError>()(
+export class CodexSessionRuntimeInvalidUserInputAnswersError extends Schema.TaggedError<CodexSessionRuntimeInvalidUserInputAnswersError>()(
   "CodexSessionRuntimeInvalidUserInputAnswersError",
   {
     questionId: Schema.String,
@@ -387,7 +395,7 @@ export class CodexSessionRuntimeInvalidUserInputAnswersError extends Schema.Tagg
   }
 }
 
-export class CodexSessionRuntimeThreadIdMissingError extends Schema.TaggedErrorClass<CodexSessionRuntimeThreadIdMissingError>()(
+export class CodexSessionRuntimeThreadIdMissingError extends Schema.TaggedError<CodexSessionRuntimeThreadIdMissingError>()(
   "CodexSessionRuntimeThreadIdMissingError",
   {
     threadId: Schema.String,
@@ -398,7 +406,7 @@ export class CodexSessionRuntimeThreadIdMissingError extends Schema.TaggedErrorC
   }
 }
 
-export class CodexSessionRuntimeLegacyHostAttachmentError extends Schema.TaggedErrorClass<CodexSessionRuntimeLegacyHostAttachmentError>()(
+export class CodexSessionRuntimeLegacyHostAttachmentError extends Schema.TaggedError<CodexSessionRuntimeLegacyHostAttachmentError>()(
   "CodexSessionRuntimeLegacyHostAttachmentError",
   {
     threadId: ThreadId,
@@ -411,7 +419,7 @@ export class CodexSessionRuntimeLegacyHostAttachmentError extends Schema.TaggedE
   }
 }
 
-export class CodexSessionRuntimeMutationAmbiguousError extends Schema.TaggedErrorClass<CodexSessionRuntimeMutationAmbiguousError>()(
+export class CodexSessionRuntimeMutationAmbiguousError extends Schema.TaggedError<CodexSessionRuntimeMutationAmbiguousError>()(
   "CodexSessionRuntimeMutationAmbiguousError",
   {
     threadId: ThreadId,
@@ -839,6 +847,7 @@ export function isRecoverableThreadResumeError(error: unknown): boolean {
   return RECOVERABLE_THREAD_RESUME_ERROR_SNIPPETS.some((snippet) => message.includes(snippet));
 }
 
+
 const isThreadResumeDecodeError = (error: unknown): boolean =>
   Schema.is(CodexErrors.CodexAppServerRequestError)(error) && error.operation === "decode-payload";
 
@@ -873,10 +882,13 @@ interface CodexThreadOpenClient {
       },
     ) => Effect.Effect<unknown, CodexErrors.CodexAppServerError>;
   };
-  readonly request: <M extends CodexThreadOpenMethod>(
-    method: M,
-    payload: CodexRpc.ClientRequestParamsByMethod[M],
-  ) => Effect.Effect<CodexRpc.ClientRequestResponsesByMethod[M], CodexErrors.CodexAppServerError>;
+  readonly request: <Method extends CodexThreadOpenMethod>(
+    method: Method,
+    payload: CodexRpc.ClientRequestParamsByMethod[Method],
+  ) => Effect.Effect<
+    CodexRpc.ClientRequestResponsesByMethod[Method],
+    CodexErrors.CodexAppServerError
+  >;
 }
 
 export const openCodexThread = (input: {
@@ -1440,7 +1452,10 @@ export const makeCodexSessionRuntime = (
     const extendEnv = options.environment === undefined;
     const scopedProcessConnection = Effect.gen(function* () {
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-      const appServerArgs = codexAppServerArgs(options.launchArgs);
+      const appServerArgs = [
+        ...codexAppServerArgs(options.launchArgs),
+        ...(options.appServerArgs ?? []),
+      ];
       const spawnCommand = yield* resolveSpawnCommand(options.binaryPath, appServerArgs, {
         env,
         extendEnv,
@@ -2682,10 +2697,13 @@ export const makeCodexSessionRuntime = (
             ...(input.serviceTier ? { serviceTier: input.serviceTier } : {}),
             ...(input.effort ? { effort: input.effort } : {}),
             ...(input.interactionMode ? { interactionMode: input.interactionMode } : {}),
-            // Derived from the session's own MCP configuration rather than the
+            // Derived from the session's own credential rather than the
             // setting, so the prompt describes the tools this turn actually
             // has even if the setting changed after the session started.
-            browserToolsAvailable: hasConfiguredMcpServer(codexAppServerArgs(options.launchArgs)),
+            browserToolsAvailable:
+              options.browserToolsAvailable ??
+              (hasConfiguredMcpServer(options.appServerArgs) ||
+                hasConfiguredMcpServer(codexAppServerArgs(options.launchArgs))),
           });
           const rawResponse = yield* client.raw.request("turn/start", params);
           const response = yield* decodeV2TurnStartResponse(rawResponse).pipe(

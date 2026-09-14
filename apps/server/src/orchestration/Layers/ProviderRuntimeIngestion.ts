@@ -191,6 +191,7 @@ function isAuthoritativeProgressForRetryingTurn(
       return false;
   }
 }
+
 function hasCheckpointForTurn(
   checkpoints: ReadonlyArray<OrchestrationCheckpointSummary>,
   turnId: TurnId,

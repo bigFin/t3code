@@ -542,6 +542,7 @@ const readModel: OrchestrationReadModel = {
       interactionMode: "default",
       branch: null,
       worktreePath: null,
+      pullRequests: [],
       latestTurn: null,
       createdAt: NOW,
       updatedAt: NOW,

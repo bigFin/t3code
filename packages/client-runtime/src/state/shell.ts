@@ -155,7 +155,13 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
       }
       const nextSnapshot =
         item.kind === "snapshot"
-          ? item.snapshot
+          ? Option.match(next.snapshot, {
+              onNone: () => item.snapshot,
+              onSome: (snapshot) =>
+                item.snapshot.snapshotSequence >= snapshot.snapshotSequence
+                  ? item.snapshot
+                  : snapshot,
+            })
           : Option.match(next.snapshot, {
               onNone: () => null,
               onSome: (snapshot) =>
@@ -184,6 +190,7 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
       yield* Queue.offer(persistence, next.snapshot.value);
     }
   });
+
 
   const foregroundResubscriptions = Option.match(wakeups, {
     onNone: () => Stream.never,

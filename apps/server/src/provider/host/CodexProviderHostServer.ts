@@ -230,7 +230,7 @@ export interface CodexProviderHostServerOptions {
   ) => Promise<ProcessIdentityStatus>;
 }
 
-export class CodexProviderHostError extends Schema.TaggedErrorClass<CodexProviderHostError>()(
+export class CodexProviderHostError extends Schema.TaggedError<CodexProviderHostError>()(
   "CodexProviderHostError",
   {
     operation: Schema.String,

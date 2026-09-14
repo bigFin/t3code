@@ -39,7 +39,7 @@ const connectUnavailableCommand = Command.make("connect", {
   command: Argument.string("command").pipe(Argument.variadic),
 }).pipe(
   Command.withDescription("T3 Connect is unavailable in builds without public configuration."),
-  Command.withHidden,
+  Command.unlisted,
   Command.withHandler(() =>
     Effect.fail(
       new CliError.ShowHelp({
@@ -54,7 +54,6 @@ const providerHostCommand = Command.make("__provider-host", {
   config: Flag.string("config"),
 }).pipe(
   Command.withDescription("Run an internal detached provider host."),
-  Command.withHidden,
   Command.withHandler(({ config }) =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;

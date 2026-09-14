@@ -79,7 +79,7 @@ export interface PiRuntimeShape {
   }) => Effect.Effect<PiRpcClient, PiRuntimeError, Scope.Scope>;
 }
 
-export class PiRuntimeError extends Schema.TaggedErrorClass<PiRuntimeError>()("PiRuntimeError", {
+export class PiRuntimeError extends Schema.TaggedError<PiRuntimeError>()("PiRuntimeError", {
   operation: Schema.String,
   detail: Schema.String,
   cause: Schema.optional(Schema.Defect()),

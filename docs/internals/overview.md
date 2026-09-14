@@ -18,13 +18,13 @@ but its renderer follows the same boundary.
 ┌──────────────────▼─────────────────────────────┐
 │ apps/server                                    │
 │  orchestration engine (event-sourced)          │
-│  provider driver registry (6 built-in drivers) │
+│  provider driver registry (8 built-in drivers) │
 │  checkpointing, VCS, terminals, filesystem     │
 └──────────────────┬─────────────────────────────┘
                    │ per-driver transport
 ┌──────────────────▼─────────────────────────────┐
 │ Agent CLIs: Codex, Claude, Cursor, Grok,       │
-│ OpenCode, Pi                                   │
+│ Oh My Pi, OpenCode, Pi, Antigravity              │
 └────────────────────────────────────────────────┘
 ```
 
@@ -38,6 +38,25 @@ The [RPC contract](../../packages/contracts/src/rpc.ts) is the boundary between 
 versioned clients and servers. Subscriptions send the state a client needs, so a client viewing one
 thread does not pay for every thread's history. Authentication of a socket does not authorize every
 method on it. See [environment auth](./environment-auth.md).
+
+### Pull request linking compatibility
+
+Web, desktop, mobile, and environments upgrade independently. Negotiate linking through the
+environment descriptor, never through a client version or an assumed coordinated release:
+
+| Environment capability                | Client behavior                                                                                                   |
+| ------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| `threadPullRequests: true`            | Use persisted `pullRequests[]`, multi-link commands, stack UI, and reverse thread lookup.                         |
+| Only `threadPullRequestLinking: true` | Use `linkedPullRequest` and the existing `thread.meta.update` single-link operation. Do not call multi-link RPCs. |
+| Neither flag                          | Hide linking actions; existing branch-discovered PR display remains available.                                    |
+
+New environments continue advertising the legacy flag, accepting legacy metadata commands, and
+emitting the derived `linkedPullRequest` field for older clients. That hostless field includes only
+links in the thread project's own repository; cross-host and cross-repository links require the
+multi-link protocol. New clients accept snapshots that
+omit `pullRequests`. Retain the legacy wire fields, projection column, and replay support; this feature
+does not schedule their removal. Missing new capabilities must also override cached multi-link data
+after an environment downgrade.
 
 Provider-specific behavior belongs behind an adapter. Orchestration works with normalized commands
 and events, so adding a provider should not require branches throughout the domain or clients.
@@ -74,20 +93,6 @@ capture workspace state without adding commits to the user's branch. A revert mu
 workspace state with the provider conversation. A provider that cannot roll back its conversation
 must reject that operation before changing the filesystem.
 
-## Waiting for asynchronous work
-
-Tests use [drainable workers](../../packages/shared/src/DrainableWorker.ts) to wait until both the
-queue and its current item have finished. An empty queue alone does not prove the worker is idle.
-
-Runtime receipts mark specific test milestones. Their
-[production layer](../../apps/server/src/orchestration/Layers/RuntimeReceiptBus.ts) is a no-op;
-production behavior must use persisted state and events. These test signals are separate from the
-durable command receipts that make dispatch idempotent.
-
-A turn is complete when its session leaves `running` status, projected by
-`settledTurnStateForSessionStatus` in [`projector.ts`][projector]. Checkpoint work settling later
-does not define turn end.
-
 Thread settlement is server-owned. Per-environment settings control PR and inactivity settlement.
 [`ThreadSettlementReactor`][settlement] checks threads at startup, when those settings change, and
 once per minute, including when no client is connected. It dispatches the guarded internal
@@ -98,22 +103,35 @@ Clients render the persisted settlement state and do not derive settlement from 
 state. A committed `thread.settled` event also lets `ProviderCommandReactor` stop an idle provider
 session.
 
-## Drainable workers
+## Waiting for asynchronous work
 
-Follow-up work runs asynchronously in queue-backed workers built on [`DrainableWorker`][worker]:
-[`ProviderRuntimeIngestion`][ingest] normalizes provider runtime streams into orchestration commands,
-[`ProviderCommandReactor`][cmd] dispatches provider calls in response to intent events,
-[`CheckpointReactor`][checkpoint] captures and reverts workspace checkpoints, and
-[`ThreadSettlementReactor`][settlement] evaluates server-owned automatic settlement rules.
+Tests use [drainable workers](../../packages/shared/src/DrainableWorker.ts) to wait until both the
+queue and its current item have finished. An empty queue alone does not prove the worker is idle.
 
-`DrainableWorker` pairs a transactional queue with a transactional count of outstanding items.
-`enqueue` atomically offers and increments; processing always decrements. `drain` retries until the
-count reaches zero, so a test can await "queue empty and current item finished" instead of sleeping.
-Each of these four services exposes `drain` for exactly this.
+Runtime receipts mark specific test milestones. Their
+[production layer](../../apps/server/src/orchestration/Layers/RuntimeReceiptBus.ts) is a no-op;
+production behavior must use persisted state and events. These test signals are separate from the
+durable command receipts that make dispatch idempotent.
 
-Runtime receipts are a test-only mechanism. `RuntimeReceiptBusLive` in
-[`RuntimeReceiptBus.ts`][receipts] publishes nothing; only the test layer is PubSub-backed. Do not
-build production behavior on receipts.
+## Desktop startup and native isolation
+
+The Electron shell acquires `DesktopPreReadyPlatform.layer` synchronously before asynchronous
+services. On Linux this sets the desktop-entry identity and global-shortcut portal flags before
+Chromium initializes its portal connection. Setting the identity later in `DesktopAppIdentity`
+is too late: Chromium caches the first registration, including failures. The identity must match
+the installed entry managed by `DesktopLinuxUrlHandler`. Pre-ready setup also refreshes that entry's
+`Exec` path before portal registration: AppImage updates can remove the previous executable, which
+makes the old entry invalid even though its filename is correct. The later URL handler avoids
+rewriting an identical entry while the portal may be reading it. On Wayland, Electron's synchronous
+shortcut-registration result only confirms submission; it does not confirm desktop consent or
+an active binding.
+
+Native modules never load in the Electron main process on the startup path, and the two the
+snapshot feature keeps are isolated: `@crowecawcaw/xa11y` runs only in forked Node-mode children
+(`SnapShotAccessibilityWorker`, `RegionSnapShotWorker`) and a worker thread, and `ffi-rs` loads
+lazily inside `WindowsForeground.ts` for a handful of Win32 calls. macOS window lookup shells out
+to `osascript` instead of a native addon. A crash or stall in any of these must not take the app
+down, so new native capability goes in a child with a deadline, not an `import` in main.
 
 ## Provider drivers
 

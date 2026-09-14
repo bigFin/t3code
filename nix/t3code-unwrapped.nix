@@ -1,7 +1,7 @@
 { lib
 , stdenv
 , src
-, electron_41
+, electron_43
 , nodejs_24
 , pnpm_11
 , fetchPnpmDeps
@@ -38,7 +38,7 @@ stdenv.mkDerivation {
     inherit version;
     inherit src;
     fetcherVersion = 4;
-    hash = "sha256-8aCapiSE+3OUfTXTOxQKEtRq8O0Zzn8q0FpQmhEPuhg=";
+    hash = "sha256-DvOEYkK7dql5uhUWfauSyR3iRRIoRfA87TUcgGC+wNo=";
   };
 
   nativeBuildInputs = [
@@ -101,7 +101,7 @@ stdenv.mkDerivation {
 
     makeWrapper ${lib.getExe nodejs_24} "$out"/bin/t3 \
       --add-flags "$out"/libexec/t3code/apps/server/dist/bin.mjs
-    makeWrapper ${lib.getExe electron_41} "$out"/bin/t3code-desktop \
+    makeWrapper ${lib.getExe electron_43} "$out"/bin/t3code-desktop \
       --add-flags "--password-store=gnome-libsecret" \
       --add-flags "$out"/libexec/t3code/apps/desktop \
       --set T3CODE_REMOTE_T3_PACKAGE_ARCHIVE \

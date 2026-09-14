@@ -1080,11 +1080,19 @@ if [ "$REMOTE_MANAGED" != "external" ] && [ -n "$REMOTE_PID" ] && kill -0 "$REMO
     kill "$PID_TO_SIGNAL" 2>/dev/null || true
   done
   WAIT_COUNT=0
-  while kill -0 "$REMOTE_PID" 2>/dev/null && [ "$WAIT_COUNT" -lt 20 ]; do
+  PID_LIST_RUNNING=1
+  while [ "$PID_LIST_RUNNING" -eq 1 ] && [ "$WAIT_COUNT" -lt 20 ]; do
+    PID_LIST_RUNNING=0
+    for PID_TO_CHECK in $MANAGED_PIDS; do
+      if kill -0 "$PID_TO_CHECK" 2>/dev/null; then
+        PID_LIST_RUNNING=1
+        break
+      fi
+    done
     WAIT_COUNT=$((WAIT_COUNT + 1))
-    sleep 0.1
+    [ "$PID_LIST_RUNNING" -eq 0 ] || sleep 0.1
   done
-  if kill -0 "$REMOTE_PID" 2>/dev/null; then
+  if [ "$PID_LIST_RUNNING" -eq 1 ]; then
     printf 'Remote T3 server with PID %s did not stop within 2 seconds. Its ownership files were kept.\\n' "$REMOTE_PID" >&2
     exit 1
   fi
@@ -1395,7 +1403,7 @@ export const issueRemotePairingToken = Effect.fn("ssh/tunnel.issueRemotePairingT
   };
 });
 
-const stopRemoteServer = Effect.fn("ssh/tunnel.stopRemoteServer")(function* (
+export const stopRemoteServer = Effect.fn("ssh/tunnel.stopRemoteServer")(function* (
   target: DesktopSshEnvironmentTarget,
   input?: SshAuthOptions,
 ): Effect.fn.Return<
@@ -1995,24 +2003,8 @@ const makeSshEnvironmentManager = Effect.fn("ssh/tunnel.SshEnvironmentManager.ma
           localPort: tunnelEntry.localPort,
           remotePort: tunnelEntry.remotePort,
         });
-        const authSecret = authSecrets.get(tunnelEntry.key) ?? null;
-        yield* stopRemoteServer(
-          tunnelEntry.target,
-          authSecret === null
-            ? {
-                batchMode: "yes",
-                interactiveAuth: false,
-              }
-            : {
-                authSecret,
-                batchMode: "no",
-                interactiveAuth: true,
-              },
-        ).pipe(
-          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawnerService),
-          Effect.provideService(FileSystem.FileSystem, fileSystemService),
-          Effect.provideService(Path.Path, pathService),
-        );
+        // The remote server is shared by all clients; closing a local tunnel
+        // must not terminate the host-wide session authority.
         yield* Effect.logDebug("ssh.environment.tunnel.finalizer.succeeded", {
           ...sshTargetLogFields(tunnelEntry.target),
           key: tunnelEntry.key,
@@ -2176,17 +2168,12 @@ const makeSshEnvironmentManager = Effect.fn("ssh/tunnel.SshEnvironmentManager.ma
           hasTunnel: entry !== null,
         });
         if (entry !== null) {
-          // Explicit disconnect owns the remote stop so its failure reaches the caller.
           yield* Effect.gen(function* () {
             tunnels.delete(key);
             yield* closeTunnelEntry(entry);
           }).pipe(Effect.uninterruptible);
         }
-        yield* runWithSshAuth({
-          key,
-          target: resolvedTarget,
-          operation: (authOptions) => stopRemoteServer(resolvedTarget, authOptions),
-        });
+        // The remote backend is shared and may still have other clients attached.
         yield* Effect.logInfo("ssh.environment.disconnect.succeeded", {
           ...sshTargetLogFields(resolvedTarget),
           key,

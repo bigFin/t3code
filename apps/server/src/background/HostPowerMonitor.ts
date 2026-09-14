@@ -19,7 +19,7 @@ export class HostPowerMonitor extends Context.Service<
   }
 >()("t3/background/HostPowerMonitor") {}
 
-export const makeUnknownSnapshot = (
+const makeUnknownSnapshot = (
   source: HostPowerSnapshot["source"],
   updatedAt: HostPowerSnapshot["updatedAt"],
 ): HostPowerSnapshot => ({
@@ -68,7 +68,7 @@ export const make = Effect.fn("background.hostPower.make")(function* (
       Effect.flatMap(
         Option.match({
           onNone: () => Effect.void,
-          onSome: (next) => PubSub.publish(changes, next),
+          onSome: (next) => PubSub.publish(changes, next).pipe(Effect.asVoid),
         }),
       ),
       Effect.asVoid,

@@ -244,6 +244,7 @@ export interface ProjectionSnapshotQueryShape {
     readonly threadId: ThreadId;
     readonly activityIds: ReadonlyArray<EventId>;
   }) => Effect.Effect<ReadonlySet<EventId>, ProjectionRepositoryError>;
+
   /**
    * Read one requested message and whether another non-compaction user message exists.
    * Newer queued messages count too, preserving first-turn title eligibility.

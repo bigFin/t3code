@@ -38,7 +38,7 @@ export const CodexProviderHostConfig = Schema.Struct({
 });
 export type CodexProviderHostConfig = typeof CodexProviderHostConfig.Type;
 
-export class CodexProviderHostConfigError extends Schema.TaggedErrorClass<CodexProviderHostConfigError>()(
+export class CodexProviderHostConfigError extends Schema.TaggedError<CodexProviderHostConfigError>()(
   "CodexProviderHostConfigError",
   {
     operation: Schema.Literals(["read", "decode", "encode", "persist"]),

@@ -595,7 +595,7 @@ const liveOperations: CodexAppServerHostOperations = {
   waitForHost,
 };
 
-class CodexAppServerHostOperationError extends Schema.TaggedErrorClass<CodexAppServerHostOperationError>()(
+class CodexAppServerHostOperationError extends Schema.TaggedError<CodexAppServerHostOperationError>()(
   "CodexAppServerHostOperationError",
   {
     cause: Schema.Defect(),

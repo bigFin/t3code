@@ -80,7 +80,7 @@ export const DecodedProviderHostManifest = Schema.Union([
 ]);
 export type DecodedProviderHostManifest = typeof DecodedProviderHostManifest.Type;
 
-export class ProviderHostManifestError extends Schema.TaggedErrorClass<ProviderHostManifestError>()(
+export class ProviderHostManifestError extends Schema.TaggedError<ProviderHostManifestError>()(
   "ProviderHostManifestError",
   {
     operation: Schema.Literals(["encode", "persist", "read", "decode"]),

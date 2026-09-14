@@ -1,3 +1,4 @@
+import { threadPullRequestSearchTerms } from "@t3tools/shared/threadPullRequests";
 import * as React from "react";
 import { resolveServerBackedAppStageLabel } from "../branding.logic";
 import type { EnvironmentConnectionPhase } from "@t3tools/client-runtime/connection";
@@ -9,7 +10,10 @@ import {
 import type { ContextMenuItem } from "@t3tools/contracts";
 import type { SidebarProjectSortOrder, SidebarThreadSortOrder } from "@t3tools/contracts/settings";
 import type { AsyncResult } from "effect/unstable/reactivity";
-import { planPinnedReorder } from "@t3tools/client-runtime/state/thread-sort";
+import {
+  planPinnedReorder,
+  sortActiveThreadsByOrderKey,
+} from "@t3tools/client-runtime/state/thread-sort";
 import {
   activeThreadAnchorTimestampMs,
   getThreadSortTimestamp,
@@ -216,6 +220,23 @@ export function resolveSidebarDropTarget(
   if (activeIndex === -1 || overIndex === -1 || items[activeIndex]?.kind !== "thread") return null;
   const moved = items.filter((_, index) => index !== activeIndex);
   moved.splice(overIndex, 0, items[activeIndex]!);
+  // Host-first lists carry each row's section rather than global separators.
+  // Host identity is presentation-only: dropping never migrates a thread.
+  if (!items.some((item) => item.kind === "marker")) {
+    const over = items[overIndex];
+    if (over?.kind !== "thread" || over.section === "snoozed") return null;
+    const orderFor = (section: SidebarSection) =>
+      moved.flatMap((item) =>
+        item.kind === "thread" && (item.key === activeKey ? over.section : item.section) === section
+          ? [item.key]
+          : [],
+      );
+    return {
+      section: over.section,
+      pinnedOrder: orderFor("pinned"),
+      activeOrder: orderFor("active"),
+    };
+  }
   const section = sectionAtSidebarSlot(moved, overIndex);
   if (section === "snoozed") return null;
   const pinnedOrder: string[] = [];
@@ -967,6 +988,7 @@ export function parseTimestampMs(isoDate: string): number {
   const parsed = Date.parse(isoDate);
   return Number.isNaN(parsed) ? 0 : parsed;
 }
+
 /** First VALID timestamp wins: `a ?? b` falls through on null, but a present-
     yet-malformed string must also fall through to the next candidate rather
     than sink the row to the epoch. */
@@ -1000,16 +1022,15 @@ export function sortThreadsForSidebar<
     readonly id: string;
     readonly createdAt: string;
     readonly unsettledAt?: string | null | undefined;
+    readonly activeOrderKey?: string | null | undefined;
   },
 >(threads: readonly T[], sortOrder?: SidebarThreadSortOrder): T[] {
-  if (sortOrder !== undefined) {
+  // Explicitly arranged threads retain their server-owned order. Before the
+  // first arrangement, the saved activity preference still floats imported work.
+  if (sortOrder !== undefined && !threads.some((thread) => thread.activeOrderKey != null)) {
     return sortThreads(threads as readonly (T & ThreadSortInput)[], sortOrder);
   }
-  return [...threads].toSorted(
-    (left, right) =>
-      activeThreadAnchorTimestampMs(right) - activeThreadAnchorTimestampMs(left) ||
-      left.id.localeCompare(right.id),
-  );
+  return sortActiveThreadsByOrderKey(threads);
 }
 
 // Pinned-reorder key math and the keyed sort live in client-runtime
@@ -1018,17 +1039,20 @@ export { pinOrderKeyBetween, planPinnedReorder } from "@t3tools/client-runtime/s
 export { sortPinnedThreadsByOrderKey as sortPinnedThreadsForSidebar } from "@t3tools/client-runtime/state/thread-sort";
 
 /**
- * Search the already-ordered sidebar thread collection by title only.
+ * Search the already-ordered sidebar thread collection by title or linked PR.
  * Keeping the input order means lifecycle ordering (active, snoozed, settled)
  * remains stable while the user narrows the list.
  */
-export function searchSidebarThreadsByTitle<T extends { readonly title: string }>(
-  threads: readonly T[],
-  query: string,
-): T[] {
+export function searchSidebarThreads<
+  T extends { readonly title: string } & Parameters<typeof threadPullRequestSearchTerms>[0],
+>(threads: readonly T[], query: string): T[] {
   const normalizedQuery = query.trim().toLowerCase();
   if (normalizedQuery.length === 0) return [];
-  return threads.filter((thread) => thread.title.toLowerCase().includes(normalizedQuery));
+  return threads.filter((thread) =>
+    [thread.title, ...threadPullRequestSearchTerms(thread)].some((term) =>
+      term.toLowerCase().includes(normalizedQuery),
+    ),
+  );
 }
 
 export function filterSidebarProjectScopeItems<TItem extends { readonly value: string }>(input: {
