@@ -300,6 +300,7 @@ export const linkAntigravitySessionFiles = Effect.fn("linkAntigravitySessionFile
       yield* fs.makeDirectory(acpConversationsDir, { recursive: true });
       const targetDbExists = yield* fs.exists(acpDbPath).pipe(Effect.orElseSucceed(() => false));
       if (!targetDbExists) {
+        yield* fs.remove(acpDbPath, { force: true }).pipe(Effect.ignore);
         yield* Effect.tryPromise(() =>
           NodeFSP.symlink(cliDbPath, acpDbPath, input.platform === "win32" ? "file" : undefined),
         ).pipe(Effect.ignore);
@@ -308,6 +309,7 @@ export const linkAntigravitySessionFiles = Effect.fn("linkAntigravitySessionFile
       const acpWalPath = `${acpDbPath}-wal`;
       if (yield* fs.exists(cliWalPath).pipe(Effect.orElseSucceed(() => false))) {
         if (!(yield* fs.exists(acpWalPath).pipe(Effect.orElseSucceed(() => false)))) {
+          yield* fs.remove(acpWalPath, { force: true }).pipe(Effect.ignore);
           yield* Effect.tryPromise(() =>
             NodeFSP.symlink(
               cliWalPath,
@@ -324,6 +326,7 @@ export const linkAntigravitySessionFiles = Effect.fn("linkAntigravitySessionFile
       if (yield* fs.exists(cliBrainPath).pipe(Effect.orElseSucceed(() => false))) {
         yield* fs.makeDirectory(acpBrainDir, { recursive: true });
         if (!(yield* fs.exists(acpBrainPath).pipe(Effect.orElseSucceed(() => false)))) {
+          yield* fs.remove(acpBrainPath, { force: true }).pipe(Effect.ignore);
           yield* Effect.tryPromise(() =>
             NodeFSP.symlink(
               cliBrainPath,

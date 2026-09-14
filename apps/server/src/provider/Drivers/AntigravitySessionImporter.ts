@@ -372,18 +372,22 @@ export const makeAntigravitySessionImporter = (options?: { readonly customDataDi
       }
       const unseen = activities.filter((activity) => !known.has(activity.id));
       if (unseen.length === 0) return;
-      yield* engine.dispatch({
-        type: "thread.activities.import",
-        commandId: stableCommandId(
-          "activities",
+      for (let index = 0; index < unseen.length; index += 200) {
+        const batch = unseen.slice(index, index + 200);
+        yield* engine.dispatch({
+          type: "thread.activities.import",
+          commandId: stableCommandId(
+            "activities",
+            threadId,
+            String(index),
+            stableTextHash(JSON.stringify(batch.map((activity) => activity.id))),
+          ),
           threadId,
-          stableTextHash(JSON.stringify(unseen.map((activity) => activity.id))),
-        ),
-        threadId,
-        activities: unseen,
-        createdAt: unseen.at(-1)!.createdAt,
-      });
-      for (const activity of unseen) known.add(activity.id);
+          activities: batch,
+          createdAt: batch.at(-1)!.createdAt,
+        });
+        for (const activity of batch) known.add(activity.id);
+      }
     });
 
     const importSessionRow = Effect.fn("AntigravitySessionImporter.importSessionRow")(function* (
@@ -498,17 +502,21 @@ export const makeAntigravitySessionImporter = (options?: { readonly customDataDi
       );
       const newMessages = messagesToImport.filter((msg) => !knownMessageIds.has(msg.messageId));
       if (newMessages.length > 0) {
-        yield* engine.dispatch({
-          type: "thread.messages.import",
-          commandId: stableCommandId(
-            "messages",
+        for (let index = 0; index < newMessages.length; index += 100) {
+          const batch = newMessages.slice(index, index + 100);
+          yield* engine.dispatch({
+            type: "thread.messages.import",
+            commandId: stableCommandId(
+              "messages",
+              threadId,
+              String(index),
+              stableTextHash(JSON.stringify(batch.map((msg) => msg.messageId))),
+            ),
             threadId,
-            stableTextHash(JSON.stringify(newMessages.map((msg) => msg.messageId))),
-          ),
-          threadId,
-          messages: newMessages,
-          createdAt: newMessages.at(-1)!.createdAt,
-        });
+            messages: batch,
+            createdAt: batch.at(-1)!.createdAt,
+          });
+        }
       }
 
       // Import unseen activities
