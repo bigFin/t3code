@@ -3,6 +3,7 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import { TaggedError } from "effect/Schema";
 
 import { writeFileStringAtomically } from "../../atomicWrite.ts";
 import {
@@ -80,7 +81,7 @@ export const DecodedProviderHostManifest = Schema.Union([
 ]);
 export type DecodedProviderHostManifest = typeof DecodedProviderHostManifest.Type;
 
-export class ProviderHostManifestError extends Schema.TaggedError<ProviderHostManifestError>()(
+export class ProviderHostManifestError extends TaggedError<ProviderHostManifestError>()(
   "ProviderHostManifestError",
   {
     operation: Schema.Literals(["encode", "persist", "read", "decode"]),

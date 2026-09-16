@@ -58,7 +58,9 @@ const SkillFrontmatter = Schema.Struct({
 });
 const decodeSkillFrontmatter = Schema.decodeUnknownSync(SkillFrontmatter);
 
-export class AntigravitySkillsProbeError extends Schema.TaggedError<AntigravitySkillsProbeError>()(
+import { TaggedError } from "effect/Schema";
+
+export class AntigravitySkillsProbeError extends TaggedError<AntigravitySkillsProbeError>()(
   "AntigravitySkillsProbeError",
   {
     reason: Schema.Literals(["scan-budget-exhausted", "filesystem-error"]),
