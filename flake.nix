@@ -70,7 +70,15 @@
               nodejs_24
               pnpm_11
               nixpkgs-fmt
+              pkg-config
+              libsecret
+              python3
+              node-gyp
             ];
+
+            shellHook = ''
+              export PKG_CONFIG_PATH="${pkgs.libsecret.dev}/lib/pkgconfig:''${PKG_CONFIG_PATH:-}"
+            '';
           };
         }) // {
       overlays.default = final: _prev: {

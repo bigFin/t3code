@@ -409,7 +409,18 @@ async function syncConfiguredGeneratedNotices(
   const licenseIds = [
     ...new Set(configuredGeneratedNotices(config).map((notice) => notice.licenseId)),
   ].sort((left, right) => left.localeCompare(right));
-  await Promise.all(licenseIds.map((licenseId) => resolveSpdxLicense(directory, licenseId, false)));
+  await Promise.all(
+    licenseIds.map(async (licenseId) => {
+      try {
+        await resolveSpdxLicense(directory, licenseId, false);
+      } catch (error) {
+        console.warn(
+          `[third-party-licenses] Warning: Failed to sync SPDX license ${licenseId}:`,
+          error,
+        );
+      }
+    }),
+  );
 }
 
 export async function syncThirdPartyLicenseNotices(configFile: string | URL): Promise<void> {
