@@ -25,7 +25,7 @@ export class PullRequestDiffCredentialRejectedError extends Schema.TaggedError<P
   "PullRequestDiffCredentialRejectedError",
   {
     repository: Schema.String,
-    number: Schema.Number,
+    number: Schema.Finite,
     traceId: Schema.String,
     cause: EnvironmentAuthInvalidError,
   },

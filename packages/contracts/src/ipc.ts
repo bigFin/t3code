@@ -331,15 +331,15 @@ export type DesktopSnapShot = typeof DesktopSnapShot.Type;
 export const DesktopSnapShotAnimationDestination = Schema.Struct({
   id: DesktopSnapShotId,
   viewportFrame: Schema.Struct({
-    x: Schema.Number,
-    y: Schema.Number,
-    width: Schema.Number,
-    height: Schema.Number,
+    x: Schema.Finite,
+    y: Schema.Finite,
+    width: Schema.Finite,
+    height: Schema.Finite,
   }),
   backgroundColor: Schema.String,
   borderColor: Schema.String,
-  borderWidth: Schema.Number,
-  cornerRadius: Schema.Number,
+  borderWidth: Schema.Finite,
+  cornerRadius: Schema.Finite,
   details: Schema.optional(
     Schema.Struct({
       appName: SnapShotSource.fields.appName,
@@ -384,7 +384,7 @@ export interface DesktopUpdateReleaseNote {
 export const DesktopUpdateReleaseNoteSchema = Schema.Struct({
   version: Schema.String,
   items: Schema.Array(Schema.String),
-  totalItems: Schema.Number,
+  totalItems: Schema.Finite,
 });
 
 export const DesktopUpdateStateSchema = Schema.Struct({
@@ -398,8 +398,8 @@ export const DesktopUpdateStateSchema = Schema.Struct({
   availableVersion: Schema.NullOr(Schema.String),
   downloadedVersion: Schema.NullOr(Schema.String),
   releaseNotes: Schema.Array(DesktopUpdateReleaseNoteSchema),
-  omittedReleaseCount: Schema.Number,
-  downloadPercent: Schema.NullOr(Schema.Number),
+  omittedReleaseCount: Schema.Finite,
+  downloadPercent: Schema.NullOr(Schema.Finite),
   checkedAt: Schema.NullOr(Schema.String),
   message: Schema.NullOr(Schema.String),
   errorContext: Schema.NullOr(Schema.Literals(["check", "download", "install"])),
@@ -462,7 +462,7 @@ export const DesktopSshEnvironmentTargetSchema = Schema.Struct({
   alias: Schema.String,
   hostname: Schema.String,
   username: Schema.NullOr(Schema.String),
-  port: Schema.NullOr(Schema.Number),
+  port: Schema.NullOr(Schema.Finite),
 });
 export type DesktopSshEnvironmentTarget = typeof DesktopSshEnvironmentTargetSchema.Type;
 
@@ -477,7 +477,7 @@ export const DesktopDiscoveredSshHostSchema = Schema.Struct({
   alias: Schema.String,
   hostname: Schema.String,
   username: Schema.NullOr(Schema.String),
-  port: Schema.NullOr(Schema.Number),
+  port: Schema.NullOr(Schema.Finite),
   source: DesktopSshHostSourceSchema,
 });
 
@@ -495,7 +495,7 @@ export const DesktopSshEnvironmentBootstrapSchema = Schema.Struct({
   httpBaseUrl: Schema.String,
   wsBaseUrl: Schema.String,
   pairingToken: Schema.NullOr(Schema.String),
-  remotePort: Schema.optionalKey(Schema.Number),
+  remotePort: Schema.optionalKey(Schema.Finite),
   remoteServerKind: Schema.optionalKey(Schema.Literals(["external", "managed"])),
 });
 
@@ -583,7 +583,7 @@ export const DesktopServerExposureStateSchema = Schema.Struct({
   endpointUrl: Schema.NullOr(Schema.String),
   advertisedHost: Schema.NullOr(Schema.String),
   tailscaleServeEnabled: Schema.Boolean,
-  tailscaleServePort: Schema.Number,
+  tailscaleServePort: Schema.Finite,
 });
 
 export interface PickFolderOptions {
@@ -614,7 +614,7 @@ export interface PickedThemeFile {
 
 export const PickedThemeFileSchema = Schema.Struct({
   name: Schema.String,
-  size: Schema.Number,
+  size: Schema.Finite,
   text: Schema.String,
 });
 
@@ -700,7 +700,7 @@ export const DesktopPreviewFaviconSchema: Schema.Codec<DesktopPreviewFavicon> = 
     Schema.isPattern(/^data:image\/png;base64,[a-z0-9+/]+={0,2}$/i),
   ),
   pageUrl: Schema.String.check(Schema.isMaxLength(2_048)),
-  capturedAt: Schema.Number.check(
+  capturedAt: Schema.Finite.check(
     Schema.isFinite(),
     Schema.isGreaterThanOrEqualTo(0),
     Schema.isLessThanOrEqualTo(FAVICON_CAPTURED_AT_MAX),
@@ -762,7 +762,7 @@ export const DesktopPreviewNavStatusSchema = Schema.Union([
     kind: Schema.Literal("LoadFailed"),
     url: Schema.String,
     title: Schema.String,
-    code: Schema.Number,
+    code: Schema.Finite,
     description: Schema.String,
   }),
 ]);
@@ -908,8 +908,8 @@ export interface PickedElementStackFrame {
 export const PickedElementStackFrameSchema: Schema.Codec<PickedElementStackFrame> = Schema.Struct({
   functionName: Schema.NullOr(Schema.String),
   fileName: Schema.NullOr(Schema.String),
-  lineNumber: Schema.NullOr(Schema.Number),
-  columnNumber: Schema.NullOr(Schema.Number),
+  lineNumber: Schema.NullOr(Schema.Finite),
+  columnNumber: Schema.NullOr(Schema.Finite),
 });
 
 /**
@@ -962,10 +962,10 @@ export interface PreviewAnnotationRect {
 }
 
 export const PreviewAnnotationRectSchema: Schema.Codec<PreviewAnnotationRect> = Schema.Struct({
-  x: Schema.Number,
-  y: Schema.Number,
-  width: Schema.Number,
-  height: Schema.Number,
+  x: Schema.Finite,
+  y: Schema.Finite,
+  width: Schema.Finite,
+  height: Schema.Finite,
 });
 
 export interface PreviewAnnotationPoint {
@@ -974,8 +974,8 @@ export interface PreviewAnnotationPoint {
 }
 
 export const PreviewAnnotationPointSchema: Schema.Codec<PreviewAnnotationPoint> = Schema.Struct({
-  x: Schema.Number,
-  y: Schema.Number,
+  x: Schema.Finite,
+  y: Schema.Finite,
 });
 
 export interface PreviewAnnotationElementTarget {
@@ -1014,7 +1014,7 @@ export const PreviewAnnotationStrokeTargetSchema: Schema.Codec<PreviewAnnotation
   Schema.Struct({
     id: Schema.String,
     color: Schema.String,
-    width: Schema.Number,
+    width: Schema.Finite,
     points: Schema.Array(PreviewAnnotationPointSchema),
     bounds: PreviewAnnotationRectSchema,
   });
@@ -1046,8 +1046,8 @@ export interface PreviewAnnotationScreenshot {
 export const PreviewAnnotationScreenshotSchema: Schema.Codec<PreviewAnnotationScreenshot> =
   Schema.Struct({
     dataUrl: Schema.String,
-    width: Schema.Number,
-    height: Schema.Number,
+    width: Schema.Finite,
+    height: Schema.Finite,
     cropRect: PreviewAnnotationRectSchema,
   });
 
@@ -1114,7 +1114,7 @@ export const DesktopPreviewTabInputSchema = Schema.Struct({
  */
 export const DesktopPreviewCreateTabInputSchema = Schema.Struct({
   tabId: DesktopPreviewTabIdSchema,
-  zoomFactor: Schema.optional(Schema.Number.check(Schema.isGreaterThan(0))),
+  zoomFactor: Schema.optional(Schema.Finite.check(Schema.isGreaterThan(0))),
   colorScheme: Schema.optional(DesktopPreviewColorSchemeSchema),
 });
 

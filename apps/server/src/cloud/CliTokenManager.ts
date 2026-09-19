@@ -121,7 +121,7 @@ export const waitForLoopbackAuthorization = Effect.fn(
 const PersistedToken = Schema.Struct({
   accessToken: Schema.String,
   refreshToken: Schema.String,
-  expiresAtEpochMs: Schema.Number,
+  expiresAtEpochMs: Schema.Finite,
   identity: Schema.optional(Schema.String),
 });
 export type PersistedToken = typeof PersistedToken.Type;
@@ -134,7 +134,7 @@ const OAuthTokenResponse = Schema.Struct({
   access_token: Schema.String,
   refresh_token: Schema.optional(Schema.String),
   id_token: Schema.optional(Schema.String),
-  expires_in: Schema.Number,
+  expires_in: Schema.Finite,
   token_type: Schema.String,
 });
 
@@ -148,8 +148,8 @@ const DeviceAuthorizationResponse = Schema.Struct({
   user_code: Schema.String,
   verification_uri: Schema.String,
   verification_uri_complete: Schema.optional(Schema.String),
-  expires_in: Schema.Number,
-  interval: Schema.optional(Schema.Number),
+  expires_in: Schema.Finite,
+  interval: Schema.optional(Schema.Finite),
 });
 
 const OidcIdentityClaimsJson = Schema.fromJsonString(
@@ -341,7 +341,7 @@ const pollDeviceToken = Effect.fn("cloud.cli_token.poll_device_token")(function*
     const response = yield* HttpClientRequest.post(metadata.tokenEndpoint).pipe(
       HttpClientRequest.bodyUrlParams(params),
       httpClient.execute,
-      Effect.map(Option.some),
+      Effect.asSome,
       Effect.catchIf(isTransportError, () => Effect.succeedNone),
     );
     // Transport failures and upstream 5xx are transient while the device code

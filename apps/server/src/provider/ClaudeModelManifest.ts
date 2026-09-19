@@ -13,8 +13,8 @@ export const ClaudeCodeProfileSchema = Schema.Struct({
       Schema.Record(TrimmedNonEmptyString, TrimmedNonEmptyString),
     ),
   ),
-  contextWindowTokens: Schema.optional(Schema.Record(TrimmedNonEmptyString, Schema.Number)),
-  fixedContextWindowTokens: Schema.optional(Schema.Number),
+  contextWindowTokens: Schema.optional(Schema.Record(TrimmedNonEmptyString, Schema.Finite)),
+  fixedContextWindowTokens: Schema.optional(Schema.Finite),
 });
 
 export const ClaudeProfileAdapterSchema = Schema.Struct({

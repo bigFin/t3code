@@ -417,7 +417,7 @@ const TurnCompletedPayload = Schema.Struct({
   stopReason: Schema.optional(Schema.NullOr(TrimmedNonEmptyStringSchema)),
   usage: Schema.optional(Schema.Unknown),
   modelUsage: Schema.optional(UnknownRecordSchema),
-  totalCostUsd: Schema.optional(Schema.Number),
+  totalCostUsd: Schema.optional(Schema.Finite),
   errorMessage: Schema.optional(TrimmedNonEmptyStringSchema),
   tokenUsage: Schema.optional(TurnTokenUsage),
 });
@@ -775,7 +775,7 @@ const ToolProgressPayload = Schema.Struct({
   toolUseId: Schema.optional(TrimmedNonEmptyStringSchema),
   toolName: Schema.optional(TrimmedNonEmptyStringSchema),
   summary: Schema.optional(TrimmedNonEmptyStringSchema),
-  elapsedSeconds: Schema.optional(Schema.Number),
+  elapsedSeconds: Schema.optional(Schema.Finite),
   /** Owning task/agent when the tool ran inside a subagent. */
   taskId: Schema.optional(RuntimeTaskId),
   parentToolUseId: Schema.optional(TrimmedNonEmptyStringSchema),

@@ -16,7 +16,7 @@ import * as ResourceTelemetry from "../resourceTelemetry/ResourceTelemetry.ts";
 export class ProcessSignalFailed extends Schema.TaggedError<ProcessSignalFailed>()(
   "ProcessSignalFailed",
   {
-    pid: Schema.Number,
+    pid: Schema.Finite,
     signal: Schema.String,
     cause: Schema.Defect(),
   },

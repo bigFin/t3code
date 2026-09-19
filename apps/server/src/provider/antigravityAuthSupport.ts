@@ -352,7 +352,7 @@ export const linkAntigravitySessionFiles = Effect.fn("linkAntigravitySessionFile
           ).pipe(Effect.ignore);
         }
       }
-    }).pipe(Effect.catch(() => Effect.void));
+    }).pipe(Effect.ignore);
   },
 );
 

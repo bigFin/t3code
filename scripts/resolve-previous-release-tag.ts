@@ -51,7 +51,7 @@ export class ReleaseTagListProcessExitError extends Schema.TaggedError<ReleaseTa
   "ReleaseTagListProcessExitError",
   {
     ...releaseTagListProcessContext,
-    exitCode: Schema.Number,
+    exitCode: Schema.Finite,
     stdoutLength: NonNegativeInt,
     stderrLength: NonNegativeInt,
   },

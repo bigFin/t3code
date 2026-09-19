@@ -19,7 +19,7 @@ import {
 const ProjectionProjectDbRow = ProjectionProject.mapFields(
   Struct.assign({
     defaultModelSelection: Schema.NullOr(Schema.fromJsonString(ModelSelection)),
-    autoPull: Schema.Number,
+    autoPull: Schema.Finite,
     projectIcon: Schema.NullOr(Schema.fromJsonString(ProjectIconOverride)),
     scripts: Schema.fromJsonString(Schema.Array(ProjectScript)),
   }),

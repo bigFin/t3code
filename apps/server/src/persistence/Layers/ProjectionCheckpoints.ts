@@ -189,7 +189,7 @@ const makeProjectionCheckpointRepository = Effect.gen(function* () {
       ),
       Effect.flatMap((rowOption) =>
         Option.match(rowOption, {
-          onNone: () => Effect.succeed(Option.none()),
+          onNone: () => Effect.succeedNone,
           onSome: (row) =>
             Effect.succeed(Option.some(row as Schema.Schema.Type<typeof ProjectionCheckpoint>)),
         }),

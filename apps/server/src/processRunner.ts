@@ -50,7 +50,7 @@ export interface ProcessRunOutput {
 
 const ProcessInvocationFields = {
   command: Schema.String,
-  argumentCount: Schema.Number,
+  argumentCount: Schema.Finite,
   cwd: Schema.optional(Schema.String),
   spawnCwd: Schema.optional(Schema.String),
 };
@@ -71,7 +71,7 @@ export class ProcessSpawnError extends Schema.TaggedError<ProcessSpawnError>()(
   {
     ...ProcessInvocationFields,
     resolvedCommand: Schema.optional(Schema.String),
-    resolvedArgumentCount: Schema.optional(Schema.Number),
+    resolvedArgumentCount: Schema.optional(Schema.Finite),
     shell: Schema.optional(Schema.Boolean),
     cause: Schema.Defect(),
   },
@@ -85,7 +85,7 @@ export class ProcessStdinError extends Schema.TaggedError<ProcessStdinError>()(
   "ProcessStdinError",
   {
     ...ProcessInvocationFields,
-    stdinBytes: Schema.Number,
+    stdinBytes: Schema.Finite,
     cause: Schema.Defect(),
   },
 ) {
@@ -99,8 +99,8 @@ export class ProcessOutputLimitError extends Schema.TaggedError<ProcessOutputLim
   {
     ...ProcessInvocationFields,
     stream: Schema.Literals(["stdout", "stderr"]),
-    maxBytes: Schema.Number,
-    observedBytes: Schema.Number,
+    maxBytes: Schema.Finite,
+    observedBytes: Schema.Finite,
   },
 ) {
   override get message(): string {
@@ -122,7 +122,7 @@ export class ProcessTimeoutError extends Schema.TaggedError<ProcessTimeoutError>
   "ProcessTimeoutError",
   {
     ...ProcessInvocationFields,
-    timeoutMs: Schema.Number,
+    timeoutMs: Schema.Finite,
   },
 ) {
   override get message(): string {

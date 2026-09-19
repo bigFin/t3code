@@ -24,7 +24,7 @@ const decodeCredentials = Schema.decodeEffect(Schema.fromJsonString(GrokCredenti
 const GrokUsageResponse = Schema.Struct({
   config: Schema.optional(
     Schema.Struct({
-      creditUsagePercent: Schema.optional(Schema.Number),
+      creditUsagePercent: Schema.optional(Schema.Finite),
       currentPeriod: Schema.optional(
         Schema.Struct({
           type: Schema.optional(Schema.String),

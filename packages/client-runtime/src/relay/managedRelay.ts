@@ -119,7 +119,7 @@ export class ManagedRelayRequestTimeoutError extends Schema.TaggedError<ManagedR
   "ManagedRelayRequestTimeoutError",
   {
     activity: ManagedRelayRequestActivity,
-    timeoutMs: Schema.Number,
+    timeoutMs: Schema.Finite,
     // The CLIENT span's trace id. A timed-out request has no server response
     // to take an id from, but the client span was exported, so carrying its id
     // makes the failure searchable instead of logging `traceId: null`.

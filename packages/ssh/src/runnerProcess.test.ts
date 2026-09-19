@@ -14,8 +14,8 @@ import * as NodeNet from "node:net";
 import { buildRemoteStopScript, buildRemoteT3RunnerScript } from "./tunnel.ts";
 
 const Started = Schema.Struct({
-  pid: Schema.Number,
-  port: Schema.Number,
+  pid: Schema.Finite,
+  port: Schema.Finite,
   args: Schema.Array(Schema.String),
 });
 const decodeStarted = Schema.decodeUnknownSync(Schema.fromJsonString(Started));

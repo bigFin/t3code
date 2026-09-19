@@ -1506,7 +1506,7 @@ const make = Effect.gen(function* () {
       interactionMode: event.payload.interactionMode,
       createdAt: event.payload.createdAt,
     }).pipe(
-      Effect.map(Option.some),
+      Effect.asSome,
       Effect.catchCause((cause) => handleTurnStartFailure(cause).pipe(Effect.as(Option.none()))),
     );
 

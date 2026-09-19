@@ -13,10 +13,10 @@ export const AgentSessionImportSource = Schema.Struct({
   providerSessionId: TrimmedNonEmptyString,
   filePath: TrimmedNonEmptyString,
   size: NonNegativeInt,
-  mtimeMs: Schema.NullOr(Schema.Number),
-  device: Schema.Number,
-  inode: Schema.NullOr(Schema.Number),
-  birthtimeMs: Schema.NullOr(Schema.Number),
+  mtimeMs: Schema.NullOr(Schema.Finite),
+  device: Schema.Finite,
+  inode: Schema.NullOr(Schema.Finite),
+  birthtimeMs: Schema.NullOr(Schema.Finite),
 });
 export type AgentSessionImportSource = typeof AgentSessionImportSource.Type;
 

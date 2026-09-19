@@ -96,8 +96,8 @@ export class EventNdjsonLogConfigurationError extends Schema.TaggedError<EventNd
   {
     filePath: Schema.String,
     option: Schema.String,
-    value: Schema.Number,
-    minimum: Schema.Number,
+    value: Schema.Finite,
+    minimum: Schema.Finite,
   },
 ) {
   override get message(): string {

@@ -20,7 +20,7 @@ const tailscaleCommandForPlatform = (platform: NodeJS.Platform): "tailscale" | "
 const TailscaleCommandContext = {
   executable: Schema.Literals(["tailscale", "tailscale.exe"]),
   subcommand: Schema.Literals(["status", "serve"]),
-  argumentCount: Schema.Number,
+  argumentCount: Schema.Finite,
 };
 
 /**
@@ -82,9 +82,9 @@ export class TailscaleCommandExitError extends Schema.TaggedError<TailscaleComma
   "TailscaleCommandExitError",
   {
     ...TailscaleCommandContext,
-    exitCode: Schema.Number,
-    stdoutLength: Schema.optional(Schema.Number),
-    stderrLength: Schema.Number,
+    exitCode: Schema.Finite,
+    stdoutLength: Schema.optional(Schema.Finite),
+    stderrLength: Schema.Finite,
     // A classified diagnostic, never raw CLI output. `tailscale` prints auth
     // keys and node identifiers into stderr, and this field is surfaced in
     // dev-runner logs — so it carries only a known-safe label from the closed
@@ -102,7 +102,7 @@ export class TailscaleCommandTimeoutError extends Schema.TaggedError<TailscaleCo
   "TailscaleCommandTimeoutError",
   {
     ...TailscaleCommandContext,
-    timeoutMs: Schema.Number,
+    timeoutMs: Schema.Finite,
     cause: Schema.Defect(),
   },
 ) {

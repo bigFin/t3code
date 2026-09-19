@@ -88,14 +88,14 @@ const AssetClaimsSchema = Schema.Union([
     kind: Schema.Literal("workspace-file"),
     workspaceRoot: Schema.String,
     baseRelativePath: Schema.String,
-    expiresAt: Schema.Number,
+    expiresAt: Schema.Finite,
   }),
   Schema.Struct({
     version: Schema.Literal(1),
     kind: Schema.Literal("workspace-file-exact"),
     workspaceRoot: Schema.String,
     relativePath: Schema.String,
-    expiresAt: Schema.Number,
+    expiresAt: Schema.Finite,
   }),
   Schema.Struct({
     version: Schema.Literal(1),
@@ -103,7 +103,7 @@ const AssetClaimsSchema = Schema.Union([
     filePath: Schema.String,
     device: Schema.String,
     inode: Schema.String,
-    expiresAt: Schema.Number,
+    expiresAt: Schema.Finite,
   }),
   Schema.Struct({
     version: Schema.Literal(1),
@@ -116,26 +116,26 @@ const AssetClaimsSchema = Schema.Union([
         download filename and Content-Type. */
     fileName: Schema.optionalKey(Schema.String),
     mimeType: Schema.optionalKey(Schema.String),
-    expiresAt: Schema.Number,
+    expiresAt: Schema.Finite,
   }),
   Schema.Struct({
     version: Schema.Literal(1),
     kind: Schema.Literal("project-favicon"),
     workspaceRoot: Schema.String,
     relativePath: Schema.NullOr(Schema.String),
-    expiresAt: Schema.Number,
+    expiresAt: Schema.Finite,
   }),
   Schema.Struct({
     version: Schema.Literal(1),
     kind: Schema.Literal("project-favicon-external"),
     filePath: Schema.String,
-    expiresAt: Schema.Number,
+    expiresAt: Schema.Finite,
   }),
   Schema.Struct({
     version: Schema.Literal(1),
     kind: Schema.Literal("native-app-icon"),
     app: ToolActivityNativeAppReference,
-    expiresAt: Schema.Number,
+    expiresAt: Schema.Finite,
   }),
   Schema.Struct({
     version: Schema.Literal(1),
@@ -143,7 +143,7 @@ const AssetClaimsSchema = Schema.Union([
     /** Already narrowed to a GitHub media host at mint time; the signature is what keeps it there. */
     url: Schema.String,
     cwd: Schema.String,
-    expiresAt: Schema.Number,
+    expiresAt: Schema.Finite,
   }),
 ]);
 type AssetClaims = typeof AssetClaimsSchema.Type;
@@ -190,7 +190,7 @@ const optionOnNotFound = <A, R>(
   effect: Effect.Effect<A, PlatformError.PlatformError, R>,
 ): Effect.Effect<Option.Option<A>, PlatformError.PlatformError, R> =>
   effect.pipe(
-    Effect.map(Option.some),
+    Effect.asSome,
     Effect.catchTags({
       PlatformError: (error) =>
         error.reason._tag === "NotFound" ? Effect.succeed(Option.none<A>()) : Effect.fail(error),
@@ -213,9 +213,9 @@ const resolveCanonicalWorkspaceFile = Effect.fn("AssetAccess.resolveCanonicalWor
     const fileSystem = yield* FileSystem.FileSystem;
     const workspacePaths = yield* WorkspacePaths.WorkspacePaths;
     const resolved = yield* workspacePaths.resolveRelativePathWithinRoot(input).pipe(
-      Effect.map(Option.some),
+      Effect.asSome,
       Effect.catchTags({
-        WorkspacePathOutsideRootError: () => Effect.succeed(Option.none()),
+        WorkspacePathOutsideRootError: () => Effect.succeedNone,
       }),
     );
     if (Option.isNone(resolved)) return null;

@@ -104,7 +104,7 @@ export class VcsActionRemoteFailureError extends Schema.TaggedError<VcsActionRem
     environmentId: EnvironmentId,
     cwd: Schema.String,
     phase: Schema.NullOr(GitActionProgressPhase),
-    remoteMessageLength: Schema.Number,
+    remoteMessageLength: Schema.Finite,
   },
 ) {
   override get message(): string {
@@ -131,7 +131,7 @@ export class VcsActionMissingTerminalEventError extends Schema.TaggedError<VcsAc
 export class VcsActionTargetKeyParseError extends Schema.TaggedError<VcsActionTargetKeyParseError>()(
   "VcsActionTargetKeyParseError",
   {
-    keyLength: Schema.Number,
+    keyLength: Schema.Finite,
     cause: Schema.Defect(),
   },
 ) {

@@ -780,7 +780,7 @@ const make = Effect.gen(function* () {
         turnCount: event.payload.turnCount,
         detail: "Thread was not found in read model.",
         createdAt: now,
-      }).pipe(Effect.catch(() => Effect.void));
+      }).pipe(Effect.ignore);
       return;
     }
 
@@ -806,7 +806,7 @@ const make = Effect.gen(function* () {
         turnCount: event.payload.turnCount,
         detail: `Checkpoint turn count ${event.payload.turnCount} exceeds current turn count ${currentTurnCount}.`,
         createdAt: now,
-      }).pipe(Effect.catch(() => Effect.void));
+      }).pipe(Effect.ignore);
       return;
     }
 
@@ -819,7 +819,7 @@ const make = Effect.gen(function* () {
           turnCount: event.payload.turnCount,
           detail: "Checkpoint workspace is unavailable or is not a git repository.",
           createdAt: now,
-        }).pipe(Effect.catch(() => Effect.void));
+        }).pipe(Effect.ignore);
         return;
       }
 
@@ -830,7 +830,7 @@ const make = Effect.gen(function* () {
           detail:
             "File restore requires an isolated worktree. This workspace may contain changes from another thread. Rewind the conversation without restoring files instead.",
           createdAt: now,
-        }).pipe(Effect.catch(() => Effect.void));
+        }).pipe(Effect.ignore);
         return;
       }
 
@@ -847,7 +847,7 @@ const make = Effect.gen(function* () {
           turnCount: event.payload.turnCount,
           detail: `Checkpoint ref for turn ${event.payload.turnCount} is unavailable in read model.`,
           createdAt: now,
-        }).pipe(Effect.catch(() => Effect.void));
+        }).pipe(Effect.ignore);
         return;
       }
 
@@ -862,7 +862,7 @@ const make = Effect.gen(function* () {
           turnCount: event.payload.turnCount,
           detail: `Filesystem checkpoint is unavailable for turn ${event.payload.turnCount}.`,
           createdAt: now,
-        }).pipe(Effect.catch(() => Effect.void));
+        }).pipe(Effect.ignore);
         return;
       }
 
@@ -995,7 +995,7 @@ const make = Effect.gen(function* () {
               turnId,
               detail: error.message,
               createdAt,
-            }).pipe(Effect.catch(() => Effect.void)),
+            }).pipe(Effect.ignore),
           ),
         ),
       );

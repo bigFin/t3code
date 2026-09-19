@@ -14,7 +14,7 @@ const INITIAL_STATE_READ_ATTEMPT_COUNT = 3;
 export class DesktopUpdateStateReadError extends Schema.TaggedError<DesktopUpdateStateReadError>()(
   "DesktopUpdateStateReadError",
   {
-    attemptCount: Schema.Number,
+    attemptCount: Schema.Finite,
     cause: Schema.Defect(),
   },
 ) {

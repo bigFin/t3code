@@ -132,7 +132,7 @@ export class ProjectNotFoundError extends Schema.TaggedError<ProjectNotFoundErro
     operation: Schema.Literal("resolveProjectTarget"),
     identifier: Schema.String,
     normalizedWorkspaceRoot: Schema.optional(Schema.String),
-    activeProjectCount: Schema.Number,
+    activeProjectCount: Schema.Finite,
     cause: Schema.optional(Schema.Defect()),
   },
 ) {

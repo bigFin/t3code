@@ -57,7 +57,7 @@ export class BrowserRecordingCaptureTimeoutError extends Schema.TaggedError<Brow
   "BrowserRecordingCaptureTimeoutError",
   {
     tabId: Schema.String,
-    timeoutMs: Schema.Number,
+    timeoutMs: Schema.Finite,
   },
 ) {
   override get message(): string {

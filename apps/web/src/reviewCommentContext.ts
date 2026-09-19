@@ -3,9 +3,9 @@ import { PullRequestContextMetadata, type PullRequestReviewPosition } from "@t3t
 import * as Schema from "effect/Schema";
 
 const ReviewCommentSelectionSchema = Schema.Struct({
-  start: Schema.Number,
+  start: Schema.Finite,
   side: Schema.Literals(["additions", "deletions"]),
-  end: Schema.Number,
+  end: Schema.Finite,
   endSide: Schema.Literals(["additions", "deletions"]),
 });
 type ReviewCommentSelection = typeof ReviewCommentSelectionSchema.Type;
@@ -15,8 +15,8 @@ export const ReviewCommentContextSchema = Schema.Struct({
   sectionId: Schema.String,
   sectionTitle: Schema.String,
   filePath: Schema.String,
-  startIndex: Schema.Number,
-  endIndex: Schema.Number,
+  startIndex: Schema.Finite,
+  endIndex: Schema.Finite,
   rangeLabel: Schema.String,
   text: Schema.String,
   diff: Schema.String,

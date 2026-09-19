@@ -126,7 +126,7 @@ const waitForFileContent = Effect.fn("waitForFileContent")(function* (
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     const content = yield* fileSystem
       .readFileString(filePath)
-      .pipe(Effect.catch(() => Effect.void));
+      .pipe(Effect.orElseSucceed(() => undefined));
     if (content !== undefined) {
       if (content.trim().length > 0) {
         return content;

@@ -49,7 +49,7 @@ export class DeviceToolchainInstallError extends Schema.TaggedError<DeviceToolch
   {
     tool: Schema.String,
     step: Schema.String,
-    exitCode: Schema.optional(Schema.Number),
+    exitCode: Schema.optional(Schema.Finite),
     cause: Schema.optional(Schema.Defect()),
   },
 ) {

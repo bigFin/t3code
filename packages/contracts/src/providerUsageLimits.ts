@@ -21,7 +21,7 @@ export const ServerProviderUsageWindow = Schema.Struct({
   id: TrimmedNonEmptyString,
   kind: Schema.Literals(["session", "weekly", "monthly", "other"]),
   label: TrimmedNonEmptyString,
-  usedPercent: Schema.Number.check(Schema.isBetween({ minimum: 0, maximum: 100 })),
+  usedPercent: Schema.Finite.check(Schema.isBetween({ minimum: 0, maximum: 100 })),
   resetsAt: Schema.optional(IsoDateTime),
   windowDurationMins: Schema.optional(NonNegativeInt),
 });

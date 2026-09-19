@@ -75,7 +75,7 @@ export class ThemeSettingsMalformedError extends Schema.TaggedError<ThemeSetting
 
 export class ThemeSettingsBusyError extends Schema.TaggedError<ThemeSettingsBusyError>()(
   "ThemeSettingsBusyError",
-  { settingsPath: Schema.String, attempts: Schema.Number },
+  { settingsPath: Schema.String, attempts: Schema.Finite },
 ) {
   override get message(): string {
     return `${this.settingsPath} kept changing while writing (gave up after ${this.attempts} attempts). Try again.`;
@@ -113,7 +113,7 @@ export class ThemeFileInvalidError extends Schema.TaggedError<ThemeFileInvalidEr
 
 export class ThemeFileTooLargeError extends Schema.TaggedError<ThemeFileTooLargeError>()(
   "ThemeFileTooLargeError",
-  { filePath: Schema.String, limit: Schema.Number },
+  { filePath: Schema.String, limit: Schema.Finite },
 ) {
   override get message(): string {
     return `${this.filePath} is larger than ${this.limit} bytes, which is more than a theme can publish.`;

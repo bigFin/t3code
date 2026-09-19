@@ -192,7 +192,7 @@ export function resolveProviderCatalog(
 
 /** On-disk shape of the last successfully fetched manifest. */
 const ManifestCacheFile = Schema.Struct({
-  fetchedAtMs: Schema.Number,
+  fetchedAtMs: Schema.Finite,
   manifest: ModelManifestSchema,
 });
 const decodeManifestCache = Schema.decodeUnknownEffect(
@@ -403,7 +403,7 @@ export const make = Effect.gen(function* () {
     fetchedAtMs = now;
     yield* encodeManifestCache({ fetchedAtMs: now, manifest: fetched }).pipe(
       Effect.flatMap((serialized) => fileSystem.writeFileString(cachePath, serialized)),
-      Effect.catchCause(() => Effect.void),
+      Effect.ignoreCause,
     );
     return manifest;
   });

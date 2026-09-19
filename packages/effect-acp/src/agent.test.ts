@@ -31,7 +31,7 @@ const SessionCancelNotification = jsonRpcNotification(
   "session/cancel",
   AcpSchema.CancelNotification,
 );
-const ExtPingNotification = jsonRpcNotification("x/ping", Schema.Struct({ count: Schema.Number }));
+const ExtPingNotification = jsonRpcNotification("x/ping", Schema.Struct({ count: Schema.Finite }));
 const ExtRequest = jsonRpcRequest("x/test", Schema.Struct({ hello: Schema.String }));
 const ExtResponse = jsonRpcResponse(Schema.Struct({ ok: Schema.Boolean }));
 const decodeRequestPermissionRequest = Schema.decodeEffect(
@@ -69,7 +69,7 @@ it.effect("effect-acp agent handles core agent requests and outbound client requ
       );
       yield* agent.handleExtNotification(
         "x/ping",
-        Schema.Struct({ count: Schema.Number }),
+        Schema.Struct({ count: Schema.Finite }),
         (payload) =>
           Ref.update(extNotifications, (current) => [...current, payload.count]).pipe(
             Effect.andThen(Deferred.succeed(extReceived, undefined)),

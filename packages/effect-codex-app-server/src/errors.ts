@@ -145,7 +145,7 @@ export class CodexAppServerSpawnError extends Schema.TaggedError<CodexAppServerS
 export class CodexAppServerProcessExitedError extends Schema.TaggedError<CodexAppServerProcessExitedError>()(
   "CodexAppServerProcessExitedError",
   {
-    code: Schema.optional(Schema.Number),
+    code: Schema.optional(Schema.Finite),
     pid: Schema.optionalKey(Schema.Int),
     stderrTail: Schema.optionalKey(Schema.String),
     cause: Schema.optional(Schema.Defect()),
@@ -170,9 +170,9 @@ export class CodexAppServerProtocolParseError extends Schema.TaggedError<CodexAp
     requestId: Schema.optionalKey(Schema.String),
     payloadKind: Schema.optionalKey(CodexAppServerPayloadKind),
     presentFields: Schema.optionalKey(Schema.Array(CodexAppServerProtocolMessageField)),
-    issueCount: Schema.optionalKey(Schema.Number),
+    issueCount: Schema.optionalKey(Schema.Finite),
     issueKinds: Schema.optionalKey(Schema.Array(CodexAppServerSchemaIssueKind)),
-    maximumPathDepth: Schema.optionalKey(Schema.Number),
+    maximumPathDepth: Schema.optionalKey(Schema.Finite),
     cause: Schema.optional(Schema.Defect()),
   },
 ) {
@@ -272,15 +272,15 @@ export class CodexAppServerInputStreamEndedError extends Schema.TaggedError<Code
 export class CodexAppServerRequestError extends Schema.TaggedError<CodexAppServerRequestError>()(
   "CodexAppServerRequestError",
   {
-    code: Schema.Number,
+    code: Schema.Finite,
     errorMessage: Schema.String,
     data: Schema.optional(Schema.Unknown),
     method: Schema.optionalKey(Schema.String),
     requestId: Schema.optionalKey(Schema.String),
     operation: Schema.optionalKey(CodexAppServerRequestOperation),
-    issueCount: Schema.optionalKey(Schema.Number),
+    issueCount: Schema.optionalKey(Schema.Finite),
     issueKinds: Schema.optionalKey(Schema.Array(CodexAppServerSchemaIssueKind)),
-    maximumPathDepth: Schema.optionalKey(Schema.Number),
+    maximumPathDepth: Schema.optionalKey(Schema.Finite),
     payloadKind: Schema.optionalKey(CodexAppServerPayloadKind),
     cause: Schema.optionalKey(Schema.Defect()),
   },

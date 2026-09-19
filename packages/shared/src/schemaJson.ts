@@ -187,7 +187,7 @@ const parseLenientJsonGetter = SchemaGetter.onSome((input: string) => {
   );
 
   return decodeJsonString(stripped).pipe(
-    Effect.map(Option.some),
+    Effect.asSome,
     Effect.mapError((error) => error.issue),
   );
 });

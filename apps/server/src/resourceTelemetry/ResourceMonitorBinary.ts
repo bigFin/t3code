@@ -42,7 +42,7 @@ export class ResourceMonitorBinaryNotExecutable extends Schema.TaggedError<Resou
   "ResourceMonitorBinaryNotExecutable",
   {
     path: Schema.String,
-    mode: Schema.Number,
+    mode: Schema.Finite,
   },
 ) {
   override get message(): string {

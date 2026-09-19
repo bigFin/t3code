@@ -116,7 +116,7 @@ export class VcsProcessExitError extends Schema.TaggedError<VcsProcessExitError>
     command: Schema.String,
     cwd: Schema.String,
     argumentCount: Schema.optional(NonNegativeInt),
-    exitCode: Schema.Number,
+    exitCode: Schema.Finite,
     detail: Schema.String,
     failureKind: Schema.optional(VcsProcessExitFailureKind),
     /** Process-boundary hint for a recognized transient failure; absence is not retryable. */
@@ -167,7 +167,7 @@ export class VcsProcessTimeoutError extends Schema.TaggedError<VcsProcessTimeout
     command: Schema.String,
     cwd: Schema.String,
     argumentCount: Schema.optional(NonNegativeInt),
-    timeoutMs: Schema.Number,
+    timeoutMs: Schema.Finite,
   },
 ) {
   override get message(): string {

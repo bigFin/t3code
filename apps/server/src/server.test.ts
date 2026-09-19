@@ -823,7 +823,7 @@ const buildAppUnderTest = (options?: {
           }),
           Layer.mock(ProviderSessionDirectory.ProviderSessionDirectory)({
             upsert: () => Effect.void,
-            getBinding: () => Effect.succeed(Option.none()),
+            getBinding: () => Effect.succeedNone,
             listThreadIds: () => Effect.succeed([]),
             listBindings: () => Effect.succeed([]),
             ...options?.layers?.providerSessionDirectory,
@@ -1026,20 +1026,20 @@ const buildAppUnderTest = (options?: {
             }),
           searchThreads: () => Effect.succeed({ matches: [] }),
           getSnapshotSequence: () => Effect.succeed({ snapshotSequence: 0 }),
-          getProjectShellById: () => Effect.succeed(Option.none()),
-          getThreadShellById: () => Effect.succeed(Option.none()),
-          getThreadDetailById: () => Effect.succeed(Option.none()),
-          getThreadDetailSnapshot: () => Effect.succeed(Option.none()),
+          getProjectShellById: () => Effect.succeedNone,
+          getThreadShellById: () => Effect.succeedNone,
+          getThreadDetailById: () => Effect.succeedNone,
+          getThreadDetailSnapshot: () => Effect.succeedNone,
           getCounts: () => Effect.succeed({ projectCount: 0, threadCount: 0 }),
           getEventReplayStats: ({ fromSequenceExclusive, toSequenceInclusive }) =>
             Effect.succeed({
               eventCount: Math.max(0, toSequenceInclusive - fromSequenceExclusive),
               payloadBytes: 0,
             }),
-          getActiveProjectByWorkspaceRoot: () => Effect.succeed(Option.none()),
-          getFirstActiveThreadIdByProjectId: () => Effect.succeed(Option.none()),
+          getActiveProjectByWorkspaceRoot: () => Effect.succeedNone,
+          getFirstActiveThreadIdByProjectId: () => Effect.succeedNone,
           getImportedAgentSessionSources: () => Effect.succeed([]),
-          getThreadCheckpointContext: () => Effect.succeed(Option.none()),
+          getThreadCheckpointContext: () => Effect.succeedNone,
           ...options?.layers?.projectionSnapshotQuery,
         }),
       ),
@@ -1190,7 +1190,7 @@ const buildAppUnderTest = (options?: {
       Layer.provide(
         Layer.mock(CloudCliTokenManager.CloudCliTokenManager)({
           get: Effect.die(new Error("Unexpected T3 Connect CLI authorization request.")),
-          getExisting: Effect.succeed(Option.none()),
+          getExisting: Effect.succeedNone,
           hasCredential: Effect.succeed(false),
           clear: Effect.void,
           ...options?.layers?.cloudCliTokenManager,
@@ -9711,7 +9711,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
                 readEvents: store.readFromSequence,
               },
               projectionSnapshotQuery: {
-                getThreadDetailSnapshot: () => Effect.succeed(Option.none()),
+                getThreadDetailSnapshot: () => Effect.succeedNone,
               },
             },
           });
@@ -10246,7 +10246,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
               ]),
           },
           projectionSnapshotQuery: {
-            getThreadShellById: () => Effect.succeed(Option.none()),
+            getThreadShellById: () => Effect.succeedNone,
           },
         },
       });
@@ -10366,7 +10366,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
               ]),
           },
           projectionSnapshotQuery: {
-            getProjectShellById: () => Effect.succeed(Option.none()),
+            getProjectShellById: () => Effect.succeedNone,
           },
         },
       });

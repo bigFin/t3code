@@ -35,7 +35,7 @@ const KeybindingsMalformedConfigIssue = Schema.Struct({
 const KeybindingsInvalidEntryIssue = Schema.Struct({
   kind: Schema.Literal("keybindings.invalid-entry"),
   message: TrimmedNonEmptyString,
-  index: Schema.Number,
+  index: Schema.Finite,
 });
 
 export const ServerConfigIssue = Schema.Union([
@@ -306,9 +306,9 @@ export const ServerTraceDiagnosticsSpanSummary = Schema.Struct({
   name: TrimmedNonEmptyString,
   count: NonNegativeInt,
   failureCount: NonNegativeInt,
-  totalDurationMs: Schema.Number,
-  averageDurationMs: Schema.Number,
-  maxDurationMs: Schema.Number,
+  totalDurationMs: Schema.Finite,
+  averageDurationMs: Schema.Finite,
+  maxDurationMs: Schema.Finite,
 });
 export type ServerTraceDiagnosticsSpanSummary = typeof ServerTraceDiagnosticsSpanSummary.Type;
 
@@ -325,7 +325,7 @@ export type ServerTraceDiagnosticsFailureSummary = typeof ServerTraceDiagnostics
 export const ServerTraceDiagnosticsRecentFailure = Schema.Struct({
   name: TrimmedNonEmptyString,
   cause: TrimmedNonEmptyString,
-  durationMs: Schema.Number,
+  durationMs: Schema.Finite,
   endedAt: Schema.DateTimeUtc,
   traceId: TrimmedNonEmptyString,
   spanId: TrimmedNonEmptyString,
@@ -334,7 +334,7 @@ export type ServerTraceDiagnosticsRecentFailure = typeof ServerTraceDiagnosticsR
 
 export const ServerTraceDiagnosticsSpanOccurrence = Schema.Struct({
   name: TrimmedNonEmptyString,
-  durationMs: Schema.Number,
+  durationMs: Schema.Finite,
   endedAt: Schema.DateTimeUtc,
   traceId: TrimmedNonEmptyString,
   spanId: TrimmedNonEmptyString,
@@ -388,7 +388,7 @@ export const ServerProcessDiagnosticsEntry = Schema.Struct({
   ppid: NonNegativeInt,
   pgid: Schema.Option(Schema.Int),
   status: TrimmedNonEmptyString,
-  cpuPercent: Schema.Number,
+  cpuPercent: Schema.Finite,
   rssBytes: NonNegativeInt,
   elapsed: TrimmedNonEmptyString,
   command: TrimmedNonEmptyString,
@@ -402,7 +402,7 @@ export const ServerProcessDiagnosticsResult = Schema.Struct({
   readAt: Schema.DateTimeUtc,
   processCount: NonNegativeInt,
   totalRssBytes: NonNegativeInt,
-  totalCpuPercent: Schema.Number,
+  totalCpuPercent: Schema.Finite,
   processes: Schema.Array(ServerProcessDiagnosticsEntry),
   error: Schema.Option(
     Schema.Struct({
@@ -421,8 +421,8 @@ export type ServerProcessResourceHistoryInput = typeof ServerProcessResourceHist
 export const ServerProcessResourceHistoryBucket = Schema.Struct({
   startedAt: Schema.DateTimeUtc,
   endedAt: Schema.DateTimeUtc,
-  avgCpuPercent: Schema.Number,
-  maxCpuPercent: Schema.Number,
+  avgCpuPercent: Schema.Finite,
+  maxCpuPercent: Schema.Finite,
   maxRssBytes: NonNegativeInt,
   maxProcessCount: NonNegativeInt,
 });
@@ -437,10 +437,10 @@ export const ServerProcessResourceHistorySummary = Schema.Struct({
   isServerRoot: Schema.Boolean,
   firstSeenAt: Schema.DateTimeUtc,
   lastSeenAt: Schema.DateTimeUtc,
-  currentCpuPercent: Schema.Number,
-  avgCpuPercent: Schema.Number,
-  maxCpuPercent: Schema.Number,
-  cpuSecondsApprox: Schema.Number,
+  currentCpuPercent: Schema.Finite,
+  avgCpuPercent: Schema.Finite,
+  maxCpuPercent: Schema.Finite,
+  cpuSecondsApprox: Schema.Finite,
   currentRssBytes: NonNegativeInt,
   maxRssBytes: NonNegativeInt,
   sampleCount: NonNegativeInt,
@@ -463,7 +463,7 @@ export const ServerProcessResourceHistoryResult = Schema.Struct({
   bucketMs: NonNegativeInt,
   sampleIntervalMs: NonNegativeInt,
   retainedSampleCount: NonNegativeInt,
-  totalCpuSecondsApprox: Schema.Number,
+  totalCpuSecondsApprox: Schema.Finite,
   buckets: Schema.Array(ServerProcessResourceHistoryBucket),
   topProcesses: Schema.Array(ServerProcessResourceHistorySummary),
   error: Schema.Option(

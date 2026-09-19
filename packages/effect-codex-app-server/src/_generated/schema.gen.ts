@@ -125,7 +125,7 @@ export const ClientRequest__AppsListParams = Schema.Struct({
   ),
   limit: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({
+      Schema.Finite.annotate({
         description: "Optional page size; defaults to a reasonable server-side value.",
         format: "uint32",
       })
@@ -215,13 +215,13 @@ export const ClientRequest__CommandExecResizeParams = Schema.Struct({
       "Client-supplied, connection-scoped `processId` from the original `command/exec` request.",
   }),
   size: Schema.Struct({
-    cols: Schema.Number.annotate({
+    cols: Schema.Finite.annotate({
       description: "Terminal width in character cells.",
       format: "uint16",
     })
       .check(Schema.isInt())
       .check(Schema.isGreaterThanOrEqualTo(0)),
-    rows: Schema.Number.annotate({
+    rows: Schema.Finite.annotate({
       description: "Terminal height in character cells.",
       format: "uint16",
     })
@@ -235,13 +235,13 @@ export type ClientRequest__CommandExecTerminalSize = {
   readonly rows: number;
 };
 export const ClientRequest__CommandExecTerminalSize = Schema.Struct({
-  cols: Schema.Number.annotate({
+  cols: Schema.Finite.annotate({
     description: "Terminal width in character cells.",
     format: "uint16",
   })
     .check(Schema.isInt())
     .check(Schema.isGreaterThanOrEqualTo(0)),
-  rows: Schema.Number.annotate({
+  rows: Schema.Finite.annotate({
     description: "Terminal height in character cells.",
     format: "uint16",
   })
@@ -375,7 +375,7 @@ export const ClientRequest__ExperimentalFeatureListParams = Schema.Struct({
   ),
   limit: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({
+      Schema.Finite.annotate({
         description: "Optional page size; defaults to a reasonable server-side value.",
         format: "uint32",
       })
@@ -701,7 +701,7 @@ export const ClientRequest__LocalShellAction = Schema.Union(
       ),
       timeout_ms: Schema.optionalKey(
         Schema.Union([
-          Schema.Number.annotate({ format: "uint64" })
+          Schema.Finite.annotate({ format: "uint64" })
             .check(Schema.isInt())
             .check(Schema.isGreaterThanOrEqualTo(0)),
           Schema.Null,
@@ -771,7 +771,7 @@ export const ClientRequest__McpServerOauthLoginParams = Schema.Struct({
   scopes: Schema.optionalKey(Schema.Union([Schema.Array(Schema.String), Schema.Null])),
   threadId: Schema.optionalKey(Schema.Union([Schema.String, Schema.Null])),
   timeoutSecs: Schema.optionalKey(
-    Schema.Union([Schema.Number.annotate({ format: "int64" }).check(Schema.isInt()), Schema.Null]),
+    Schema.Union([Schema.Finite.annotate({ format: "int64" }).check(Schema.isInt()), Schema.Null]),
   ),
 });
 
@@ -833,7 +833,7 @@ export const ClientRequest__ModelListParams = Schema.Struct({
   ),
   limit: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({
+      Schema.Finite.annotate({
         description: "Optional page size; defaults to a reasonable server-side value.",
         format: "uint32",
       })
@@ -871,7 +871,7 @@ export const ClientRequest__PermissionProfileListParams = Schema.Struct({
   ),
   limit: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({
+      Schema.Finite.annotate({
         description: "Optional page size; defaults to the full result set.",
         format: "uint32",
       })
@@ -1014,7 +1014,7 @@ export const ClientRequest__ReasoningSummary = Schema.Union(
 export type ClientRequest__RequestId = string | number;
 export const ClientRequest__RequestId = Schema.Union([
   Schema.String,
-  Schema.Number.annotate({ format: "int64" }).check(Schema.isInt()),
+  Schema.Finite.annotate({ format: "int64" }).check(Schema.isInt()),
 ]);
 
 export type ClientRequest__ResponsesApiWebSearchAction =
@@ -1158,10 +1158,10 @@ export type ClientRequest__TextElement = {
 };
 export const ClientRequest__TextElement = Schema.Struct({
   byteRange: Schema.Struct({
-    end: Schema.Number.annotate({ format: "uint" })
+    end: Schema.Finite.annotate({ format: "uint" })
       .check(Schema.isInt())
       .check(Schema.isGreaterThanOrEqualTo(0)),
-    start: Schema.Number.annotate({ format: "uint" })
+    start: Schema.Finite.annotate({ format: "uint" })
       .check(Schema.isInt())
       .check(Schema.isGreaterThanOrEqualTo(0)),
   }).annotate({
@@ -1251,7 +1251,7 @@ export const ClientRequest__ThreadLoadedListParams = Schema.Struct({
   ),
   limit: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({
+      Schema.Finite.annotate({
         description: "Optional page size; defaults to no limit.",
         format: "uint32",
       })
@@ -1315,7 +1315,7 @@ export type ClientRequest__ThreadRollbackParams = {
   readonly threadId: string;
 };
 export const ClientRequest__ThreadRollbackParams = Schema.Struct({
-  numTurns: Schema.Number.annotate({
+  numTurns: Schema.Finite.annotate({
     description:
       "The number of turns to drop from the end of the thread. Must be >= 1.\n\nThis only modifies the thread's history and does not revert local file changes that have been made by the agent. Clients are responsible for reverting these changes.",
     format: "uint32",
@@ -1560,7 +1560,7 @@ export type JSONRPCError__JSONRPCErrorError = {
   readonly message: string;
 };
 export const JSONRPCError__JSONRPCErrorError = Schema.Struct({
-  code: Schema.Number.annotate({ format: "int64" }).check(Schema.isInt()),
+  code: Schema.Finite.annotate({ format: "int64" }).check(Schema.isInt()),
   data: Schema.optionalKey(Schema.Unknown),
   message: Schema.String,
 });
@@ -1568,7 +1568,7 @@ export const JSONRPCError__JSONRPCErrorError = Schema.Struct({
 export type JSONRPCError__RequestId = string | number;
 export const JSONRPCError__RequestId = Schema.Union([
   Schema.String,
-  Schema.Number.annotate({ format: "int64" }).check(Schema.isInt()),
+  Schema.Finite.annotate({ format: "int64" }).check(Schema.isInt()),
 ]);
 
 export type JSONRPCMessage__JSONRPCErrorError = {
@@ -1577,7 +1577,7 @@ export type JSONRPCMessage__JSONRPCErrorError = {
   readonly message: string;
 };
 export const JSONRPCMessage__JSONRPCErrorError = Schema.Struct({
-  code: Schema.Number.annotate({ format: "int64" }).check(Schema.isInt()),
+  code: Schema.Finite.annotate({ format: "int64" }).check(Schema.isInt()),
   data: Schema.optionalKey(Schema.Unknown),
   message: Schema.String,
 });
@@ -1594,7 +1594,7 @@ export const JSONRPCMessage__JSONRPCNotification = Schema.Struct({
 export type JSONRPCMessage__RequestId = string | number;
 export const JSONRPCMessage__RequestId = Schema.Union([
   Schema.String,
-  Schema.Number.annotate({ format: "int64" }).check(Schema.isInt()),
+  Schema.Finite.annotate({ format: "int64" }).check(Schema.isInt()),
 ]);
 
 export type JSONRPCMessage__W3cTraceContext = {
@@ -1609,7 +1609,7 @@ export const JSONRPCMessage__W3cTraceContext = Schema.Struct({
 export type JSONRPCRequest__RequestId = string | number;
 export const JSONRPCRequest__RequestId = Schema.Union([
   Schema.String,
-  Schema.Number.annotate({ format: "int64" }).check(Schema.isInt()),
+  Schema.Finite.annotate({ format: "int64" }).check(Schema.isInt()),
 ]);
 
 export type JSONRPCRequest__W3cTraceContext = {
@@ -1624,7 +1624,7 @@ export const JSONRPCRequest__W3cTraceContext = Schema.Struct({
 export type JSONRPCResponse__RequestId = string | number;
 export const JSONRPCResponse__RequestId = Schema.Union([
   Schema.String,
-  Schema.Number.annotate({ format: "int64" }).check(Schema.isInt()),
+  Schema.Finite.annotate({ format: "int64" }).check(Schema.isInt()),
 ]);
 
 export type McpServerElicitationRequestParams__McpElicitationArrayType = "array";
@@ -2289,10 +2289,10 @@ export type ServerNotification__MemoryCitationEntry = {
   readonly path: string;
 };
 export const ServerNotification__MemoryCitationEntry = Schema.Struct({
-  lineEnd: Schema.Number.annotate({ format: "uint32" })
+  lineEnd: Schema.Finite.annotate({ format: "uint32" })
     .check(Schema.isInt())
     .check(Schema.isGreaterThanOrEqualTo(0)),
-  lineStart: Schema.Number.annotate({ format: "uint32" })
+  lineStart: Schema.Finite.annotate({ format: "uint32" })
     .check(Schema.isInt())
     .check(Schema.isGreaterThanOrEqualTo(0)),
   note: Schema.String,
@@ -2451,7 +2451,7 @@ export type ServerNotification__ProcessExitedNotification = {
   readonly stdoutCapReached: boolean;
 };
 export const ServerNotification__ProcessExitedNotification = Schema.Struct({
-  exitCode: Schema.Number.annotate({ description: "Process exit code.", format: "int32" }).check(
+  exitCode: Schema.Finite.annotate({ description: "Process exit code.", format: "int32" }).check(
     Schema.isInt(),
   ),
   processHandle: Schema.String.annotate({
@@ -2518,11 +2518,11 @@ export type ServerNotification__RateLimitWindow = {
 };
 export const ServerNotification__RateLimitWindow = Schema.Struct({
   resetsAt: Schema.optionalKey(
-    Schema.Union([Schema.Number.annotate({ format: "int64" }).check(Schema.isInt()), Schema.Null]),
+    Schema.Union([Schema.Finite.annotate({ format: "int64" }).check(Schema.isInt()), Schema.Null]),
   ),
-  usedPercent: Schema.Number.annotate({ format: "int32" }).check(Schema.isInt()),
+  usedPercent: Schema.Finite.annotate({ format: "int32" }).check(Schema.isInt()),
   windowDurationMins: Schema.optionalKey(
-    Schema.Union([Schema.Number.annotate({ format: "int64" }).check(Schema.isInt()), Schema.Null]),
+    Schema.Union([Schema.Finite.annotate({ format: "int64" }).check(Schema.isInt()), Schema.Null]),
   ),
 });
 
@@ -2554,7 +2554,7 @@ export type ServerNotification__ReasoningSummaryPartAddedNotification = {
 };
 export const ServerNotification__ReasoningSummaryPartAddedNotification = Schema.Struct({
   itemId: Schema.String,
-  summaryIndex: Schema.Number.annotate({ format: "int64" }).check(Schema.isInt()),
+  summaryIndex: Schema.Finite.annotate({ format: "int64" }).check(Schema.isInt()),
   threadId: Schema.String,
   turnId: Schema.String,
 });
@@ -2569,7 +2569,7 @@ export type ServerNotification__ReasoningSummaryTextDeltaNotification = {
 export const ServerNotification__ReasoningSummaryTextDeltaNotification = Schema.Struct({
   delta: Schema.String,
   itemId: Schema.String,
-  summaryIndex: Schema.Number.annotate({ format: "int64" }).check(Schema.isInt()),
+  summaryIndex: Schema.Finite.annotate({ format: "int64" }).check(Schema.isInt()),
   threadId: Schema.String,
   turnId: Schema.String,
 });
@@ -2582,7 +2582,7 @@ export type ServerNotification__ReasoningTextDeltaNotification = {
   readonly turnId: string;
 };
 export const ServerNotification__ReasoningTextDeltaNotification = Schema.Struct({
-  contentIndex: Schema.Number.annotate({ format: "int64" }).check(Schema.isInt()),
+  contentIndex: Schema.Finite.annotate({ format: "int64" }).check(Schema.isInt()),
   delta: Schema.String,
   itemId: Schema.String,
   threadId: Schema.String,
@@ -2604,7 +2604,7 @@ export const ServerNotification__RemoteControlConnectionStatus = Schema.Literals
 export type ServerNotification__RequestId = string | number;
 export const ServerNotification__RequestId = Schema.Union([
   Schema.String,
-  Schema.Number.annotate({ format: "int64" }).check(Schema.isInt()),
+  Schema.Finite.annotate({ format: "int64" }).check(Schema.isInt()),
 ]);
 
 export type ServerNotification__SkillsChangedNotification = {};
@@ -2621,8 +2621,8 @@ export type ServerNotification__SpendControlLimitSnapshot = {
 };
 export const ServerNotification__SpendControlLimitSnapshot = Schema.Struct({
   limit: Schema.String,
-  remainingPercent: Schema.Number.annotate({ format: "int32" }).check(Schema.isInt()),
-  resetsAt: Schema.Number.annotate({ format: "int64" }).check(Schema.isInt()),
+  remainingPercent: Schema.Finite.annotate({ format: "int32" }).check(Schema.isInt()),
+  resetsAt: Schema.Finite.annotate({ format: "int64" }).check(Schema.isInt()),
   used: Schema.String,
 });
 
@@ -2659,10 +2659,10 @@ export type ServerNotification__TextElement = {
 };
 export const ServerNotification__TextElement = Schema.Struct({
   byteRange: Schema.Struct({
-    end: Schema.Number.annotate({ format: "uint" })
+    end: Schema.Finite.annotate({ format: "uint" })
       .check(Schema.isInt())
       .check(Schema.isGreaterThanOrEqualTo(0)),
-    start: Schema.Number.annotate({ format: "uint" })
+    start: Schema.Finite.annotate({ format: "uint" })
       .check(Schema.isInt())
       .check(Schema.isGreaterThanOrEqualTo(0)),
   }).annotate({
@@ -2680,13 +2680,13 @@ export const ServerNotification__TextElement = Schema.Struct({
 
 export type ServerNotification__TextPosition = { readonly column: number; readonly line: number };
 export const ServerNotification__TextPosition = Schema.Struct({
-  column: Schema.Number.annotate({
+  column: Schema.Finite.annotate({
     description: "1-based column number (in Unicode scalar values).",
     format: "uint",
   })
     .check(Schema.isInt())
     .check(Schema.isGreaterThanOrEqualTo(0)),
-  line: Schema.Number.annotate({ description: "1-based line number.", format: "uint" })
+  line: Schema.Finite.annotate({ description: "1-based line number.", format: "uint" })
     .check(Schema.isInt())
     .check(Schema.isGreaterThanOrEqualTo(0)),
 });
@@ -2755,15 +2755,15 @@ export type ServerNotification__ThreadRealtimeAudioChunk = {
 export const ServerNotification__ThreadRealtimeAudioChunk = Schema.Struct({
   data: Schema.String,
   itemId: Schema.optionalKey(Schema.Union([Schema.String, Schema.Null])),
-  numChannels: Schema.Number.annotate({ format: "uint16" })
+  numChannels: Schema.Finite.annotate({ format: "uint16" })
     .check(Schema.isInt())
     .check(Schema.isGreaterThanOrEqualTo(0)),
-  sampleRate: Schema.Number.annotate({ format: "uint32" })
+  sampleRate: Schema.Finite.annotate({ format: "uint32" })
     .check(Schema.isInt())
     .check(Schema.isGreaterThanOrEqualTo(0)),
   samplesPerChannel: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({ format: "uint32" })
+      Schema.Finite.annotate({ format: "uint32" })
         .check(Schema.isInt())
         .check(Schema.isGreaterThanOrEqualTo(0)),
       Schema.Null,
@@ -2857,13 +2857,13 @@ export type ServerNotification__TokenUsageBreakdown = {
 };
 export const ServerNotification__TokenUsageBreakdown = Schema.Struct({
   cacheWriteInputTokens: Schema.optionalKey(
-    Schema.Number.annotate({ default: 0, format: "int64" }).check(Schema.isInt()),
+    Schema.Finite.annotate({ default: 0, format: "int64" }).check(Schema.isInt()),
   ),
-  cachedInputTokens: Schema.Number.annotate({ format: "int64" }).check(Schema.isInt()),
-  inputTokens: Schema.Number.annotate({ format: "int64" }).check(Schema.isInt()),
-  outputTokens: Schema.Number.annotate({ format: "int64" }).check(Schema.isInt()),
-  reasoningOutputTokens: Schema.Number.annotate({ format: "int64" }).check(Schema.isInt()),
-  totalTokens: Schema.Number.annotate({ format: "int64" }).check(Schema.isInt()),
+  cachedInputTokens: Schema.Finite.annotate({ format: "int64" }).check(Schema.isInt()),
+  inputTokens: Schema.Finite.annotate({ format: "int64" }).check(Schema.isInt()),
+  outputTokens: Schema.Finite.annotate({ format: "int64" }).check(Schema.isInt()),
+  reasoningOutputTokens: Schema.Finite.annotate({ format: "int64" }).check(Schema.isInt()),
+  totalTokens: Schema.Finite.annotate({ format: "int64" }).check(Schema.isInt()),
 });
 
 export type ServerNotification__TurnDiffUpdatedNotification = {
@@ -2966,7 +2966,7 @@ export type ServerNotification__WindowsWorldWritableWarningNotification = {
   readonly samplePaths: ReadonlyArray<string>;
 };
 export const ServerNotification__WindowsWorldWritableWarningNotification = Schema.Struct({
-  extraCount: Schema.Number.annotate({ format: "uint" })
+  extraCount: Schema.Finite.annotate({ format: "uint" })
     .check(Schema.isInt())
     .check(Schema.isGreaterThanOrEqualTo(0)),
   failedScan: Schema.Boolean,
@@ -3057,7 +3057,7 @@ export const ServerRequest__FileChangeRequestApprovalParams = Schema.Struct({
       Schema.Null,
     ]),
   ),
-  startedAtMs: Schema.Number.annotate({
+  startedAtMs: Schema.Finite.annotate({
     description: "Unix timestamp (in milliseconds) when this approval request started.",
     format: "int64",
   }).check(Schema.isInt()),
@@ -3157,7 +3157,7 @@ export const ServerRequest__ParsedCommand = Schema.Union(
 export type ServerRequest__RequestId = string | number;
 export const ServerRequest__RequestId = Schema.Union([
   Schema.String,
-  Schema.Number.annotate({ format: "int64" }).check(Schema.isInt()),
+  Schema.Finite.annotate({ format: "int64" }).check(Schema.isInt()),
 ]);
 
 export type ServerRequest__ThreadId = string;
@@ -3310,11 +3310,11 @@ export type V2AccountRateLimitsUpdatedNotification__RateLimitWindow = {
 };
 export const V2AccountRateLimitsUpdatedNotification__RateLimitWindow = Schema.Struct({
   resetsAt: Schema.optionalKey(
-    Schema.Union([Schema.Number.annotate({ format: "int64" }).check(Schema.isInt()), Schema.Null]),
+    Schema.Union([Schema.Finite.annotate({ format: "int64" }).check(Schema.isInt()), Schema.Null]),
   ),
-  usedPercent: Schema.Number.annotate({ format: "int32" }).check(Schema.isInt()),
+  usedPercent: Schema.Finite.annotate({ format: "int32" }).check(Schema.isInt()),
   windowDurationMins: Schema.optionalKey(
-    Schema.Union([Schema.Number.annotate({ format: "int64" }).check(Schema.isInt()), Schema.Null]),
+    Schema.Union([Schema.Finite.annotate({ format: "int64" }).check(Schema.isInt()), Schema.Null]),
   ),
 });
 
@@ -3326,8 +3326,8 @@ export type V2AccountRateLimitsUpdatedNotification__SpendControlLimitSnapshot = 
 };
 export const V2AccountRateLimitsUpdatedNotification__SpendControlLimitSnapshot = Schema.Struct({
   limit: Schema.String,
-  remainingPercent: Schema.Number.annotate({ format: "int32" }).check(Schema.isInt()),
-  resetsAt: Schema.Number.annotate({ format: "int64" }).check(Schema.isInt()),
+  remainingPercent: Schema.Finite.annotate({ format: "int32" }).check(Schema.isInt()),
+  resetsAt: Schema.Finite.annotate({ format: "int64" }).check(Schema.isInt()),
   used: Schema.String,
 });
 
@@ -3504,13 +3504,13 @@ export type V2CommandExecParams__CommandExecTerminalSize = {
   readonly rows: number;
 };
 export const V2CommandExecParams__CommandExecTerminalSize = Schema.Struct({
-  cols: Schema.Number.annotate({
+  cols: Schema.Finite.annotate({
     description: "Terminal width in character cells.",
     format: "uint16",
   })
     .check(Schema.isInt())
     .check(Schema.isGreaterThanOrEqualTo(0)),
-  rows: Schema.Number.annotate({
+  rows: Schema.Finite.annotate({
     description: "Terminal height in character cells.",
     format: "uint16",
   })
@@ -3736,7 +3736,7 @@ export const V2ConfigRequirementsReadResponse__ConfiguredHookHandler = Schema.Un
       statusMessage: Schema.optionalKey(Schema.Union([Schema.String, Schema.Null])),
       timeoutSec: Schema.optionalKey(
         Schema.Union([
-          Schema.Number.annotate({ format: "uint64" })
+          Schema.Finite.annotate({ format: "uint64" })
             .check(Schema.isInt())
             .check(Schema.isGreaterThanOrEqualTo(0)),
           Schema.Null,
@@ -3810,13 +3810,13 @@ export type V2ConfigWarningNotification__TextPosition = {
   readonly line: number;
 };
 export const V2ConfigWarningNotification__TextPosition = Schema.Struct({
-  column: Schema.Number.annotate({
+  column: Schema.Finite.annotate({
     description: "1-based column number (in Unicode scalar values).",
     format: "uint",
   })
     .check(Schema.isInt())
     .check(Schema.isGreaterThanOrEqualTo(0)),
-  line: Schema.Number.annotate({ description: "1-based line number.", format: "uint" })
+  line: Schema.Finite.annotate({ description: "1-based line number.", format: "uint" })
     .check(Schema.isInt())
     .check(Schema.isGreaterThanOrEqualTo(0)),
 });
@@ -4243,11 +4243,11 @@ export type V2GetAccountRateLimitsResponse__RateLimitWindow = {
 };
 export const V2GetAccountRateLimitsResponse__RateLimitWindow = Schema.Struct({
   resetsAt: Schema.optionalKey(
-    Schema.Union([Schema.Number.annotate({ format: "int64" }).check(Schema.isInt()), Schema.Null]),
+    Schema.Union([Schema.Finite.annotate({ format: "int64" }).check(Schema.isInt()), Schema.Null]),
   ),
-  usedPercent: Schema.Number.annotate({ format: "int32" }).check(Schema.isInt()),
+  usedPercent: Schema.Finite.annotate({ format: "int32" }).check(Schema.isInt()),
   windowDurationMins: Schema.optionalKey(
-    Schema.Union([Schema.Number.annotate({ format: "int64" }).check(Schema.isInt()), Schema.Null]),
+    Schema.Union([Schema.Finite.annotate({ format: "int64" }).check(Schema.isInt()), Schema.Null]),
   ),
 });
 
@@ -4259,8 +4259,8 @@ export type V2GetAccountRateLimitsResponse__SpendControlLimitSnapshot = {
 };
 export const V2GetAccountRateLimitsResponse__SpendControlLimitSnapshot = Schema.Struct({
   limit: Schema.String,
-  remainingPercent: Schema.Number.annotate({ format: "int32" }).check(Schema.isInt()),
-  resetsAt: Schema.Number.annotate({ format: "int64" }).check(Schema.isInt()),
+  remainingPercent: Schema.Finite.annotate({ format: "int32" }).check(Schema.isInt()),
+  resetsAt: Schema.Finite.annotate({ format: "int64" }).check(Schema.isInt()),
   used: Schema.String,
 });
 
@@ -4308,7 +4308,7 @@ export type V2GetAccountTokenUsageResponse__AccountTokenUsageDailyBucket = {
 };
 export const V2GetAccountTokenUsageResponse__AccountTokenUsageDailyBucket = Schema.Struct({
   startDate: Schema.String,
-  tokens: Schema.Number.annotate({ format: "int64" }).check(Schema.isInt()),
+  tokens: Schema.Finite.annotate({ format: "int64" }).check(Schema.isInt()),
 });
 
 export type V2GetAccountTokenUsageResponse__AccountTokenUsageSummary = {
@@ -4320,19 +4320,19 @@ export type V2GetAccountTokenUsageResponse__AccountTokenUsageSummary = {
 };
 export const V2GetAccountTokenUsageResponse__AccountTokenUsageSummary = Schema.Struct({
   currentStreakDays: Schema.optionalKey(
-    Schema.Union([Schema.Number.annotate({ format: "int64" }).check(Schema.isInt()), Schema.Null]),
+    Schema.Union([Schema.Finite.annotate({ format: "int64" }).check(Schema.isInt()), Schema.Null]),
   ),
   lifetimeTokens: Schema.optionalKey(
-    Schema.Union([Schema.Number.annotate({ format: "int64" }).check(Schema.isInt()), Schema.Null]),
+    Schema.Union([Schema.Finite.annotate({ format: "int64" }).check(Schema.isInt()), Schema.Null]),
   ),
   longestRunningTurnSec: Schema.optionalKey(
-    Schema.Union([Schema.Number.annotate({ format: "int64" }).check(Schema.isInt()), Schema.Null]),
+    Schema.Union([Schema.Finite.annotate({ format: "int64" }).check(Schema.isInt()), Schema.Null]),
   ),
   longestStreakDays: Schema.optionalKey(
-    Schema.Union([Schema.Number.annotate({ format: "int64" }).check(Schema.isInt()), Schema.Null]),
+    Schema.Union([Schema.Finite.annotate({ format: "int64" }).check(Schema.isInt()), Schema.Null]),
   ),
   peakDailyTokens: Schema.optionalKey(
-    Schema.Union([Schema.Number.annotate({ format: "int64" }).check(Schema.isInt()), Schema.Null]),
+    Schema.Union([Schema.Finite.annotate({ format: "int64" }).check(Schema.isInt()), Schema.Null]),
   ),
 });
 
@@ -4709,10 +4709,10 @@ export type V2ItemCompletedNotification__MemoryCitationEntry = {
   readonly path: string;
 };
 export const V2ItemCompletedNotification__MemoryCitationEntry = Schema.Struct({
-  lineEnd: Schema.Number.annotate({ format: "uint32" })
+  lineEnd: Schema.Finite.annotate({ format: "uint32" })
     .check(Schema.isInt())
     .check(Schema.isGreaterThanOrEqualTo(0)),
-  lineStart: Schema.Number.annotate({ format: "uint32" })
+  lineStart: Schema.Finite.annotate({ format: "uint32" })
     .check(Schema.isInt())
     .check(Schema.isGreaterThanOrEqualTo(0)),
   note: Schema.String,
@@ -4783,10 +4783,10 @@ export type V2ItemCompletedNotification__TextElement = {
 };
 export const V2ItemCompletedNotification__TextElement = Schema.Struct({
   byteRange: Schema.Struct({
-    end: Schema.Number.annotate({ format: "uint" })
+    end: Schema.Finite.annotate({ format: "uint" })
       .check(Schema.isInt())
       .check(Schema.isGreaterThanOrEqualTo(0)),
-    start: Schema.Number.annotate({ format: "uint" })
+    start: Schema.Finite.annotate({ format: "uint" })
       .check(Schema.isInt())
       .check(Schema.isGreaterThanOrEqualTo(0)),
   }).annotate({
@@ -5116,10 +5116,10 @@ export type V2ItemStartedNotification__MemoryCitationEntry = {
   readonly path: string;
 };
 export const V2ItemStartedNotification__MemoryCitationEntry = Schema.Struct({
-  lineEnd: Schema.Number.annotate({ format: "uint32" })
+  lineEnd: Schema.Finite.annotate({ format: "uint32" })
     .check(Schema.isInt())
     .check(Schema.isGreaterThanOrEqualTo(0)),
-  lineStart: Schema.Number.annotate({ format: "uint32" })
+  lineStart: Schema.Finite.annotate({ format: "uint32" })
     .check(Schema.isInt())
     .check(Schema.isGreaterThanOrEqualTo(0)),
   note: Schema.String,
@@ -5190,10 +5190,10 @@ export type V2ItemStartedNotification__TextElement = {
 };
 export const V2ItemStartedNotification__TextElement = Schema.Struct({
   byteRange: Schema.Struct({
-    end: Schema.Number.annotate({ format: "uint" })
+    end: Schema.Finite.annotate({ format: "uint" })
       .check(Schema.isInt())
       .check(Schema.isGreaterThanOrEqualTo(0)),
-    start: Schema.Number.annotate({ format: "uint" })
+    start: Schema.Finite.annotate({ format: "uint" })
       .check(Schema.isInt())
       .check(Schema.isGreaterThanOrEqualTo(0)),
   }).annotate({
@@ -5295,7 +5295,7 @@ export const V2ListMcpServerStatusResponse__Resource = Schema.Struct({
   mimeType: Schema.optionalKey(Schema.Union([Schema.String, Schema.Null])),
   name: Schema.String,
   size: Schema.optionalKey(
-    Schema.Union([Schema.Number.annotate({ format: "int64" }).check(Schema.isInt()), Schema.Null]),
+    Schema.Union([Schema.Finite.annotate({ format: "int64" }).check(Schema.isInt()), Schema.Null]),
   ),
   title: Schema.optionalKey(Schema.Union([Schema.String, Schema.Null])),
   uri: Schema.String,
@@ -5916,13 +5916,13 @@ export type V2RawResponseCompletedNotification__TokenUsageBreakdown = {
 };
 export const V2RawResponseCompletedNotification__TokenUsageBreakdown = Schema.Struct({
   cacheWriteInputTokens: Schema.optionalKey(
-    Schema.Number.annotate({ default: 0, format: "int64" }).check(Schema.isInt()),
+    Schema.Finite.annotate({ default: 0, format: "int64" }).check(Schema.isInt()),
   ),
-  cachedInputTokens: Schema.Number.annotate({ format: "int64" }).check(Schema.isInt()),
-  inputTokens: Schema.Number.annotate({ format: "int64" }).check(Schema.isInt()),
-  outputTokens: Schema.Number.annotate({ format: "int64" }).check(Schema.isInt()),
-  reasoningOutputTokens: Schema.Number.annotate({ format: "int64" }).check(Schema.isInt()),
-  totalTokens: Schema.Number.annotate({ format: "int64" }).check(Schema.isInt()),
+  cachedInputTokens: Schema.Finite.annotate({ format: "int64" }).check(Schema.isInt()),
+  inputTokens: Schema.Finite.annotate({ format: "int64" }).check(Schema.isInt()),
+  outputTokens: Schema.Finite.annotate({ format: "int64" }).check(Schema.isInt()),
+  reasoningOutputTokens: Schema.Finite.annotate({ format: "int64" }).check(Schema.isInt()),
+  totalTokens: Schema.Finite.annotate({ format: "int64" }).check(Schema.isInt()),
 });
 
 export type V2RawResponseItemCompletedNotification__AgentMessageInputContent =
@@ -5986,7 +5986,7 @@ export const V2RawResponseItemCompletedNotification__LocalShellAction = Schema.U
       ),
       timeout_ms: Schema.optionalKey(
         Schema.Union([
-          Schema.Number.annotate({ format: "uint64" })
+          Schema.Finite.annotate({ format: "uint64" })
             .check(Schema.isInt())
             .check(Schema.isGreaterThanOrEqualTo(0)),
           Schema.Null,
@@ -6287,10 +6287,10 @@ export type V2ReviewStartResponse__MemoryCitationEntry = {
   readonly path: string;
 };
 export const V2ReviewStartResponse__MemoryCitationEntry = Schema.Struct({
-  lineEnd: Schema.Number.annotate({ format: "uint32" })
+  lineEnd: Schema.Finite.annotate({ format: "uint32" })
     .check(Schema.isInt())
     .check(Schema.isGreaterThanOrEqualTo(0)),
-  lineStart: Schema.Number.annotate({ format: "uint32" })
+  lineStart: Schema.Finite.annotate({ format: "uint32" })
     .check(Schema.isInt())
     .check(Schema.isGreaterThanOrEqualTo(0)),
   note: Schema.String,
@@ -6364,10 +6364,10 @@ export type V2ReviewStartResponse__TextElement = {
 };
 export const V2ReviewStartResponse__TextElement = Schema.Struct({
   byteRange: Schema.Struct({
-    end: Schema.Number.annotate({ format: "uint" })
+    end: Schema.Finite.annotate({ format: "uint" })
       .check(Schema.isInt())
       .check(Schema.isGreaterThanOrEqualTo(0)),
-    start: Schema.Number.annotate({ format: "uint" })
+    start: Schema.Finite.annotate({ format: "uint" })
       .check(Schema.isInt())
       .check(Schema.isGreaterThanOrEqualTo(0)),
   }).annotate({
@@ -6444,7 +6444,7 @@ export const V2SendAddCreditsNudgeEmailResponse__AddCreditsNudgeEmailStatus = Sc
 export type V2ServerRequestResolvedNotification__RequestId = string | number;
 export const V2ServerRequestResolvedNotification__RequestId = Schema.Union([
   Schema.String,
-  Schema.Number.annotate({ format: "int64" }).check(Schema.isInt()),
+  Schema.Finite.annotate({ format: "int64" }).check(Schema.isInt()),
 ]);
 
 export type V2SkillsConfigWriteParams__AbsolutePathBuf = string;
@@ -6728,10 +6728,10 @@ export type V2ThreadForkResponse__MemoryCitationEntry = {
   readonly path: string;
 };
 export const V2ThreadForkResponse__MemoryCitationEntry = Schema.Struct({
-  lineEnd: Schema.Number.annotate({ format: "uint32" })
+  lineEnd: Schema.Finite.annotate({ format: "uint32" })
     .check(Schema.isInt())
     .check(Schema.isGreaterThanOrEqualTo(0)),
-  lineStart: Schema.Number.annotate({ format: "uint32" })
+  lineStart: Schema.Finite.annotate({ format: "uint32" })
     .check(Schema.isInt())
     .check(Schema.isGreaterThanOrEqualTo(0)),
   note: Schema.String,
@@ -6805,10 +6805,10 @@ export type V2ThreadForkResponse__TextElement = {
 };
 export const V2ThreadForkResponse__TextElement = Schema.Struct({
   byteRange: Schema.Struct({
-    end: Schema.Number.annotate({ format: "uint" })
+    end: Schema.Finite.annotate({ format: "uint" })
       .check(Schema.isInt())
       .check(Schema.isGreaterThanOrEqualTo(0)),
-    start: Schema.Number.annotate({ format: "uint" })
+    start: Schema.Finite.annotate({ format: "uint" })
       .check(Schema.isInt())
       .check(Schema.isGreaterThanOrEqualTo(0)),
   }).annotate({
@@ -7132,10 +7132,10 @@ export type V2ThreadListResponse__MemoryCitationEntry = {
   readonly path: string;
 };
 export const V2ThreadListResponse__MemoryCitationEntry = Schema.Struct({
-  lineEnd: Schema.Number.annotate({ format: "uint32" })
+  lineEnd: Schema.Finite.annotate({ format: "uint32" })
     .check(Schema.isInt())
     .check(Schema.isGreaterThanOrEqualTo(0)),
-  lineStart: Schema.Number.annotate({ format: "uint32" })
+  lineStart: Schema.Finite.annotate({ format: "uint32" })
     .check(Schema.isInt())
     .check(Schema.isGreaterThanOrEqualTo(0)),
   note: Schema.String,
@@ -7209,10 +7209,10 @@ export type V2ThreadListResponse__TextElement = {
 };
 export const V2ThreadListResponse__TextElement = Schema.Struct({
   byteRange: Schema.Struct({
-    end: Schema.Number.annotate({ format: "uint" })
+    end: Schema.Finite.annotate({ format: "uint" })
       .check(Schema.isInt())
       .check(Schema.isGreaterThanOrEqualTo(0)),
-    start: Schema.Number.annotate({ format: "uint" })
+    start: Schema.Finite.annotate({ format: "uint" })
       .check(Schema.isInt())
       .check(Schema.isGreaterThanOrEqualTo(0)),
   }).annotate({
@@ -7475,10 +7475,10 @@ export type V2ThreadMetadataUpdateResponse__MemoryCitationEntry = {
   readonly path: string;
 };
 export const V2ThreadMetadataUpdateResponse__MemoryCitationEntry = Schema.Struct({
-  lineEnd: Schema.Number.annotate({ format: "uint32" })
+  lineEnd: Schema.Finite.annotate({ format: "uint32" })
     .check(Schema.isInt())
     .check(Schema.isGreaterThanOrEqualTo(0)),
-  lineStart: Schema.Number.annotate({ format: "uint32" })
+  lineStart: Schema.Finite.annotate({ format: "uint32" })
     .check(Schema.isInt())
     .check(Schema.isGreaterThanOrEqualTo(0)),
   note: Schema.String,
@@ -7555,10 +7555,10 @@ export type V2ThreadMetadataUpdateResponse__TextElement = {
 };
 export const V2ThreadMetadataUpdateResponse__TextElement = Schema.Struct({
   byteRange: Schema.Struct({
-    end: Schema.Number.annotate({ format: "uint" })
+    end: Schema.Finite.annotate({ format: "uint" })
       .check(Schema.isInt())
       .check(Schema.isGreaterThanOrEqualTo(0)),
-    start: Schema.Number.annotate({ format: "uint" })
+    start: Schema.Finite.annotate({ format: "uint" })
       .check(Schema.isInt())
       .check(Schema.isGreaterThanOrEqualTo(0)),
   }).annotate({
@@ -7780,10 +7780,10 @@ export type V2ThreadReadResponse__MemoryCitationEntry = {
   readonly path: string;
 };
 export const V2ThreadReadResponse__MemoryCitationEntry = Schema.Struct({
-  lineEnd: Schema.Number.annotate({ format: "uint32" })
+  lineEnd: Schema.Finite.annotate({ format: "uint32" })
     .check(Schema.isInt())
     .check(Schema.isGreaterThanOrEqualTo(0)),
-  lineStart: Schema.Number.annotate({ format: "uint32" })
+  lineStart: Schema.Finite.annotate({ format: "uint32" })
     .check(Schema.isInt())
     .check(Schema.isGreaterThanOrEqualTo(0)),
   note: Schema.String,
@@ -7857,10 +7857,10 @@ export type V2ThreadReadResponse__TextElement = {
 };
 export const V2ThreadReadResponse__TextElement = Schema.Struct({
   byteRange: Schema.Struct({
-    end: Schema.Number.annotate({ format: "uint" })
+    end: Schema.Finite.annotate({ format: "uint" })
       .check(Schema.isInt())
       .check(Schema.isGreaterThanOrEqualTo(0)),
-    start: Schema.Number.annotate({ format: "uint" })
+    start: Schema.Finite.annotate({ format: "uint" })
       .check(Schema.isInt())
       .check(Schema.isGreaterThanOrEqualTo(0)),
   }).annotate({
@@ -7943,15 +7943,15 @@ export const V2ThreadRealtimeOutputAudioDeltaNotification__ThreadRealtimeAudioCh
   {
     data: Schema.String,
     itemId: Schema.optionalKey(Schema.Union([Schema.String, Schema.Null])),
-    numChannels: Schema.Number.annotate({ format: "uint16" })
+    numChannels: Schema.Finite.annotate({ format: "uint16" })
       .check(Schema.isInt())
       .check(Schema.isGreaterThanOrEqualTo(0)),
-    sampleRate: Schema.Number.annotate({ format: "uint32" })
+    sampleRate: Schema.Finite.annotate({ format: "uint32" })
       .check(Schema.isInt())
       .check(Schema.isGreaterThanOrEqualTo(0)),
     samplesPerChannel: Schema.optionalKey(
       Schema.Union([
-        Schema.Number.annotate({ format: "uint32" })
+        Schema.Finite.annotate({ format: "uint32" })
           .check(Schema.isInt())
           .check(Schema.isGreaterThanOrEqualTo(0)),
         Schema.Null,
@@ -8062,7 +8062,7 @@ export const V2ThreadResumeParams__LocalShellAction = Schema.Union(
       ),
       timeout_ms: Schema.optionalKey(
         Schema.Union([
-          Schema.Number.annotate({ format: "uint64" })
+          Schema.Finite.annotate({ format: "uint64" })
             .check(Schema.isInt())
             .check(Schema.isGreaterThanOrEqualTo(0)),
           Schema.Null,
@@ -8367,10 +8367,10 @@ export type V2ThreadResumeResponse__MemoryCitationEntry = {
   readonly path: string;
 };
 export const V2ThreadResumeResponse__MemoryCitationEntry = Schema.Struct({
-  lineEnd: Schema.Number.annotate({ format: "uint32" })
+  lineEnd: Schema.Finite.annotate({ format: "uint32" })
     .check(Schema.isInt())
     .check(Schema.isGreaterThanOrEqualTo(0)),
-  lineStart: Schema.Number.annotate({ format: "uint32" })
+  lineStart: Schema.Finite.annotate({ format: "uint32" })
     .check(Schema.isInt())
     .check(Schema.isGreaterThanOrEqualTo(0)),
   note: Schema.String,
@@ -8444,10 +8444,10 @@ export type V2ThreadResumeResponse__TextElement = {
 };
 export const V2ThreadResumeResponse__TextElement = Schema.Struct({
   byteRange: Schema.Struct({
-    end: Schema.Number.annotate({ format: "uint" })
+    end: Schema.Finite.annotate({ format: "uint" })
       .check(Schema.isInt())
       .check(Schema.isGreaterThanOrEqualTo(0)),
-    start: Schema.Number.annotate({ format: "uint" })
+    start: Schema.Finite.annotate({ format: "uint" })
       .check(Schema.isInt())
       .check(Schema.isGreaterThanOrEqualTo(0)),
   }).annotate({
@@ -8667,10 +8667,10 @@ export type V2ThreadRollbackResponse__MemoryCitationEntry = {
   readonly path: string;
 };
 export const V2ThreadRollbackResponse__MemoryCitationEntry = Schema.Struct({
-  lineEnd: Schema.Number.annotate({ format: "uint32" })
+  lineEnd: Schema.Finite.annotate({ format: "uint32" })
     .check(Schema.isInt())
     .check(Schema.isGreaterThanOrEqualTo(0)),
-  lineStart: Schema.Number.annotate({ format: "uint32" })
+  lineStart: Schema.Finite.annotate({ format: "uint32" })
     .check(Schema.isInt())
     .check(Schema.isGreaterThanOrEqualTo(0)),
   note: Schema.String,
@@ -8747,10 +8747,10 @@ export type V2ThreadRollbackResponse__TextElement = {
 };
 export const V2ThreadRollbackResponse__TextElement = Schema.Struct({
   byteRange: Schema.Struct({
-    end: Schema.Number.annotate({ format: "uint" })
+    end: Schema.Finite.annotate({ format: "uint" })
       .check(Schema.isInt())
       .check(Schema.isGreaterThanOrEqualTo(0)),
-    start: Schema.Number.annotate({ format: "uint" })
+    start: Schema.Finite.annotate({ format: "uint" })
       .check(Schema.isInt())
       .check(Schema.isGreaterThanOrEqualTo(0)),
   }).annotate({
@@ -9077,10 +9077,10 @@ export type V2ThreadStartedNotification__MemoryCitationEntry = {
   readonly path: string;
 };
 export const V2ThreadStartedNotification__MemoryCitationEntry = Schema.Struct({
-  lineEnd: Schema.Number.annotate({ format: "uint32" })
+  lineEnd: Schema.Finite.annotate({ format: "uint32" })
     .check(Schema.isInt())
     .check(Schema.isGreaterThanOrEqualTo(0)),
-  lineStart: Schema.Number.annotate({ format: "uint32" })
+  lineStart: Schema.Finite.annotate({ format: "uint32" })
     .check(Schema.isInt())
     .check(Schema.isGreaterThanOrEqualTo(0)),
   note: Schema.String,
@@ -9157,10 +9157,10 @@ export type V2ThreadStartedNotification__TextElement = {
 };
 export const V2ThreadStartedNotification__TextElement = Schema.Struct({
   byteRange: Schema.Struct({
-    end: Schema.Number.annotate({ format: "uint" })
+    end: Schema.Finite.annotate({ format: "uint" })
       .check(Schema.isInt())
       .check(Schema.isGreaterThanOrEqualTo(0)),
-    start: Schema.Number.annotate({ format: "uint" })
+    start: Schema.Finite.annotate({ format: "uint" })
       .check(Schema.isInt())
       .check(Schema.isGreaterThanOrEqualTo(0)),
   }).annotate({
@@ -9492,10 +9492,10 @@ export type V2ThreadStartResponse__MemoryCitationEntry = {
   readonly path: string;
 };
 export const V2ThreadStartResponse__MemoryCitationEntry = Schema.Struct({
-  lineEnd: Schema.Number.annotate({ format: "uint32" })
+  lineEnd: Schema.Finite.annotate({ format: "uint32" })
     .check(Schema.isInt())
     .check(Schema.isGreaterThanOrEqualTo(0)),
-  lineStart: Schema.Number.annotate({ format: "uint32" })
+  lineStart: Schema.Finite.annotate({ format: "uint32" })
     .check(Schema.isInt())
     .check(Schema.isGreaterThanOrEqualTo(0)),
   note: Schema.String,
@@ -9569,10 +9569,10 @@ export type V2ThreadStartResponse__TextElement = {
 };
 export const V2ThreadStartResponse__TextElement = Schema.Struct({
   byteRange: Schema.Struct({
-    end: Schema.Number.annotate({ format: "uint" })
+    end: Schema.Finite.annotate({ format: "uint" })
       .check(Schema.isInt())
       .check(Schema.isGreaterThanOrEqualTo(0)),
-    start: Schema.Number.annotate({ format: "uint" })
+    start: Schema.Finite.annotate({ format: "uint" })
       .check(Schema.isInt())
       .check(Schema.isGreaterThanOrEqualTo(0)),
   }).annotate({
@@ -9662,13 +9662,13 @@ export type V2ThreadTokenUsageUpdatedNotification__TokenUsageBreakdown = {
 };
 export const V2ThreadTokenUsageUpdatedNotification__TokenUsageBreakdown = Schema.Struct({
   cacheWriteInputTokens: Schema.optionalKey(
-    Schema.Number.annotate({ default: 0, format: "int64" }).check(Schema.isInt()),
+    Schema.Finite.annotate({ default: 0, format: "int64" }).check(Schema.isInt()),
   ),
-  cachedInputTokens: Schema.Number.annotate({ format: "int64" }).check(Schema.isInt()),
-  inputTokens: Schema.Number.annotate({ format: "int64" }).check(Schema.isInt()),
-  outputTokens: Schema.Number.annotate({ format: "int64" }).check(Schema.isInt()),
-  reasoningOutputTokens: Schema.Number.annotate({ format: "int64" }).check(Schema.isInt()),
-  totalTokens: Schema.Number.annotate({ format: "int64" }).check(Schema.isInt()),
+  cachedInputTokens: Schema.Finite.annotate({ format: "int64" }).check(Schema.isInt()),
+  inputTokens: Schema.Finite.annotate({ format: "int64" }).check(Schema.isInt()),
+  outputTokens: Schema.Finite.annotate({ format: "int64" }).check(Schema.isInt()),
+  reasoningOutputTokens: Schema.Finite.annotate({ format: "int64" }).check(Schema.isInt()),
+  totalTokens: Schema.Finite.annotate({ format: "int64" }).check(Schema.isInt()),
 });
 
 export type V2ThreadUnarchiveResponse__AbsolutePathBuf = string;
@@ -9824,10 +9824,10 @@ export type V2ThreadUnarchiveResponse__MemoryCitationEntry = {
   readonly path: string;
 };
 export const V2ThreadUnarchiveResponse__MemoryCitationEntry = Schema.Struct({
-  lineEnd: Schema.Number.annotate({ format: "uint32" })
+  lineEnd: Schema.Finite.annotate({ format: "uint32" })
     .check(Schema.isInt())
     .check(Schema.isGreaterThanOrEqualTo(0)),
-  lineStart: Schema.Number.annotate({ format: "uint32" })
+  lineStart: Schema.Finite.annotate({ format: "uint32" })
     .check(Schema.isInt())
     .check(Schema.isGreaterThanOrEqualTo(0)),
   note: Schema.String,
@@ -9904,10 +9904,10 @@ export type V2ThreadUnarchiveResponse__TextElement = {
 };
 export const V2ThreadUnarchiveResponse__TextElement = Schema.Struct({
   byteRange: Schema.Struct({
-    end: Schema.Number.annotate({ format: "uint" })
+    end: Schema.Finite.annotate({ format: "uint" })
       .check(Schema.isInt())
       .check(Schema.isGreaterThanOrEqualTo(0)),
-    start: Schema.Number.annotate({ format: "uint" })
+    start: Schema.Finite.annotate({ format: "uint" })
       .check(Schema.isInt())
       .check(Schema.isGreaterThanOrEqualTo(0)),
   }).annotate({
@@ -10130,10 +10130,10 @@ export type V2TurnCompletedNotification__MemoryCitationEntry = {
   readonly path: string;
 };
 export const V2TurnCompletedNotification__MemoryCitationEntry = Schema.Struct({
-  lineEnd: Schema.Number.annotate({ format: "uint32" })
+  lineEnd: Schema.Finite.annotate({ format: "uint32" })
     .check(Schema.isInt())
     .check(Schema.isGreaterThanOrEqualTo(0)),
-  lineStart: Schema.Number.annotate({ format: "uint32" })
+  lineStart: Schema.Finite.annotate({ format: "uint32" })
     .check(Schema.isInt())
     .check(Schema.isGreaterThanOrEqualTo(0)),
   note: Schema.String,
@@ -10210,10 +10210,10 @@ export type V2TurnCompletedNotification__TextElement = {
 };
 export const V2TurnCompletedNotification__TextElement = Schema.Struct({
   byteRange: Schema.Struct({
-    end: Schema.Number.annotate({ format: "uint" })
+    end: Schema.Finite.annotate({ format: "uint" })
       .check(Schema.isInt())
       .check(Schema.isGreaterThanOrEqualTo(0)),
-    start: Schema.Number.annotate({ format: "uint" })
+    start: Schema.Finite.annotate({ format: "uint" })
       .check(Schema.isInt())
       .check(Schema.isGreaterThanOrEqualTo(0)),
   }).annotate({
@@ -10422,10 +10422,10 @@ export type V2TurnStartedNotification__MemoryCitationEntry = {
   readonly path: string;
 };
 export const V2TurnStartedNotification__MemoryCitationEntry = Schema.Struct({
-  lineEnd: Schema.Number.annotate({ format: "uint32" })
+  lineEnd: Schema.Finite.annotate({ format: "uint32" })
     .check(Schema.isInt())
     .check(Schema.isGreaterThanOrEqualTo(0)),
-  lineStart: Schema.Number.annotate({ format: "uint32" })
+  lineStart: Schema.Finite.annotate({ format: "uint32" })
     .check(Schema.isInt())
     .check(Schema.isGreaterThanOrEqualTo(0)),
   note: Schema.String,
@@ -10502,10 +10502,10 @@ export type V2TurnStartedNotification__TextElement = {
 };
 export const V2TurnStartedNotification__TextElement = Schema.Struct({
   byteRange: Schema.Struct({
-    end: Schema.Number.annotate({ format: "uint" })
+    end: Schema.Finite.annotate({ format: "uint" })
       .check(Schema.isInt())
       .check(Schema.isGreaterThanOrEqualTo(0)),
-    start: Schema.Number.annotate({ format: "uint" })
+    start: Schema.Finite.annotate({ format: "uint" })
       .check(Schema.isInt())
       .check(Schema.isGreaterThanOrEqualTo(0)),
   }).annotate({
@@ -10653,10 +10653,10 @@ export type V2TurnStartParams__TextElement = {
 };
 export const V2TurnStartParams__TextElement = Schema.Struct({
   byteRange: Schema.Struct({
-    end: Schema.Number.annotate({ format: "uint" })
+    end: Schema.Finite.annotate({ format: "uint" })
       .check(Schema.isInt())
       .check(Schema.isGreaterThanOrEqualTo(0)),
-    start: Schema.Number.annotate({ format: "uint" })
+    start: Schema.Finite.annotate({ format: "uint" })
       .check(Schema.isInt())
       .check(Schema.isGreaterThanOrEqualTo(0)),
   }).annotate({
@@ -10806,10 +10806,10 @@ export type V2TurnStartResponse__MemoryCitationEntry = {
   readonly path: string;
 };
 export const V2TurnStartResponse__MemoryCitationEntry = Schema.Struct({
-  lineEnd: Schema.Number.annotate({ format: "uint32" })
+  lineEnd: Schema.Finite.annotate({ format: "uint32" })
     .check(Schema.isInt())
     .check(Schema.isGreaterThanOrEqualTo(0)),
-  lineStart: Schema.Number.annotate({ format: "uint32" })
+  lineStart: Schema.Finite.annotate({ format: "uint32" })
     .check(Schema.isInt())
     .check(Schema.isGreaterThanOrEqualTo(0)),
   note: Schema.String,
@@ -10883,10 +10883,10 @@ export type V2TurnStartResponse__TextElement = {
 };
 export const V2TurnStartResponse__TextElement = Schema.Struct({
   byteRange: Schema.Struct({
-    end: Schema.Number.annotate({ format: "uint" })
+    end: Schema.Finite.annotate({ format: "uint" })
       .check(Schema.isInt())
       .check(Schema.isGreaterThanOrEqualTo(0)),
-    start: Schema.Number.annotate({ format: "uint" })
+    start: Schema.Finite.annotate({ format: "uint" })
       .check(Schema.isInt())
       .check(Schema.isGreaterThanOrEqualTo(0)),
   }).annotate({
@@ -10957,10 +10957,10 @@ export type V2TurnSteerParams__TextElement = {
 };
 export const V2TurnSteerParams__TextElement = Schema.Struct({
   byteRange: Schema.Struct({
-    end: Schema.Number.annotate({ format: "uint" })
+    end: Schema.Finite.annotate({ format: "uint" })
       .check(Schema.isInt())
       .check(Schema.isGreaterThanOrEqualTo(0)),
-    start: Schema.Number.annotate({ format: "uint" })
+    start: Schema.Finite.annotate({ format: "uint" })
       .check(Schema.isInt())
       .check(Schema.isGreaterThanOrEqualTo(0)),
   }).annotate({
@@ -11316,7 +11316,7 @@ export const ClientRequest__ListMcpServerStatusParams = Schema.Struct({
   ),
   limit: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({
+      Schema.Finite.annotate({
         description: "Optional page size; defaults to a server-defined value.",
         format: "uint32",
       })
@@ -11577,7 +11577,7 @@ export const ClientRequest__ThreadGoalSetParams = Schema.Struct({
   status: Schema.optionalKey(Schema.Union([ClientRequest__ThreadGoalStatus, Schema.Null])),
   threadId: Schema.String,
   tokenBudget: Schema.optionalKey(
-    Schema.Union([Schema.Number.annotate({ format: "int64" }).check(Schema.isInt()), Schema.Null]),
+    Schema.Union([Schema.Finite.annotate({ format: "int64" }).check(Schema.isInt()), Schema.Null]),
   ),
 });
 
@@ -11696,7 +11696,7 @@ export const ClientRequest__ThreadListParams = Schema.Struct({
   ),
   limit: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({
+      Schema.Finite.annotate({
         description: "Optional page size; defaults to a reasonable server-side value.",
         format: "uint32",
       })
@@ -11942,7 +11942,7 @@ export const FuzzyFileSearchResponse__FuzzyFileSearchResult = Schema.Struct({
   indices: Schema.optionalKey(
     Schema.Union([
       Schema.Array(
-        Schema.Number.annotate({ format: "uint32" })
+        Schema.Finite.annotate({ format: "uint32" })
           .check(Schema.isInt())
           .check(Schema.isGreaterThanOrEqualTo(0)),
       ),
@@ -11952,7 +11952,7 @@ export const FuzzyFileSearchResponse__FuzzyFileSearchResult = Schema.Struct({
   match_type: FuzzyFileSearchResponse__FuzzyFileSearchMatchType,
   path: Schema.String,
   root: Schema.String,
-  score: Schema.Number.annotate({ format: "uint32" })
+  score: Schema.Finite.annotate({ format: "uint32" })
     .check(Schema.isInt())
     .check(Schema.isGreaterThanOrEqualTo(0)),
 }).annotate({ description: "Superset of [`codex_file_search::FileMatch`]" });
@@ -11970,7 +11970,7 @@ export const FuzzyFileSearchSessionUpdatedNotification__FuzzyFileSearchResult = 
   indices: Schema.optionalKey(
     Schema.Union([
       Schema.Array(
-        Schema.Number.annotate({ format: "uint32" })
+        Schema.Finite.annotate({ format: "uint32" })
           .check(Schema.isInt())
           .check(Schema.isGreaterThanOrEqualTo(0)),
       ),
@@ -11980,7 +11980,7 @@ export const FuzzyFileSearchSessionUpdatedNotification__FuzzyFileSearchResult = 
   match_type: FuzzyFileSearchSessionUpdatedNotification__FuzzyFileSearchMatchType,
   path: Schema.String,
   root: Schema.String,
-  score: Schema.Number.annotate({ format: "uint32" })
+  score: Schema.Finite.annotate({ format: "uint32" })
     .check(Schema.isInt())
     .check(Schema.isGreaterThanOrEqualTo(0)),
 }).annotate({ description: "Superset of [`codex_file_search::FileMatch`]" });
@@ -12051,20 +12051,20 @@ export type McpServerElicitationRequestParams__McpElicitationNumberSchema = {
 export const McpServerElicitationRequestParams__McpElicitationNumberSchema = Schema.Struct({
   default: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({ format: "double" }).check(Schema.isFinite()),
+      Schema.Finite.annotate({ format: "double" }).check(Schema.isFinite()),
       Schema.Null,
     ]),
   ),
   description: Schema.optionalKey(Schema.Union([Schema.String, Schema.Null])),
   maximum: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({ format: "double" }).check(Schema.isFinite()),
+      Schema.Finite.annotate({ format: "double" }).check(Schema.isFinite()),
       Schema.Null,
     ]),
   ),
   minimum: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({ format: "double" }).check(Schema.isFinite()),
+      Schema.Finite.annotate({ format: "double" }).check(Schema.isFinite()),
       Schema.Null,
     ]),
   ),
@@ -12107,7 +12107,7 @@ export const McpServerElicitationRequestParams__McpElicitationStringSchema = Sch
   ),
   maxLength: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({ format: "uint32" })
+      Schema.Finite.annotate({ format: "uint32" })
         .check(Schema.isInt())
         .check(Schema.isGreaterThanOrEqualTo(0)),
       Schema.Null,
@@ -12115,7 +12115,7 @@ export const McpServerElicitationRequestParams__McpElicitationStringSchema = Sch
   ),
   minLength: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({ format: "uint32" })
+      Schema.Finite.annotate({ format: "uint32" })
         .check(Schema.isInt())
         .check(Schema.isGreaterThanOrEqualTo(0)),
       Schema.Null,
@@ -12439,7 +12439,7 @@ export const ServerNotification__FuzzyFileSearchResult = Schema.Struct({
   indices: Schema.optionalKey(
     Schema.Union([
       Schema.Array(
-        Schema.Number.annotate({ format: "uint32" })
+        Schema.Finite.annotate({ format: "uint32" })
           .check(Schema.isInt())
           .check(Schema.isGreaterThanOrEqualTo(0)),
       ),
@@ -12449,7 +12449,7 @@ export const ServerNotification__FuzzyFileSearchResult = Schema.Struct({
   match_type: ServerNotification__FuzzyFileSearchMatchType,
   path: Schema.String,
   root: Schema.String,
-  score: Schema.Number.annotate({ format: "uint32" })
+  score: Schema.Finite.annotate({ format: "uint32" })
     .check(Schema.isInt())
     .check(Schema.isGreaterThanOrEqualTo(0)),
 }).annotate({ description: "Superset of [`codex_file_search::FileMatch`]" });
@@ -12618,7 +12618,7 @@ export const ServerNotification__CodexErrorInfo = Schema.Union(
       httpConnectionFailed: Schema.Struct({
         httpStatusCode: Schema.optionalKey(
           Schema.Union([
-            Schema.Number.annotate({ format: "uint16" })
+            Schema.Finite.annotate({ format: "uint16" })
               .check(Schema.isInt())
               .check(Schema.isGreaterThanOrEqualTo(0)),
             Schema.Null,
@@ -12630,7 +12630,7 @@ export const ServerNotification__CodexErrorInfo = Schema.Union(
       responseStreamConnectionFailed: Schema.Struct({
         httpStatusCode: Schema.optionalKey(
           Schema.Union([
-            Schema.Number.annotate({ format: "uint16" })
+            Schema.Finite.annotate({ format: "uint16" })
               .check(Schema.isInt())
               .check(Schema.isGreaterThanOrEqualTo(0)),
             Schema.Null,
@@ -12645,7 +12645,7 @@ export const ServerNotification__CodexErrorInfo = Schema.Union(
       responseStreamDisconnected: Schema.Struct({
         httpStatusCode: Schema.optionalKey(
           Schema.Union([
-            Schema.Number.annotate({ format: "uint16" })
+            Schema.Finite.annotate({ format: "uint16" })
               .check(Schema.isInt())
               .check(Schema.isGreaterThanOrEqualTo(0)),
             Schema.Null,
@@ -12661,7 +12661,7 @@ export const ServerNotification__CodexErrorInfo = Schema.Union(
       responseTooManyFailedAttempts: Schema.Struct({
         httpStatusCode: Schema.optionalKey(
           Schema.Union([
-            Schema.Number.annotate({ format: "uint16" })
+            Schema.Finite.annotate({ format: "uint16" })
               .check(Schema.isInt())
               .check(Schema.isGreaterThanOrEqualTo(0)),
             Schema.Null,
@@ -12900,16 +12900,16 @@ export type ServerNotification__ThreadGoal = {
   readonly updatedAt: number;
 };
 export const ServerNotification__ThreadGoal = Schema.Struct({
-  createdAt: Schema.Number.annotate({ format: "int64" }).check(Schema.isInt()),
+  createdAt: Schema.Finite.annotate({ format: "int64" }).check(Schema.isInt()),
   objective: Schema.String,
   status: ServerNotification__ThreadGoalStatus,
   threadId: Schema.String,
-  timeUsedSeconds: Schema.Number.annotate({ format: "int64" }).check(Schema.isInt()),
+  timeUsedSeconds: Schema.Finite.annotate({ format: "int64" }).check(Schema.isInt()),
   tokenBudget: Schema.optionalKey(
-    Schema.Union([Schema.Number.annotate({ format: "int64" }).check(Schema.isInt()), Schema.Null]),
+    Schema.Union([Schema.Finite.annotate({ format: "int64" }).check(Schema.isInt()), Schema.Null]),
   ),
-  tokensUsed: Schema.Number.annotate({ format: "int64" }).check(Schema.isInt()),
-  updatedAt: Schema.Number.annotate({ format: "int64" }).check(Schema.isInt()),
+  tokensUsed: Schema.Finite.annotate({ format: "int64" }).check(Schema.isInt()),
+  updatedAt: Schema.Finite.annotate({ format: "int64" }).check(Schema.isInt()),
 });
 
 export type ServerNotification__SubAgentSource =
@@ -12934,7 +12934,7 @@ export const ServerNotification__SubAgentSource = Schema.Union(
         agent_nickname: Schema.optionalKey(Schema.Union([Schema.String, Schema.Null])),
         agent_path: Schema.optionalKey(Schema.Union([ServerNotification__AgentPath, Schema.Null])),
         agent_role: Schema.optionalKey(Schema.Union([Schema.String, Schema.Null])),
-        depth: Schema.Number.annotate({ format: "int32" }).check(Schema.isInt()),
+        depth: Schema.Finite.annotate({ format: "int32" }).check(Schema.isInt()),
         parent_thread_id: ServerNotification__ThreadId,
       }),
     }).annotate({ title: "ThreadSpawnSubAgentSource" }),
@@ -12960,7 +12960,7 @@ export type ServerNotification__ThreadTokenUsage = {
 export const ServerNotification__ThreadTokenUsage = Schema.Struct({
   last: ServerNotification__TokenUsageBreakdown,
   modelContextWindow: Schema.optionalKey(
-    Schema.Union([Schema.Number.annotate({ format: "int64" }).check(Schema.isInt()), Schema.Null]),
+    Schema.Union([Schema.Finite.annotate({ format: "int64" }).check(Schema.isInt()), Schema.Null]),
   ),
   total: ServerNotification__TokenUsageBreakdown,
 });
@@ -13113,20 +13113,20 @@ export type ServerRequest__McpElicitationNumberSchema = {
 export const ServerRequest__McpElicitationNumberSchema = Schema.Struct({
   default: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({ format: "double" }).check(Schema.isFinite()),
+      Schema.Finite.annotate({ format: "double" }).check(Schema.isFinite()),
       Schema.Null,
     ]),
   ),
   description: Schema.optionalKey(Schema.Union([Schema.String, Schema.Null])),
   maximum: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({ format: "double" }).check(Schema.isFinite()),
+      Schema.Finite.annotate({ format: "double" }).check(Schema.isFinite()),
       Schema.Null,
     ]),
   ),
   minimum: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({ format: "double" }).check(Schema.isFinite()),
+      Schema.Finite.annotate({ format: "double" }).check(Schema.isFinite()),
       Schema.Null,
     ]),
   ),
@@ -13168,7 +13168,7 @@ export const ServerRequest__McpElicitationStringSchema = Schema.Struct({
   ),
   maxLength: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({ format: "uint32" })
+      Schema.Finite.annotate({ format: "uint32" })
         .check(Schema.isInt())
         .check(Schema.isGreaterThanOrEqualTo(0)),
       Schema.Null,
@@ -13176,7 +13176,7 @@ export const ServerRequest__McpElicitationStringSchema = Schema.Struct({
   ),
   minLength: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({ format: "uint32" })
+      Schema.Finite.annotate({ format: "uint32" })
         .check(Schema.isInt())
         .check(Schema.isGreaterThanOrEqualTo(0)),
       Schema.Null,
@@ -13825,7 +13825,7 @@ export const V2ErrorNotification__CodexErrorInfo = Schema.Union(
       httpConnectionFailed: Schema.Struct({
         httpStatusCode: Schema.optionalKey(
           Schema.Union([
-            Schema.Number.annotate({ format: "uint16" })
+            Schema.Finite.annotate({ format: "uint16" })
               .check(Schema.isInt())
               .check(Schema.isGreaterThanOrEqualTo(0)),
             Schema.Null,
@@ -13837,7 +13837,7 @@ export const V2ErrorNotification__CodexErrorInfo = Schema.Union(
       responseStreamConnectionFailed: Schema.Struct({
         httpStatusCode: Schema.optionalKey(
           Schema.Union([
-            Schema.Number.annotate({ format: "uint16" })
+            Schema.Finite.annotate({ format: "uint16" })
               .check(Schema.isInt())
               .check(Schema.isGreaterThanOrEqualTo(0)),
             Schema.Null,
@@ -13852,7 +13852,7 @@ export const V2ErrorNotification__CodexErrorInfo = Schema.Union(
       responseStreamDisconnected: Schema.Struct({
         httpStatusCode: Schema.optionalKey(
           Schema.Union([
-            Schema.Number.annotate({ format: "uint16" })
+            Schema.Finite.annotate({ format: "uint16" })
               .check(Schema.isInt())
               .check(Schema.isGreaterThanOrEqualTo(0)),
             Schema.Null,
@@ -13868,7 +13868,7 @@ export const V2ErrorNotification__CodexErrorInfo = Schema.Union(
       responseTooManyFailedAttempts: Schema.Struct({
         httpStatusCode: Schema.optionalKey(
           Schema.Union([
-            Schema.Number.annotate({ format: "uint16" })
+            Schema.Finite.annotate({ format: "uint16" })
               .check(Schema.isInt())
               .check(Schema.isGreaterThanOrEqualTo(0)),
             Schema.Null,
@@ -14015,7 +14015,7 @@ export type V2ExternalAgentConfigImportHistoriesReadResponse__ExternalAgentImpor
 export const V2ExternalAgentConfigImportHistoriesReadResponse__ExternalAgentImportedConnectorCandidate =
   Schema.Struct({
     name: Schema.String,
-    sessionCount: Schema.Number.annotate({ format: "uint32" })
+    sessionCount: Schema.Finite.annotate({ format: "uint32" })
       .check(Schema.isInt())
       .check(Schema.isGreaterThanOrEqualTo(0)),
     source: V2ExternalAgentConfigImportHistoriesReadResponse__ExternalAgentImportedConnectorSource,
@@ -14124,7 +14124,7 @@ export const V2GetAccountRateLimitsResponse__RateLimitResetCredit = Schema.Struc
   ),
   expiresAt: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({
+      Schema.Finite.annotate({
         description:
           "Unix timestamp in seconds when the credit expires, or `null` if it does not expire.",
         format: "int64",
@@ -14132,7 +14132,7 @@ export const V2GetAccountRateLimitsResponse__RateLimitResetCredit = Schema.Struc
       Schema.Null,
     ]),
   ),
-  grantedAt: Schema.Number.annotate({
+  grantedAt: Schema.Finite.annotate({
     description: "Unix timestamp in seconds when the credit was granted.",
     format: "int64",
   }).check(Schema.isInt()),
@@ -14228,7 +14228,7 @@ export type V2GetWorkspaceMessagesResponse__WorkspaceMessage = {
 export const V2GetWorkspaceMessagesResponse__WorkspaceMessage = Schema.Struct({
   archivedAt: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({
+      Schema.Finite.annotate({
         description: "Unix timestamp (in seconds) when the message was archived.",
         format: "int64",
       }).check(Schema.isInt()),
@@ -14237,7 +14237,7 @@ export const V2GetWorkspaceMessagesResponse__WorkspaceMessage = Schema.Struct({
   ),
   createdAt: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({
+      Schema.Finite.annotate({
         description: "Unix timestamp (in seconds) when the message was created.",
         format: "int64",
       }).check(Schema.isInt()),
@@ -14278,7 +14278,7 @@ export type V2HooksListResponse__HookMetadata = {
 export const V2HooksListResponse__HookMetadata = Schema.Struct({
   command: Schema.optionalKey(Schema.Union([Schema.String, Schema.Null])),
   currentHash: Schema.String,
-  displayOrder: Schema.Number.annotate({ format: "int64" }).check(Schema.isInt()),
+  displayOrder: Schema.Finite.annotate({ format: "int64" }).check(Schema.isInt()),
   enabled: Schema.Boolean,
   eventName: V2HooksListResponse__HookEventName,
   handlerType: V2HooksListResponse__HookHandlerType,
@@ -14289,7 +14289,7 @@ export const V2HooksListResponse__HookMetadata = Schema.Struct({
   source: V2HooksListResponse__HookSource,
   sourcePath: V2HooksListResponse__AbsolutePathBuf,
   statusMessage: Schema.optionalKey(Schema.Union([Schema.String, Schema.Null])),
-  timeoutSec: Schema.Number.annotate({ format: "uint64" })
+  timeoutSec: Schema.Finite.annotate({ format: "uint64" })
     .check(Schema.isInt())
     .check(Schema.isGreaterThanOrEqualTo(0)),
   trustStatus: V2HooksListResponse__HookTrustStatus,
@@ -15317,7 +15317,7 @@ export const V2PluginReadResponse__ScheduledTaskSchedule = Schema.Union(
       days: Schema.optionalKey(
         Schema.Union([Schema.Array(V2PluginReadResponse__ScheduledTaskWeekday), Schema.Null]),
       ),
-      intervalHours: Schema.Number.annotate({ format: "uint32" })
+      intervalHours: Schema.Finite.annotate({ format: "uint32" })
         .check(Schema.isInt())
         .check(Schema.isGreaterThanOrEqualTo(0)),
       type: Schema.Literal("hourly").annotate({ title: "HourlyScheduledTaskScheduleType" }),
@@ -15707,7 +15707,7 @@ export const V2ReviewStartResponse__CodexErrorInfo = Schema.Union(
       httpConnectionFailed: Schema.Struct({
         httpStatusCode: Schema.optionalKey(
           Schema.Union([
-            Schema.Number.annotate({ format: "uint16" })
+            Schema.Finite.annotate({ format: "uint16" })
               .check(Schema.isInt())
               .check(Schema.isGreaterThanOrEqualTo(0)),
             Schema.Null,
@@ -15719,7 +15719,7 @@ export const V2ReviewStartResponse__CodexErrorInfo = Schema.Union(
       responseStreamConnectionFailed: Schema.Struct({
         httpStatusCode: Schema.optionalKey(
           Schema.Union([
-            Schema.Number.annotate({ format: "uint16" })
+            Schema.Finite.annotate({ format: "uint16" })
               .check(Schema.isInt())
               .check(Schema.isGreaterThanOrEqualTo(0)),
             Schema.Null,
@@ -15734,7 +15734,7 @@ export const V2ReviewStartResponse__CodexErrorInfo = Schema.Union(
       responseStreamDisconnected: Schema.Struct({
         httpStatusCode: Schema.optionalKey(
           Schema.Union([
-            Schema.Number.annotate({ format: "uint16" })
+            Schema.Finite.annotate({ format: "uint16" })
               .check(Schema.isInt())
               .check(Schema.isGreaterThanOrEqualTo(0)),
             Schema.Null,
@@ -15750,7 +15750,7 @@ export const V2ReviewStartResponse__CodexErrorInfo = Schema.Union(
       responseTooManyFailedAttempts: Schema.Struct({
         httpStatusCode: Schema.optionalKey(
           Schema.Union([
-            Schema.Number.annotate({ format: "uint16" })
+            Schema.Finite.annotate({ format: "uint16" })
               .check(Schema.isInt())
               .check(Schema.isGreaterThanOrEqualTo(0)),
             Schema.Null,
@@ -15980,7 +15980,7 @@ export const V2ThreadForkResponse__CodexErrorInfo = Schema.Union(
       httpConnectionFailed: Schema.Struct({
         httpStatusCode: Schema.optionalKey(
           Schema.Union([
-            Schema.Number.annotate({ format: "uint16" })
+            Schema.Finite.annotate({ format: "uint16" })
               .check(Schema.isInt())
               .check(Schema.isGreaterThanOrEqualTo(0)),
             Schema.Null,
@@ -15992,7 +15992,7 @@ export const V2ThreadForkResponse__CodexErrorInfo = Schema.Union(
       responseStreamConnectionFailed: Schema.Struct({
         httpStatusCode: Schema.optionalKey(
           Schema.Union([
-            Schema.Number.annotate({ format: "uint16" })
+            Schema.Finite.annotate({ format: "uint16" })
               .check(Schema.isInt())
               .check(Schema.isGreaterThanOrEqualTo(0)),
             Schema.Null,
@@ -16007,7 +16007,7 @@ export const V2ThreadForkResponse__CodexErrorInfo = Schema.Union(
       responseStreamDisconnected: Schema.Struct({
         httpStatusCode: Schema.optionalKey(
           Schema.Union([
-            Schema.Number.annotate({ format: "uint16" })
+            Schema.Finite.annotate({ format: "uint16" })
               .check(Schema.isInt())
               .check(Schema.isGreaterThanOrEqualTo(0)),
             Schema.Null,
@@ -16023,7 +16023,7 @@ export const V2ThreadForkResponse__CodexErrorInfo = Schema.Union(
       responseTooManyFailedAttempts: Schema.Struct({
         httpStatusCode: Schema.optionalKey(
           Schema.Union([
-            Schema.Number.annotate({ format: "uint16" })
+            Schema.Finite.annotate({ format: "uint16" })
               .check(Schema.isInt())
               .check(Schema.isGreaterThanOrEqualTo(0)),
             Schema.Null,
@@ -16149,7 +16149,7 @@ export const V2ThreadForkResponse__SubAgentSource = Schema.Union(
           Schema.Union([V2ThreadForkResponse__AgentPath, Schema.Null]),
         ),
         agent_role: Schema.optionalKey(Schema.Union([Schema.String, Schema.Null])),
-        depth: Schema.Number.annotate({ format: "int32" }).check(Schema.isInt()),
+        depth: Schema.Finite.annotate({ format: "int32" }).check(Schema.isInt()),
         parent_thread_id: V2ThreadForkResponse__ThreadId,
       }),
     }).annotate({ title: "ThreadSpawnSubAgentSource" }),
@@ -16169,16 +16169,16 @@ export type V2ThreadGoalGetResponse__ThreadGoal = {
   readonly updatedAt: number;
 };
 export const V2ThreadGoalGetResponse__ThreadGoal = Schema.Struct({
-  createdAt: Schema.Number.annotate({ format: "int64" }).check(Schema.isInt()),
+  createdAt: Schema.Finite.annotate({ format: "int64" }).check(Schema.isInt()),
   objective: Schema.String,
   status: V2ThreadGoalGetResponse__ThreadGoalStatus,
   threadId: Schema.String,
-  timeUsedSeconds: Schema.Number.annotate({ format: "int64" }).check(Schema.isInt()),
+  timeUsedSeconds: Schema.Finite.annotate({ format: "int64" }).check(Schema.isInt()),
   tokenBudget: Schema.optionalKey(
-    Schema.Union([Schema.Number.annotate({ format: "int64" }).check(Schema.isInt()), Schema.Null]),
+    Schema.Union([Schema.Finite.annotate({ format: "int64" }).check(Schema.isInt()), Schema.Null]),
   ),
-  tokensUsed: Schema.Number.annotate({ format: "int64" }).check(Schema.isInt()),
-  updatedAt: Schema.Number.annotate({ format: "int64" }).check(Schema.isInt()),
+  tokensUsed: Schema.Finite.annotate({ format: "int64" }).check(Schema.isInt()),
+  updatedAt: Schema.Finite.annotate({ format: "int64" }).check(Schema.isInt()),
 });
 
 export type V2ThreadGoalSetResponse__ThreadGoal = {
@@ -16192,16 +16192,16 @@ export type V2ThreadGoalSetResponse__ThreadGoal = {
   readonly updatedAt: number;
 };
 export const V2ThreadGoalSetResponse__ThreadGoal = Schema.Struct({
-  createdAt: Schema.Number.annotate({ format: "int64" }).check(Schema.isInt()),
+  createdAt: Schema.Finite.annotate({ format: "int64" }).check(Schema.isInt()),
   objective: Schema.String,
   status: V2ThreadGoalSetResponse__ThreadGoalStatus,
   threadId: Schema.String,
-  timeUsedSeconds: Schema.Number.annotate({ format: "int64" }).check(Schema.isInt()),
+  timeUsedSeconds: Schema.Finite.annotate({ format: "int64" }).check(Schema.isInt()),
   tokenBudget: Schema.optionalKey(
-    Schema.Union([Schema.Number.annotate({ format: "int64" }).check(Schema.isInt()), Schema.Null]),
+    Schema.Union([Schema.Finite.annotate({ format: "int64" }).check(Schema.isInt()), Schema.Null]),
   ),
-  tokensUsed: Schema.Number.annotate({ format: "int64" }).check(Schema.isInt()),
-  updatedAt: Schema.Number.annotate({ format: "int64" }).check(Schema.isInt()),
+  tokensUsed: Schema.Finite.annotate({ format: "int64" }).check(Schema.isInt()),
+  updatedAt: Schema.Finite.annotate({ format: "int64" }).check(Schema.isInt()),
 });
 
 export type V2ThreadGoalUpdatedNotification__ThreadGoal = {
@@ -16215,16 +16215,16 @@ export type V2ThreadGoalUpdatedNotification__ThreadGoal = {
   readonly updatedAt: number;
 };
 export const V2ThreadGoalUpdatedNotification__ThreadGoal = Schema.Struct({
-  createdAt: Schema.Number.annotate({ format: "int64" }).check(Schema.isInt()),
+  createdAt: Schema.Finite.annotate({ format: "int64" }).check(Schema.isInt()),
   objective: Schema.String,
   status: V2ThreadGoalUpdatedNotification__ThreadGoalStatus,
   threadId: Schema.String,
-  timeUsedSeconds: Schema.Number.annotate({ format: "int64" }).check(Schema.isInt()),
+  timeUsedSeconds: Schema.Finite.annotate({ format: "int64" }).check(Schema.isInt()),
   tokenBudget: Schema.optionalKey(
-    Schema.Union([Schema.Number.annotate({ format: "int64" }).check(Schema.isInt()), Schema.Null]),
+    Schema.Union([Schema.Finite.annotate({ format: "int64" }).check(Schema.isInt()), Schema.Null]),
   ),
-  tokensUsed: Schema.Number.annotate({ format: "int64" }).check(Schema.isInt()),
-  updatedAt: Schema.Number.annotate({ format: "int64" }).check(Schema.isInt()),
+  tokensUsed: Schema.Finite.annotate({ format: "int64" }).check(Schema.isInt()),
+  updatedAt: Schema.Finite.annotate({ format: "int64" }).check(Schema.isInt()),
 });
 
 export type V2ThreadListResponse__CommandAction =
@@ -16327,7 +16327,7 @@ export const V2ThreadListResponse__CodexErrorInfo = Schema.Union(
       httpConnectionFailed: Schema.Struct({
         httpStatusCode: Schema.optionalKey(
           Schema.Union([
-            Schema.Number.annotate({ format: "uint16" })
+            Schema.Finite.annotate({ format: "uint16" })
               .check(Schema.isInt())
               .check(Schema.isGreaterThanOrEqualTo(0)),
             Schema.Null,
@@ -16339,7 +16339,7 @@ export const V2ThreadListResponse__CodexErrorInfo = Schema.Union(
       responseStreamConnectionFailed: Schema.Struct({
         httpStatusCode: Schema.optionalKey(
           Schema.Union([
-            Schema.Number.annotate({ format: "uint16" })
+            Schema.Finite.annotate({ format: "uint16" })
               .check(Schema.isInt())
               .check(Schema.isGreaterThanOrEqualTo(0)),
             Schema.Null,
@@ -16354,7 +16354,7 @@ export const V2ThreadListResponse__CodexErrorInfo = Schema.Union(
       responseStreamDisconnected: Schema.Struct({
         httpStatusCode: Schema.optionalKey(
           Schema.Union([
-            Schema.Number.annotate({ format: "uint16" })
+            Schema.Finite.annotate({ format: "uint16" })
               .check(Schema.isInt())
               .check(Schema.isGreaterThanOrEqualTo(0)),
             Schema.Null,
@@ -16370,7 +16370,7 @@ export const V2ThreadListResponse__CodexErrorInfo = Schema.Union(
       responseTooManyFailedAttempts: Schema.Struct({
         httpStatusCode: Schema.optionalKey(
           Schema.Union([
-            Schema.Number.annotate({ format: "uint16" })
+            Schema.Finite.annotate({ format: "uint16" })
               .check(Schema.isInt())
               .check(Schema.isGreaterThanOrEqualTo(0)),
             Schema.Null,
@@ -16496,7 +16496,7 @@ export const V2ThreadListResponse__SubAgentSource = Schema.Union(
           Schema.Union([V2ThreadListResponse__AgentPath, Schema.Null]),
         ),
         agent_role: Schema.optionalKey(Schema.Union([Schema.String, Schema.Null])),
-        depth: Schema.Number.annotate({ format: "int32" }).check(Schema.isInt()),
+        depth: Schema.Finite.annotate({ format: "int32" }).check(Schema.isInt()),
         parent_thread_id: V2ThreadListResponse__ThreadId,
       }),
     }).annotate({ title: "ThreadSpawnSubAgentSource" }),
@@ -16605,7 +16605,7 @@ export const V2ThreadMetadataUpdateResponse__CodexErrorInfo = Schema.Union(
       httpConnectionFailed: Schema.Struct({
         httpStatusCode: Schema.optionalKey(
           Schema.Union([
-            Schema.Number.annotate({ format: "uint16" })
+            Schema.Finite.annotate({ format: "uint16" })
               .check(Schema.isInt())
               .check(Schema.isGreaterThanOrEqualTo(0)),
             Schema.Null,
@@ -16617,7 +16617,7 @@ export const V2ThreadMetadataUpdateResponse__CodexErrorInfo = Schema.Union(
       responseStreamConnectionFailed: Schema.Struct({
         httpStatusCode: Schema.optionalKey(
           Schema.Union([
-            Schema.Number.annotate({ format: "uint16" })
+            Schema.Finite.annotate({ format: "uint16" })
               .check(Schema.isInt())
               .check(Schema.isGreaterThanOrEqualTo(0)),
             Schema.Null,
@@ -16632,7 +16632,7 @@ export const V2ThreadMetadataUpdateResponse__CodexErrorInfo = Schema.Union(
       responseStreamDisconnected: Schema.Struct({
         httpStatusCode: Schema.optionalKey(
           Schema.Union([
-            Schema.Number.annotate({ format: "uint16" })
+            Schema.Finite.annotate({ format: "uint16" })
               .check(Schema.isInt())
               .check(Schema.isGreaterThanOrEqualTo(0)),
             Schema.Null,
@@ -16648,7 +16648,7 @@ export const V2ThreadMetadataUpdateResponse__CodexErrorInfo = Schema.Union(
       responseTooManyFailedAttempts: Schema.Struct({
         httpStatusCode: Schema.optionalKey(
           Schema.Union([
-            Schema.Number.annotate({ format: "uint16" })
+            Schema.Finite.annotate({ format: "uint16" })
               .check(Schema.isInt())
               .check(Schema.isGreaterThanOrEqualTo(0)),
             Schema.Null,
@@ -16778,7 +16778,7 @@ export const V2ThreadMetadataUpdateResponse__SubAgentSource = Schema.Union(
           Schema.Union([V2ThreadMetadataUpdateResponse__AgentPath, Schema.Null]),
         ),
         agent_role: Schema.optionalKey(Schema.Union([Schema.String, Schema.Null])),
-        depth: Schema.Number.annotate({ format: "int32" }).check(Schema.isInt()),
+        depth: Schema.Finite.annotate({ format: "int32" }).check(Schema.isInt()),
         parent_thread_id: V2ThreadMetadataUpdateResponse__ThreadId,
       }),
     }).annotate({ title: "ThreadSpawnSubAgentSource" }),
@@ -16891,7 +16891,7 @@ export const V2ThreadReadResponse__CodexErrorInfo = Schema.Union(
       httpConnectionFailed: Schema.Struct({
         httpStatusCode: Schema.optionalKey(
           Schema.Union([
-            Schema.Number.annotate({ format: "uint16" })
+            Schema.Finite.annotate({ format: "uint16" })
               .check(Schema.isInt())
               .check(Schema.isGreaterThanOrEqualTo(0)),
             Schema.Null,
@@ -16903,7 +16903,7 @@ export const V2ThreadReadResponse__CodexErrorInfo = Schema.Union(
       responseStreamConnectionFailed: Schema.Struct({
         httpStatusCode: Schema.optionalKey(
           Schema.Union([
-            Schema.Number.annotate({ format: "uint16" })
+            Schema.Finite.annotate({ format: "uint16" })
               .check(Schema.isInt())
               .check(Schema.isGreaterThanOrEqualTo(0)),
             Schema.Null,
@@ -16918,7 +16918,7 @@ export const V2ThreadReadResponse__CodexErrorInfo = Schema.Union(
       responseStreamDisconnected: Schema.Struct({
         httpStatusCode: Schema.optionalKey(
           Schema.Union([
-            Schema.Number.annotate({ format: "uint16" })
+            Schema.Finite.annotate({ format: "uint16" })
               .check(Schema.isInt())
               .check(Schema.isGreaterThanOrEqualTo(0)),
             Schema.Null,
@@ -16934,7 +16934,7 @@ export const V2ThreadReadResponse__CodexErrorInfo = Schema.Union(
       responseTooManyFailedAttempts: Schema.Struct({
         httpStatusCode: Schema.optionalKey(
           Schema.Union([
-            Schema.Number.annotate({ format: "uint16" })
+            Schema.Finite.annotate({ format: "uint16" })
               .check(Schema.isInt())
               .check(Schema.isGreaterThanOrEqualTo(0)),
             Schema.Null,
@@ -17060,7 +17060,7 @@ export const V2ThreadReadResponse__SubAgentSource = Schema.Union(
           Schema.Union([V2ThreadReadResponse__AgentPath, Schema.Null]),
         ),
         agent_role: Schema.optionalKey(Schema.Union([Schema.String, Schema.Null])),
-        depth: Schema.Number.annotate({ format: "int32" }).check(Schema.isInt()),
+        depth: Schema.Finite.annotate({ format: "int32" }).check(Schema.isInt()),
         parent_thread_id: V2ThreadReadResponse__ThreadId,
       }),
     }).annotate({ title: "ThreadSpawnSubAgentSource" }),
@@ -17248,7 +17248,7 @@ export const V2ThreadResumeResponse__CodexErrorInfo = Schema.Union(
       httpConnectionFailed: Schema.Struct({
         httpStatusCode: Schema.optionalKey(
           Schema.Union([
-            Schema.Number.annotate({ format: "uint16" })
+            Schema.Finite.annotate({ format: "uint16" })
               .check(Schema.isInt())
               .check(Schema.isGreaterThanOrEqualTo(0)),
             Schema.Null,
@@ -17260,7 +17260,7 @@ export const V2ThreadResumeResponse__CodexErrorInfo = Schema.Union(
       responseStreamConnectionFailed: Schema.Struct({
         httpStatusCode: Schema.optionalKey(
           Schema.Union([
-            Schema.Number.annotate({ format: "uint16" })
+            Schema.Finite.annotate({ format: "uint16" })
               .check(Schema.isInt())
               .check(Schema.isGreaterThanOrEqualTo(0)),
             Schema.Null,
@@ -17275,7 +17275,7 @@ export const V2ThreadResumeResponse__CodexErrorInfo = Schema.Union(
       responseStreamDisconnected: Schema.Struct({
         httpStatusCode: Schema.optionalKey(
           Schema.Union([
-            Schema.Number.annotate({ format: "uint16" })
+            Schema.Finite.annotate({ format: "uint16" })
               .check(Schema.isInt())
               .check(Schema.isGreaterThanOrEqualTo(0)),
             Schema.Null,
@@ -17291,7 +17291,7 @@ export const V2ThreadResumeResponse__CodexErrorInfo = Schema.Union(
       responseTooManyFailedAttempts: Schema.Struct({
         httpStatusCode: Schema.optionalKey(
           Schema.Union([
-            Schema.Number.annotate({ format: "uint16" })
+            Schema.Finite.annotate({ format: "uint16" })
               .check(Schema.isInt())
               .check(Schema.isGreaterThanOrEqualTo(0)),
             Schema.Null,
@@ -17417,7 +17417,7 @@ export const V2ThreadResumeResponse__SubAgentSource = Schema.Union(
           Schema.Union([V2ThreadResumeResponse__AgentPath, Schema.Null]),
         ),
         agent_role: Schema.optionalKey(Schema.Union([Schema.String, Schema.Null])),
-        depth: Schema.Number.annotate({ format: "int32" }).check(Schema.isInt()),
+        depth: Schema.Finite.annotate({ format: "int32" }).check(Schema.isInt()),
         parent_thread_id: V2ThreadResumeResponse__ThreadId,
       }),
     }).annotate({ title: "ThreadSpawnSubAgentSource" }),
@@ -17530,7 +17530,7 @@ export const V2ThreadRollbackResponse__CodexErrorInfo = Schema.Union(
       httpConnectionFailed: Schema.Struct({
         httpStatusCode: Schema.optionalKey(
           Schema.Union([
-            Schema.Number.annotate({ format: "uint16" })
+            Schema.Finite.annotate({ format: "uint16" })
               .check(Schema.isInt())
               .check(Schema.isGreaterThanOrEqualTo(0)),
             Schema.Null,
@@ -17542,7 +17542,7 @@ export const V2ThreadRollbackResponse__CodexErrorInfo = Schema.Union(
       responseStreamConnectionFailed: Schema.Struct({
         httpStatusCode: Schema.optionalKey(
           Schema.Union([
-            Schema.Number.annotate({ format: "uint16" })
+            Schema.Finite.annotate({ format: "uint16" })
               .check(Schema.isInt())
               .check(Schema.isGreaterThanOrEqualTo(0)),
             Schema.Null,
@@ -17557,7 +17557,7 @@ export const V2ThreadRollbackResponse__CodexErrorInfo = Schema.Union(
       responseStreamDisconnected: Schema.Struct({
         httpStatusCode: Schema.optionalKey(
           Schema.Union([
-            Schema.Number.annotate({ format: "uint16" })
+            Schema.Finite.annotate({ format: "uint16" })
               .check(Schema.isInt())
               .check(Schema.isGreaterThanOrEqualTo(0)),
             Schema.Null,
@@ -17573,7 +17573,7 @@ export const V2ThreadRollbackResponse__CodexErrorInfo = Schema.Union(
       responseTooManyFailedAttempts: Schema.Struct({
         httpStatusCode: Schema.optionalKey(
           Schema.Union([
-            Schema.Number.annotate({ format: "uint16" })
+            Schema.Finite.annotate({ format: "uint16" })
               .check(Schema.isInt())
               .check(Schema.isGreaterThanOrEqualTo(0)),
             Schema.Null,
@@ -17703,7 +17703,7 @@ export const V2ThreadRollbackResponse__SubAgentSource = Schema.Union(
           Schema.Union([V2ThreadRollbackResponse__AgentPath, Schema.Null]),
         ),
         agent_role: Schema.optionalKey(Schema.Union([Schema.String, Schema.Null])),
-        depth: Schema.Number.annotate({ format: "int32" }).check(Schema.isInt()),
+        depth: Schema.Finite.annotate({ format: "int32" }).check(Schema.isInt()),
         parent_thread_id: V2ThreadRollbackResponse__ThreadId,
       }),
     }).annotate({ title: "ThreadSpawnSubAgentSource" }),
@@ -17870,7 +17870,7 @@ export const V2ThreadStartedNotification__CodexErrorInfo = Schema.Union(
       httpConnectionFailed: Schema.Struct({
         httpStatusCode: Schema.optionalKey(
           Schema.Union([
-            Schema.Number.annotate({ format: "uint16" })
+            Schema.Finite.annotate({ format: "uint16" })
               .check(Schema.isInt())
               .check(Schema.isGreaterThanOrEqualTo(0)),
             Schema.Null,
@@ -17882,7 +17882,7 @@ export const V2ThreadStartedNotification__CodexErrorInfo = Schema.Union(
       responseStreamConnectionFailed: Schema.Struct({
         httpStatusCode: Schema.optionalKey(
           Schema.Union([
-            Schema.Number.annotate({ format: "uint16" })
+            Schema.Finite.annotate({ format: "uint16" })
               .check(Schema.isInt())
               .check(Schema.isGreaterThanOrEqualTo(0)),
             Schema.Null,
@@ -17897,7 +17897,7 @@ export const V2ThreadStartedNotification__CodexErrorInfo = Schema.Union(
       responseStreamDisconnected: Schema.Struct({
         httpStatusCode: Schema.optionalKey(
           Schema.Union([
-            Schema.Number.annotate({ format: "uint16" })
+            Schema.Finite.annotate({ format: "uint16" })
               .check(Schema.isInt())
               .check(Schema.isGreaterThanOrEqualTo(0)),
             Schema.Null,
@@ -17913,7 +17913,7 @@ export const V2ThreadStartedNotification__CodexErrorInfo = Schema.Union(
       responseTooManyFailedAttempts: Schema.Struct({
         httpStatusCode: Schema.optionalKey(
           Schema.Union([
-            Schema.Number.annotate({ format: "uint16" })
+            Schema.Finite.annotate({ format: "uint16" })
               .check(Schema.isInt())
               .check(Schema.isGreaterThanOrEqualTo(0)),
             Schema.Null,
@@ -18043,7 +18043,7 @@ export const V2ThreadStartedNotification__SubAgentSource = Schema.Union(
           Schema.Union([V2ThreadStartedNotification__AgentPath, Schema.Null]),
         ),
         agent_role: Schema.optionalKey(Schema.Union([Schema.String, Schema.Null])),
-        depth: Schema.Number.annotate({ format: "int32" }).check(Schema.isInt()),
+        depth: Schema.Finite.annotate({ format: "int32" }).check(Schema.isInt()),
         parent_thread_id: V2ThreadStartedNotification__ThreadId,
       }),
     }).annotate({ title: "ThreadSpawnSubAgentSource" }),
@@ -18152,7 +18152,7 @@ export const V2ThreadStartResponse__CodexErrorInfo = Schema.Union(
       httpConnectionFailed: Schema.Struct({
         httpStatusCode: Schema.optionalKey(
           Schema.Union([
-            Schema.Number.annotate({ format: "uint16" })
+            Schema.Finite.annotate({ format: "uint16" })
               .check(Schema.isInt())
               .check(Schema.isGreaterThanOrEqualTo(0)),
             Schema.Null,
@@ -18164,7 +18164,7 @@ export const V2ThreadStartResponse__CodexErrorInfo = Schema.Union(
       responseStreamConnectionFailed: Schema.Struct({
         httpStatusCode: Schema.optionalKey(
           Schema.Union([
-            Schema.Number.annotate({ format: "uint16" })
+            Schema.Finite.annotate({ format: "uint16" })
               .check(Schema.isInt())
               .check(Schema.isGreaterThanOrEqualTo(0)),
             Schema.Null,
@@ -18179,7 +18179,7 @@ export const V2ThreadStartResponse__CodexErrorInfo = Schema.Union(
       responseStreamDisconnected: Schema.Struct({
         httpStatusCode: Schema.optionalKey(
           Schema.Union([
-            Schema.Number.annotate({ format: "uint16" })
+            Schema.Finite.annotate({ format: "uint16" })
               .check(Schema.isInt())
               .check(Schema.isGreaterThanOrEqualTo(0)),
             Schema.Null,
@@ -18195,7 +18195,7 @@ export const V2ThreadStartResponse__CodexErrorInfo = Schema.Union(
       responseTooManyFailedAttempts: Schema.Struct({
         httpStatusCode: Schema.optionalKey(
           Schema.Union([
-            Schema.Number.annotate({ format: "uint16" })
+            Schema.Finite.annotate({ format: "uint16" })
               .check(Schema.isInt())
               .check(Schema.isGreaterThanOrEqualTo(0)),
             Schema.Null,
@@ -18321,7 +18321,7 @@ export const V2ThreadStartResponse__SubAgentSource = Schema.Union(
           Schema.Union([V2ThreadStartResponse__AgentPath, Schema.Null]),
         ),
         agent_role: Schema.optionalKey(Schema.Union([Schema.String, Schema.Null])),
-        depth: Schema.Number.annotate({ format: "int32" }).check(Schema.isInt()),
+        depth: Schema.Finite.annotate({ format: "int32" }).check(Schema.isInt()),
         parent_thread_id: V2ThreadStartResponse__ThreadId,
       }),
     }).annotate({ title: "ThreadSpawnSubAgentSource" }),
@@ -18365,7 +18365,7 @@ export type V2ThreadTokenUsageUpdatedNotification__ThreadTokenUsage = {
 export const V2ThreadTokenUsageUpdatedNotification__ThreadTokenUsage = Schema.Struct({
   last: V2ThreadTokenUsageUpdatedNotification__TokenUsageBreakdown,
   modelContextWindow: Schema.optionalKey(
-    Schema.Union([Schema.Number.annotate({ format: "int64" }).check(Schema.isInt()), Schema.Null]),
+    Schema.Union([Schema.Finite.annotate({ format: "int64" }).check(Schema.isInt()), Schema.Null]),
   ),
   total: V2ThreadTokenUsageUpdatedNotification__TokenUsageBreakdown,
 });
@@ -18470,7 +18470,7 @@ export const V2ThreadUnarchiveResponse__CodexErrorInfo = Schema.Union(
       httpConnectionFailed: Schema.Struct({
         httpStatusCode: Schema.optionalKey(
           Schema.Union([
-            Schema.Number.annotate({ format: "uint16" })
+            Schema.Finite.annotate({ format: "uint16" })
               .check(Schema.isInt())
               .check(Schema.isGreaterThanOrEqualTo(0)),
             Schema.Null,
@@ -18482,7 +18482,7 @@ export const V2ThreadUnarchiveResponse__CodexErrorInfo = Schema.Union(
       responseStreamConnectionFailed: Schema.Struct({
         httpStatusCode: Schema.optionalKey(
           Schema.Union([
-            Schema.Number.annotate({ format: "uint16" })
+            Schema.Finite.annotate({ format: "uint16" })
               .check(Schema.isInt())
               .check(Schema.isGreaterThanOrEqualTo(0)),
             Schema.Null,
@@ -18497,7 +18497,7 @@ export const V2ThreadUnarchiveResponse__CodexErrorInfo = Schema.Union(
       responseStreamDisconnected: Schema.Struct({
         httpStatusCode: Schema.optionalKey(
           Schema.Union([
-            Schema.Number.annotate({ format: "uint16" })
+            Schema.Finite.annotate({ format: "uint16" })
               .check(Schema.isInt())
               .check(Schema.isGreaterThanOrEqualTo(0)),
             Schema.Null,
@@ -18513,7 +18513,7 @@ export const V2ThreadUnarchiveResponse__CodexErrorInfo = Schema.Union(
       responseTooManyFailedAttempts: Schema.Struct({
         httpStatusCode: Schema.optionalKey(
           Schema.Union([
-            Schema.Number.annotate({ format: "uint16" })
+            Schema.Finite.annotate({ format: "uint16" })
               .check(Schema.isInt())
               .check(Schema.isGreaterThanOrEqualTo(0)),
             Schema.Null,
@@ -18643,7 +18643,7 @@ export const V2ThreadUnarchiveResponse__SubAgentSource = Schema.Union(
           Schema.Union([V2ThreadUnarchiveResponse__AgentPath, Schema.Null]),
         ),
         agent_role: Schema.optionalKey(Schema.Union([Schema.String, Schema.Null])),
-        depth: Schema.Number.annotate({ format: "int32" }).check(Schema.isInt()),
+        depth: Schema.Finite.annotate({ format: "int32" }).check(Schema.isInt()),
         parent_thread_id: V2ThreadUnarchiveResponse__ThreadId,
       }),
     }).annotate({ title: "ThreadSpawnSubAgentSource" }),
@@ -18756,7 +18756,7 @@ export const V2TurnCompletedNotification__CodexErrorInfo = Schema.Union(
       httpConnectionFailed: Schema.Struct({
         httpStatusCode: Schema.optionalKey(
           Schema.Union([
-            Schema.Number.annotate({ format: "uint16" })
+            Schema.Finite.annotate({ format: "uint16" })
               .check(Schema.isInt())
               .check(Schema.isGreaterThanOrEqualTo(0)),
             Schema.Null,
@@ -18768,7 +18768,7 @@ export const V2TurnCompletedNotification__CodexErrorInfo = Schema.Union(
       responseStreamConnectionFailed: Schema.Struct({
         httpStatusCode: Schema.optionalKey(
           Schema.Union([
-            Schema.Number.annotate({ format: "uint16" })
+            Schema.Finite.annotate({ format: "uint16" })
               .check(Schema.isInt())
               .check(Schema.isGreaterThanOrEqualTo(0)),
             Schema.Null,
@@ -18783,7 +18783,7 @@ export const V2TurnCompletedNotification__CodexErrorInfo = Schema.Union(
       responseStreamDisconnected: Schema.Struct({
         httpStatusCode: Schema.optionalKey(
           Schema.Union([
-            Schema.Number.annotate({ format: "uint16" })
+            Schema.Finite.annotate({ format: "uint16" })
               .check(Schema.isInt())
               .check(Schema.isGreaterThanOrEqualTo(0)),
             Schema.Null,
@@ -18799,7 +18799,7 @@ export const V2TurnCompletedNotification__CodexErrorInfo = Schema.Union(
       responseTooManyFailedAttempts: Schema.Struct({
         httpStatusCode: Schema.optionalKey(
           Schema.Union([
-            Schema.Number.annotate({ format: "uint16" })
+            Schema.Finite.annotate({ format: "uint16" })
               .check(Schema.isInt())
               .check(Schema.isGreaterThanOrEqualTo(0)),
             Schema.Null,
@@ -19014,7 +19014,7 @@ export const V2TurnStartedNotification__CodexErrorInfo = Schema.Union(
       httpConnectionFailed: Schema.Struct({
         httpStatusCode: Schema.optionalKey(
           Schema.Union([
-            Schema.Number.annotate({ format: "uint16" })
+            Schema.Finite.annotate({ format: "uint16" })
               .check(Schema.isInt())
               .check(Schema.isGreaterThanOrEqualTo(0)),
             Schema.Null,
@@ -19026,7 +19026,7 @@ export const V2TurnStartedNotification__CodexErrorInfo = Schema.Union(
       responseStreamConnectionFailed: Schema.Struct({
         httpStatusCode: Schema.optionalKey(
           Schema.Union([
-            Schema.Number.annotate({ format: "uint16" })
+            Schema.Finite.annotate({ format: "uint16" })
               .check(Schema.isInt())
               .check(Schema.isGreaterThanOrEqualTo(0)),
             Schema.Null,
@@ -19041,7 +19041,7 @@ export const V2TurnStartedNotification__CodexErrorInfo = Schema.Union(
       responseStreamDisconnected: Schema.Struct({
         httpStatusCode: Schema.optionalKey(
           Schema.Union([
-            Schema.Number.annotate({ format: "uint16" })
+            Schema.Finite.annotate({ format: "uint16" })
               .check(Schema.isInt())
               .check(Schema.isGreaterThanOrEqualTo(0)),
             Schema.Null,
@@ -19057,7 +19057,7 @@ export const V2TurnStartedNotification__CodexErrorInfo = Schema.Union(
       responseTooManyFailedAttempts: Schema.Struct({
         httpStatusCode: Schema.optionalKey(
           Schema.Union([
-            Schema.Number.annotate({ format: "uint16" })
+            Schema.Finite.annotate({ format: "uint16" })
               .check(Schema.isInt())
               .check(Schema.isGreaterThanOrEqualTo(0)),
             Schema.Null,
@@ -19383,7 +19383,7 @@ export const V2TurnStartResponse__CodexErrorInfo = Schema.Union(
       httpConnectionFailed: Schema.Struct({
         httpStatusCode: Schema.optionalKey(
           Schema.Union([
-            Schema.Number.annotate({ format: "uint16" })
+            Schema.Finite.annotate({ format: "uint16" })
               .check(Schema.isInt())
               .check(Schema.isGreaterThanOrEqualTo(0)),
             Schema.Null,
@@ -19395,7 +19395,7 @@ export const V2TurnStartResponse__CodexErrorInfo = Schema.Union(
       responseStreamConnectionFailed: Schema.Struct({
         httpStatusCode: Schema.optionalKey(
           Schema.Union([
-            Schema.Number.annotate({ format: "uint16" })
+            Schema.Finite.annotate({ format: "uint16" })
               .check(Schema.isInt())
               .check(Schema.isGreaterThanOrEqualTo(0)),
             Schema.Null,
@@ -19410,7 +19410,7 @@ export const V2TurnStartResponse__CodexErrorInfo = Schema.Union(
       responseStreamDisconnected: Schema.Struct({
         httpStatusCode: Schema.optionalKey(
           Schema.Union([
-            Schema.Number.annotate({ format: "uint16" })
+            Schema.Finite.annotate({ format: "uint16" })
               .check(Schema.isInt())
               .check(Schema.isGreaterThanOrEqualTo(0)),
             Schema.Null,
@@ -19426,7 +19426,7 @@ export const V2TurnStartResponse__CodexErrorInfo = Schema.Union(
       responseTooManyFailedAttempts: Schema.Struct({
         httpStatusCode: Schema.optionalKey(
           Schema.Union([
-            Schema.Number.annotate({ format: "uint16" })
+            Schema.Finite.annotate({ format: "uint16" })
               .check(Schema.isInt())
               .check(Schema.isGreaterThanOrEqualTo(0)),
             Schema.Null,
@@ -19700,7 +19700,7 @@ export const ClientRequest__CommandExecParams = Schema.Struct({
   ),
   outputBytesCap: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({
+      Schema.Finite.annotate({
         description:
           "Optional per-stream stdout/stderr capture cap in bytes.\n\nWhen omitted, the server default applies. Cannot be combined with `disableOutputCap`.",
         format: "uint",
@@ -19744,7 +19744,7 @@ export const ClientRequest__CommandExecParams = Schema.Struct({
   ),
   timeoutMs: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({
+      Schema.Finite.annotate({
         description:
           "Optional timeout in milliseconds.\n\nWhen omitted, the server default applies. Cannot be combined with `disableTimeout`.",
         format: "int64",
@@ -20095,7 +20095,7 @@ export const McpServerElicitationRequestParams__McpElicitationTitledMultiSelectE
     items: McpServerElicitationRequestParams__McpElicitationTitledEnumItems,
     maxItems: Schema.optionalKey(
       Schema.Union([
-        Schema.Number.annotate({ format: "uint64" })
+        Schema.Finite.annotate({ format: "uint64" })
           .check(Schema.isInt())
           .check(Schema.isGreaterThanOrEqualTo(0)),
         Schema.Null,
@@ -20103,7 +20103,7 @@ export const McpServerElicitationRequestParams__McpElicitationTitledMultiSelectE
     ),
     minItems: Schema.optionalKey(
       Schema.Union([
-        Schema.Number.annotate({ format: "uint64" })
+        Schema.Finite.annotate({ format: "uint64" })
           .check(Schema.isInt())
           .check(Schema.isGreaterThanOrEqualTo(0)),
         Schema.Null,
@@ -20129,7 +20129,7 @@ export const McpServerElicitationRequestParams__McpElicitationUntitledMultiSelec
     items: McpServerElicitationRequestParams__McpElicitationUntitledEnumItems,
     maxItems: Schema.optionalKey(
       Schema.Union([
-        Schema.Number.annotate({ format: "uint64" })
+        Schema.Finite.annotate({ format: "uint64" })
           .check(Schema.isInt())
           .check(Schema.isGreaterThanOrEqualTo(0)),
         Schema.Null,
@@ -20137,7 +20137,7 @@ export const McpServerElicitationRequestParams__McpElicitationUntitledMultiSelec
     ),
     minItems: Schema.optionalKey(
       Schema.Union([
-        Schema.Number.annotate({ format: "uint64" })
+        Schema.Finite.annotate({ format: "uint64" })
           .check(Schema.isInt())
           .check(Schema.isGreaterThanOrEqualTo(0)),
         Schema.Null,
@@ -20308,11 +20308,11 @@ export type ServerNotification__HookRunSummary = {
 };
 export const ServerNotification__HookRunSummary = Schema.Struct({
   completedAt: Schema.optionalKey(
-    Schema.Union([Schema.Number.annotate({ format: "int64" }).check(Schema.isInt()), Schema.Null]),
+    Schema.Union([Schema.Finite.annotate({ format: "int64" }).check(Schema.isInt()), Schema.Null]),
   ),
-  displayOrder: Schema.Number.annotate({ format: "int64" }).check(Schema.isInt()),
+  displayOrder: Schema.Finite.annotate({ format: "int64" }).check(Schema.isInt()),
   durationMs: Schema.optionalKey(
-    Schema.Union([Schema.Number.annotate({ format: "int64" }).check(Schema.isInt()), Schema.Null]),
+    Schema.Union([Schema.Finite.annotate({ format: "int64" }).check(Schema.isInt()), Schema.Null]),
   ),
   entries: Schema.Array(ServerNotification__HookOutputEntry),
   eventName: ServerNotification__HookEventName,
@@ -20336,7 +20336,7 @@ export const ServerNotification__HookRunSummary = Schema.Struct({
     ]).annotate({ default: "unknown" }),
   ),
   sourcePath: ServerNotification__AbsolutePathBuf,
-  startedAt: Schema.Number.annotate({ format: "int64" }).check(Schema.isInt()),
+  startedAt: Schema.Finite.annotate({ format: "int64" }).check(Schema.isInt()),
   status: ServerNotification__HookRunStatus,
   statusMessage: Schema.optionalKey(Schema.Union([Schema.String, Schema.Null])),
 });
@@ -20601,7 +20601,7 @@ export const ServerNotification__ThreadItem = Schema.Union(
       cwd: Schema.String.annotate({ description: "The command's working directory." }),
       durationMs: Schema.optionalKey(
         Schema.Union([
-          Schema.Number.annotate({
+          Schema.Finite.annotate({
             description: "The duration of the command execution in milliseconds.",
             format: "int64",
           }).check(Schema.isInt()),
@@ -20610,7 +20610,7 @@ export const ServerNotification__ThreadItem = Schema.Union(
       ),
       exitCode: Schema.optionalKey(
         Schema.Union([
-          Schema.Number.annotate({
+          Schema.Finite.annotate({
             description: "The command's exit code.",
             format: "int32",
           }).check(Schema.isInt()),
@@ -20652,7 +20652,7 @@ export const ServerNotification__ThreadItem = Schema.Union(
       arguments: Schema.Unknown,
       durationMs: Schema.optionalKey(
         Schema.Union([
-          Schema.Number.annotate({
+          Schema.Finite.annotate({
             description: "The duration of the MCP tool call in milliseconds.",
             format: "int64",
           }).check(Schema.isInt()),
@@ -20688,7 +20688,7 @@ export const ServerNotification__ThreadItem = Schema.Union(
       ),
       durationMs: Schema.optionalKey(
         Schema.Union([
-          Schema.Number.annotate({
+          Schema.Finite.annotate({
             description: "The duration of the dynamic tool call in milliseconds.",
             format: "int64",
           }).check(Schema.isInt()),
@@ -20783,7 +20783,7 @@ export const ServerNotification__ThreadItem = Schema.Union(
       type: Schema.Literal("imageView").annotate({ title: "ImageViewThreadItemType" }),
     }).annotate({ title: "ImageViewThreadItem" }),
     Schema.Struct({
-      durationMs: Schema.Number.annotate({ format: "uint64" })
+      durationMs: Schema.Finite.annotate({ format: "uint64" })
         .check(Schema.isInt())
         .check(Schema.isGreaterThanOrEqualTo(0)),
       id: Schema.String,
@@ -20936,7 +20936,7 @@ export const ServerRequest__McpElicitationTitledMultiSelectEnumSchema = Schema.S
   items: ServerRequest__McpElicitationTitledEnumItems,
   maxItems: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({ format: "uint64" })
+      Schema.Finite.annotate({ format: "uint64" })
         .check(Schema.isInt())
         .check(Schema.isGreaterThanOrEqualTo(0)),
       Schema.Null,
@@ -20944,7 +20944,7 @@ export const ServerRequest__McpElicitationTitledMultiSelectEnumSchema = Schema.S
   ),
   minItems: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({ format: "uint64" })
+      Schema.Finite.annotate({ format: "uint64" })
         .check(Schema.isInt())
         .check(Schema.isGreaterThanOrEqualTo(0)),
       Schema.Null,
@@ -20969,7 +20969,7 @@ export const ServerRequest__McpElicitationUntitledMultiSelectEnumSchema = Schema
   items: ServerRequest__McpElicitationUntitledEnumItems,
   maxItems: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({ format: "uint64" })
+      Schema.Finite.annotate({ format: "uint64" })
         .check(Schema.isInt())
         .check(Schema.isGreaterThanOrEqualTo(0)),
       Schema.Null,
@@ -20977,7 +20977,7 @@ export const ServerRequest__McpElicitationUntitledMultiSelectEnumSchema = Schema
   ),
   minItems: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({ format: "uint64" })
+      Schema.Finite.annotate({ format: "uint64" })
         .check(Schema.isInt())
         .check(Schema.isGreaterThanOrEqualTo(0)),
       Schema.Null,
@@ -21077,7 +21077,7 @@ export const ServerRequest__CommandExecutionRequestApprovalParams = Schema.Struc
       Schema.Null,
     ]),
   ),
-  startedAtMs: Schema.Number.annotate({
+  startedAtMs: Schema.Finite.annotate({
     description: "Unix timestamp (in milliseconds) when this approval request started.",
     format: "int64",
   }).check(Schema.isInt()),
@@ -21095,7 +21095,7 @@ export type ServerRequest__ToolRequestUserInputParams = {
 export const ServerRequest__ToolRequestUserInputParams = Schema.Struct({
   autoResolutionMs: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({ format: "uint64" })
+      Schema.Finite.annotate({ format: "uint64" })
         .check(Schema.isInt())
         .check(Schema.isGreaterThanOrEqualTo(0)),
       Schema.Null,
@@ -21316,7 +21316,7 @@ export type V2ExternalAgentConfigImportHistoriesReadResponse__ExternalAgentConfi
 };
 export const V2ExternalAgentConfigImportHistoriesReadResponse__ExternalAgentConfigImportHistory =
   Schema.Struct({
-    completedAtMs: Schema.Number.annotate({ format: "int64" }).check(Schema.isInt()),
+    completedAtMs: Schema.Finite.annotate({ format: "int64" }).check(Schema.isInt()),
     failures: Schema.Array(
       V2ExternalAgentConfigImportHistoriesReadResponse__ExternalAgentConfigImportItemTypeFailure,
     ),
@@ -21370,7 +21370,7 @@ export type V2GetAccountRateLimitsResponse__RateLimitResetCreditsSummary = {
   readonly credits?: ReadonlyArray<V2GetAccountRateLimitsResponse__RateLimitResetCredit> | null;
 };
 export const V2GetAccountRateLimitsResponse__RateLimitResetCreditsSummary = Schema.Struct({
-  availableCount: Schema.Number.annotate({ format: "int64" }).check(Schema.isInt()),
+  availableCount: Schema.Finite.annotate({ format: "int64" }).check(Schema.isInt()),
   credits: Schema.optionalKey(
     Schema.Union([
       Schema.Array(V2GetAccountRateLimitsResponse__RateLimitResetCredit).annotate({
@@ -21411,11 +21411,11 @@ export type V2HookCompletedNotification__HookRunSummary = {
 };
 export const V2HookCompletedNotification__HookRunSummary = Schema.Struct({
   completedAt: Schema.optionalKey(
-    Schema.Union([Schema.Number.annotate({ format: "int64" }).check(Schema.isInt()), Schema.Null]),
+    Schema.Union([Schema.Finite.annotate({ format: "int64" }).check(Schema.isInt()), Schema.Null]),
   ),
-  displayOrder: Schema.Number.annotate({ format: "int64" }).check(Schema.isInt()),
+  displayOrder: Schema.Finite.annotate({ format: "int64" }).check(Schema.isInt()),
   durationMs: Schema.optionalKey(
-    Schema.Union([Schema.Number.annotate({ format: "int64" }).check(Schema.isInt()), Schema.Null]),
+    Schema.Union([Schema.Finite.annotate({ format: "int64" }).check(Schema.isInt()), Schema.Null]),
   ),
   entries: Schema.Array(V2HookCompletedNotification__HookOutputEntry),
   eventName: V2HookCompletedNotification__HookEventName,
@@ -21439,7 +21439,7 @@ export const V2HookCompletedNotification__HookRunSummary = Schema.Struct({
     ]).annotate({ default: "unknown" }),
   ),
   sourcePath: V2HookCompletedNotification__AbsolutePathBuf,
-  startedAt: Schema.Number.annotate({ format: "int64" }).check(Schema.isInt()),
+  startedAt: Schema.Finite.annotate({ format: "int64" }).check(Schema.isInt()),
   status: V2HookCompletedNotification__HookRunStatus,
   statusMessage: Schema.optionalKey(Schema.Union([Schema.String, Schema.Null])),
 });
@@ -21486,11 +21486,11 @@ export type V2HookStartedNotification__HookRunSummary = {
 };
 export const V2HookStartedNotification__HookRunSummary = Schema.Struct({
   completedAt: Schema.optionalKey(
-    Schema.Union([Schema.Number.annotate({ format: "int64" }).check(Schema.isInt()), Schema.Null]),
+    Schema.Union([Schema.Finite.annotate({ format: "int64" }).check(Schema.isInt()), Schema.Null]),
   ),
-  displayOrder: Schema.Number.annotate({ format: "int64" }).check(Schema.isInt()),
+  displayOrder: Schema.Finite.annotate({ format: "int64" }).check(Schema.isInt()),
   durationMs: Schema.optionalKey(
-    Schema.Union([Schema.Number.annotate({ format: "int64" }).check(Schema.isInt()), Schema.Null]),
+    Schema.Union([Schema.Finite.annotate({ format: "int64" }).check(Schema.isInt()), Schema.Null]),
   ),
   entries: Schema.Array(V2HookStartedNotification__HookOutputEntry),
   eventName: V2HookStartedNotification__HookEventName,
@@ -21514,7 +21514,7 @@ export const V2HookStartedNotification__HookRunSummary = Schema.Struct({
     ]).annotate({ default: "unknown" }),
   ),
   sourcePath: V2HookStartedNotification__AbsolutePathBuf,
-  startedAt: Schema.Number.annotate({ format: "int64" }).check(Schema.isInt()),
+  startedAt: Schema.Finite.annotate({ format: "int64" }).check(Schema.isInt()),
   status: V2HookStartedNotification__HookRunStatus,
   statusMessage: Schema.optionalKey(Schema.Union([Schema.String, Schema.Null])),
 });
@@ -21716,7 +21716,7 @@ export const V2ItemCompletedNotification__ThreadItem = Schema.Union(
       cwd: Schema.String.annotate({ description: "The command's working directory." }),
       durationMs: Schema.optionalKey(
         Schema.Union([
-          Schema.Number.annotate({
+          Schema.Finite.annotate({
             description: "The duration of the command execution in milliseconds.",
             format: "int64",
           }).check(Schema.isInt()),
@@ -21725,7 +21725,7 @@ export const V2ItemCompletedNotification__ThreadItem = Schema.Union(
       ),
       exitCode: Schema.optionalKey(
         Schema.Union([
-          Schema.Number.annotate({
+          Schema.Finite.annotate({
             description: "The command's exit code.",
             format: "int32",
           }).check(Schema.isInt()),
@@ -21767,7 +21767,7 @@ export const V2ItemCompletedNotification__ThreadItem = Schema.Union(
       arguments: Schema.Unknown,
       durationMs: Schema.optionalKey(
         Schema.Union([
-          Schema.Number.annotate({
+          Schema.Finite.annotate({
             description: "The duration of the MCP tool call in milliseconds.",
             format: "int64",
           }).check(Schema.isInt()),
@@ -21805,7 +21805,7 @@ export const V2ItemCompletedNotification__ThreadItem = Schema.Union(
       ),
       durationMs: Schema.optionalKey(
         Schema.Union([
-          Schema.Number.annotate({
+          Schema.Finite.annotate({
             description: "The duration of the dynamic tool call in milliseconds.",
             format: "int64",
           }).check(Schema.isInt()),
@@ -21903,7 +21903,7 @@ export const V2ItemCompletedNotification__ThreadItem = Schema.Union(
       type: Schema.Literal("imageView").annotate({ title: "ImageViewThreadItemType" }),
     }).annotate({ title: "ImageViewThreadItem" }),
     Schema.Struct({
-      durationMs: Schema.Number.annotate({ format: "uint64" })
+      durationMs: Schema.Finite.annotate({ format: "uint64" })
         .check(Schema.isInt())
         .check(Schema.isGreaterThanOrEqualTo(0)),
       id: Schema.String,
@@ -22197,7 +22197,7 @@ export const V2ItemStartedNotification__ThreadItem = Schema.Union(
       cwd: Schema.String.annotate({ description: "The command's working directory." }),
       durationMs: Schema.optionalKey(
         Schema.Union([
-          Schema.Number.annotate({
+          Schema.Finite.annotate({
             description: "The duration of the command execution in milliseconds.",
             format: "int64",
           }).check(Schema.isInt()),
@@ -22206,7 +22206,7 @@ export const V2ItemStartedNotification__ThreadItem = Schema.Union(
       ),
       exitCode: Schema.optionalKey(
         Schema.Union([
-          Schema.Number.annotate({
+          Schema.Finite.annotate({
             description: "The command's exit code.",
             format: "int32",
           }).check(Schema.isInt()),
@@ -22248,7 +22248,7 @@ export const V2ItemStartedNotification__ThreadItem = Schema.Union(
       arguments: Schema.Unknown,
       durationMs: Schema.optionalKey(
         Schema.Union([
-          Schema.Number.annotate({
+          Schema.Finite.annotate({
             description: "The duration of the MCP tool call in milliseconds.",
             format: "int64",
           }).check(Schema.isInt()),
@@ -22286,7 +22286,7 @@ export const V2ItemStartedNotification__ThreadItem = Schema.Union(
       ),
       durationMs: Schema.optionalKey(
         Schema.Union([
-          Schema.Number.annotate({
+          Schema.Finite.annotate({
             description: "The duration of the dynamic tool call in milliseconds.",
             format: "int64",
           }).check(Schema.isInt()),
@@ -22384,7 +22384,7 @@ export const V2ItemStartedNotification__ThreadItem = Schema.Union(
       type: Schema.Literal("imageView").annotate({ title: "ImageViewThreadItemType" }),
     }).annotate({ title: "ImageViewThreadItem" }),
     Schema.Struct({
-      durationMs: Schema.Number.annotate({ format: "uint64" })
+      durationMs: Schema.Finite.annotate({ format: "uint64" })
         .check(Schema.isInt())
         .check(Schema.isGreaterThanOrEqualTo(0)),
       id: Schema.String,
@@ -22848,7 +22848,7 @@ export const V2ReviewStartResponse__ThreadItem = Schema.Union(
       cwd: Schema.String.annotate({ description: "The command's working directory." }),
       durationMs: Schema.optionalKey(
         Schema.Union([
-          Schema.Number.annotate({
+          Schema.Finite.annotate({
             description: "The duration of the command execution in milliseconds.",
             format: "int64",
           }).check(Schema.isInt()),
@@ -22857,7 +22857,7 @@ export const V2ReviewStartResponse__ThreadItem = Schema.Union(
       ),
       exitCode: Schema.optionalKey(
         Schema.Union([
-          Schema.Number.annotate({
+          Schema.Finite.annotate({
             description: "The command's exit code.",
             format: "int32",
           }).check(Schema.isInt()),
@@ -22899,7 +22899,7 @@ export const V2ReviewStartResponse__ThreadItem = Schema.Union(
       arguments: Schema.Unknown,
       durationMs: Schema.optionalKey(
         Schema.Union([
-          Schema.Number.annotate({
+          Schema.Finite.annotate({
             description: "The duration of the MCP tool call in milliseconds.",
             format: "int64",
           }).check(Schema.isInt()),
@@ -22937,7 +22937,7 @@ export const V2ReviewStartResponse__ThreadItem = Schema.Union(
       ),
       durationMs: Schema.optionalKey(
         Schema.Union([
-          Schema.Number.annotate({
+          Schema.Finite.annotate({
             description: "The duration of the dynamic tool call in milliseconds.",
             format: "int64",
           }).check(Schema.isInt()),
@@ -23034,7 +23034,7 @@ export const V2ReviewStartResponse__ThreadItem = Schema.Union(
       type: Schema.Literal("imageView").annotate({ title: "ImageViewThreadItemType" }),
     }).annotate({ title: "ImageViewThreadItem" }),
     Schema.Struct({
-      durationMs: Schema.Number.annotate({ format: "uint64" })
+      durationMs: Schema.Finite.annotate({ format: "uint64" })
         .check(Schema.isInt())
         .check(Schema.isGreaterThanOrEqualTo(0)),
       id: Schema.String,
@@ -23314,7 +23314,7 @@ export const V2ThreadForkResponse__ThreadItem = Schema.Union(
       cwd: Schema.String.annotate({ description: "The command's working directory." }),
       durationMs: Schema.optionalKey(
         Schema.Union([
-          Schema.Number.annotate({
+          Schema.Finite.annotate({
             description: "The duration of the command execution in milliseconds.",
             format: "int64",
           }).check(Schema.isInt()),
@@ -23323,7 +23323,7 @@ export const V2ThreadForkResponse__ThreadItem = Schema.Union(
       ),
       exitCode: Schema.optionalKey(
         Schema.Union([
-          Schema.Number.annotate({
+          Schema.Finite.annotate({
             description: "The command's exit code.",
             format: "int32",
           }).check(Schema.isInt()),
@@ -23365,7 +23365,7 @@ export const V2ThreadForkResponse__ThreadItem = Schema.Union(
       arguments: Schema.Unknown,
       durationMs: Schema.optionalKey(
         Schema.Union([
-          Schema.Number.annotate({
+          Schema.Finite.annotate({
             description: "The duration of the MCP tool call in milliseconds.",
             format: "int64",
           }).check(Schema.isInt()),
@@ -23403,7 +23403,7 @@ export const V2ThreadForkResponse__ThreadItem = Schema.Union(
       ),
       durationMs: Schema.optionalKey(
         Schema.Union([
-          Schema.Number.annotate({
+          Schema.Finite.annotate({
             description: "The duration of the dynamic tool call in milliseconds.",
             format: "int64",
           }).check(Schema.isInt()),
@@ -23500,7 +23500,7 @@ export const V2ThreadForkResponse__ThreadItem = Schema.Union(
       type: Schema.Literal("imageView").annotate({ title: "ImageViewThreadItemType" }),
     }).annotate({ title: "ImageViewThreadItem" }),
     Schema.Struct({
-      durationMs: Schema.Number.annotate({ format: "uint64" })
+      durationMs: Schema.Finite.annotate({ format: "uint64" })
         .check(Schema.isInt())
         .check(Schema.isGreaterThanOrEqualTo(0)),
       id: Schema.String,
@@ -23749,7 +23749,7 @@ export const V2ThreadListResponse__ThreadItem = Schema.Union(
       cwd: Schema.String.annotate({ description: "The command's working directory." }),
       durationMs: Schema.optionalKey(
         Schema.Union([
-          Schema.Number.annotate({
+          Schema.Finite.annotate({
             description: "The duration of the command execution in milliseconds.",
             format: "int64",
           }).check(Schema.isInt()),
@@ -23758,7 +23758,7 @@ export const V2ThreadListResponse__ThreadItem = Schema.Union(
       ),
       exitCode: Schema.optionalKey(
         Schema.Union([
-          Schema.Number.annotate({
+          Schema.Finite.annotate({
             description: "The command's exit code.",
             format: "int32",
           }).check(Schema.isInt()),
@@ -23800,7 +23800,7 @@ export const V2ThreadListResponse__ThreadItem = Schema.Union(
       arguments: Schema.Unknown,
       durationMs: Schema.optionalKey(
         Schema.Union([
-          Schema.Number.annotate({
+          Schema.Finite.annotate({
             description: "The duration of the MCP tool call in milliseconds.",
             format: "int64",
           }).check(Schema.isInt()),
@@ -23838,7 +23838,7 @@ export const V2ThreadListResponse__ThreadItem = Schema.Union(
       ),
       durationMs: Schema.optionalKey(
         Schema.Union([
-          Schema.Number.annotate({
+          Schema.Finite.annotate({
             description: "The duration of the dynamic tool call in milliseconds.",
             format: "int64",
           }).check(Schema.isInt()),
@@ -23935,7 +23935,7 @@ export const V2ThreadListResponse__ThreadItem = Schema.Union(
       type: Schema.Literal("imageView").annotate({ title: "ImageViewThreadItemType" }),
     }).annotate({ title: "ImageViewThreadItem" }),
     Schema.Struct({
-      durationMs: Schema.Number.annotate({ format: "uint64" })
+      durationMs: Schema.Finite.annotate({ format: "uint64" })
         .check(Schema.isInt())
         .check(Schema.isGreaterThanOrEqualTo(0)),
       id: Schema.String,
@@ -24188,7 +24188,7 @@ export const V2ThreadMetadataUpdateResponse__ThreadItem = Schema.Union(
       cwd: Schema.String.annotate({ description: "The command's working directory." }),
       durationMs: Schema.optionalKey(
         Schema.Union([
-          Schema.Number.annotate({
+          Schema.Finite.annotate({
             description: "The duration of the command execution in milliseconds.",
             format: "int64",
           }).check(Schema.isInt()),
@@ -24197,7 +24197,7 @@ export const V2ThreadMetadataUpdateResponse__ThreadItem = Schema.Union(
       ),
       exitCode: Schema.optionalKey(
         Schema.Union([
-          Schema.Number.annotate({
+          Schema.Finite.annotate({
             description: "The command's exit code.",
             format: "int32",
           }).check(Schema.isInt()),
@@ -24239,7 +24239,7 @@ export const V2ThreadMetadataUpdateResponse__ThreadItem = Schema.Union(
       arguments: Schema.Unknown,
       durationMs: Schema.optionalKey(
         Schema.Union([
-          Schema.Number.annotate({
+          Schema.Finite.annotate({
             description: "The duration of the MCP tool call in milliseconds.",
             format: "int64",
           }).check(Schema.isInt()),
@@ -24277,7 +24277,7 @@ export const V2ThreadMetadataUpdateResponse__ThreadItem = Schema.Union(
       ),
       durationMs: Schema.optionalKey(
         Schema.Union([
-          Schema.Number.annotate({
+          Schema.Finite.annotate({
             description: "The duration of the dynamic tool call in milliseconds.",
             format: "int64",
           }).check(Schema.isInt()),
@@ -24375,7 +24375,7 @@ export const V2ThreadMetadataUpdateResponse__ThreadItem = Schema.Union(
       type: Schema.Literal("imageView").annotate({ title: "ImageViewThreadItemType" }),
     }).annotate({ title: "ImageViewThreadItem" }),
     Schema.Struct({
-      durationMs: Schema.Number.annotate({ format: "uint64" })
+      durationMs: Schema.Finite.annotate({ format: "uint64" })
         .check(Schema.isInt())
         .check(Schema.isGreaterThanOrEqualTo(0)),
       id: Schema.String,
@@ -24624,7 +24624,7 @@ export const V2ThreadReadResponse__ThreadItem = Schema.Union(
       cwd: Schema.String.annotate({ description: "The command's working directory." }),
       durationMs: Schema.optionalKey(
         Schema.Union([
-          Schema.Number.annotate({
+          Schema.Finite.annotate({
             description: "The duration of the command execution in milliseconds.",
             format: "int64",
           }).check(Schema.isInt()),
@@ -24633,7 +24633,7 @@ export const V2ThreadReadResponse__ThreadItem = Schema.Union(
       ),
       exitCode: Schema.optionalKey(
         Schema.Union([
-          Schema.Number.annotate({
+          Schema.Finite.annotate({
             description: "The command's exit code.",
             format: "int32",
           }).check(Schema.isInt()),
@@ -24675,7 +24675,7 @@ export const V2ThreadReadResponse__ThreadItem = Schema.Union(
       arguments: Schema.Unknown,
       durationMs: Schema.optionalKey(
         Schema.Union([
-          Schema.Number.annotate({
+          Schema.Finite.annotate({
             description: "The duration of the MCP tool call in milliseconds.",
             format: "int64",
           }).check(Schema.isInt()),
@@ -24713,7 +24713,7 @@ export const V2ThreadReadResponse__ThreadItem = Schema.Union(
       ),
       durationMs: Schema.optionalKey(
         Schema.Union([
-          Schema.Number.annotate({
+          Schema.Finite.annotate({
             description: "The duration of the dynamic tool call in milliseconds.",
             format: "int64",
           }).check(Schema.isInt()),
@@ -24810,7 +24810,7 @@ export const V2ThreadReadResponse__ThreadItem = Schema.Union(
       type: Schema.Literal("imageView").annotate({ title: "ImageViewThreadItemType" }),
     }).annotate({ title: "ImageViewThreadItem" }),
     Schema.Struct({
-      durationMs: Schema.Number.annotate({ format: "uint64" })
+      durationMs: Schema.Finite.annotate({ format: "uint64" })
         .check(Schema.isInt())
         .check(Schema.isGreaterThanOrEqualTo(0)),
       id: Schema.String,
@@ -25067,7 +25067,7 @@ export const V2ThreadResumeResponse__ThreadItem = Schema.Union(
       cwd: Schema.String.annotate({ description: "The command's working directory." }),
       durationMs: Schema.optionalKey(
         Schema.Union([
-          Schema.Number.annotate({
+          Schema.Finite.annotate({
             description: "The duration of the command execution in milliseconds.",
             format: "int64",
           }).check(Schema.isInt()),
@@ -25076,7 +25076,7 @@ export const V2ThreadResumeResponse__ThreadItem = Schema.Union(
       ),
       exitCode: Schema.optionalKey(
         Schema.Union([
-          Schema.Number.annotate({
+          Schema.Finite.annotate({
             description: "The command's exit code.",
             format: "int32",
           }).check(Schema.isInt()),
@@ -25118,7 +25118,7 @@ export const V2ThreadResumeResponse__ThreadItem = Schema.Union(
       arguments: Schema.Unknown,
       durationMs: Schema.optionalKey(
         Schema.Union([
-          Schema.Number.annotate({
+          Schema.Finite.annotate({
             description: "The duration of the MCP tool call in milliseconds.",
             format: "int64",
           }).check(Schema.isInt()),
@@ -25156,7 +25156,7 @@ export const V2ThreadResumeResponse__ThreadItem = Schema.Union(
       ),
       durationMs: Schema.optionalKey(
         Schema.Union([
-          Schema.Number.annotate({
+          Schema.Finite.annotate({
             description: "The duration of the dynamic tool call in milliseconds.",
             format: "int64",
           }).check(Schema.isInt()),
@@ -25253,7 +25253,7 @@ export const V2ThreadResumeResponse__ThreadItem = Schema.Union(
       type: Schema.Literal("imageView").annotate({ title: "ImageViewThreadItemType" }),
     }).annotate({ title: "ImageViewThreadItem" }),
     Schema.Struct({
-      durationMs: Schema.Number.annotate({ format: "uint64" })
+      durationMs: Schema.Finite.annotate({ format: "uint64" })
         .check(Schema.isInt())
         .check(Schema.isGreaterThanOrEqualTo(0)),
       id: Schema.String,
@@ -25504,7 +25504,7 @@ export const V2ThreadRollbackResponse__ThreadItem = Schema.Union(
       cwd: Schema.String.annotate({ description: "The command's working directory." }),
       durationMs: Schema.optionalKey(
         Schema.Union([
-          Schema.Number.annotate({
+          Schema.Finite.annotate({
             description: "The duration of the command execution in milliseconds.",
             format: "int64",
           }).check(Schema.isInt()),
@@ -25513,7 +25513,7 @@ export const V2ThreadRollbackResponse__ThreadItem = Schema.Union(
       ),
       exitCode: Schema.optionalKey(
         Schema.Union([
-          Schema.Number.annotate({
+          Schema.Finite.annotate({
             description: "The command's exit code.",
             format: "int32",
           }).check(Schema.isInt()),
@@ -25555,7 +25555,7 @@ export const V2ThreadRollbackResponse__ThreadItem = Schema.Union(
       arguments: Schema.Unknown,
       durationMs: Schema.optionalKey(
         Schema.Union([
-          Schema.Number.annotate({
+          Schema.Finite.annotate({
             description: "The duration of the MCP tool call in milliseconds.",
             format: "int64",
           }).check(Schema.isInt()),
@@ -25593,7 +25593,7 @@ export const V2ThreadRollbackResponse__ThreadItem = Schema.Union(
       ),
       durationMs: Schema.optionalKey(
         Schema.Union([
-          Schema.Number.annotate({
+          Schema.Finite.annotate({
             description: "The duration of the dynamic tool call in milliseconds.",
             format: "int64",
           }).check(Schema.isInt()),
@@ -25691,7 +25691,7 @@ export const V2ThreadRollbackResponse__ThreadItem = Schema.Union(
       type: Schema.Literal("imageView").annotate({ title: "ImageViewThreadItemType" }),
     }).annotate({ title: "ImageViewThreadItem" }),
     Schema.Struct({
-      durationMs: Schema.Number.annotate({ format: "uint64" })
+      durationMs: Schema.Finite.annotate({ format: "uint64" })
         .check(Schema.isInt())
         .check(Schema.isGreaterThanOrEqualTo(0)),
       id: Schema.String,
@@ -25953,7 +25953,7 @@ export const V2ThreadStartedNotification__ThreadItem = Schema.Union(
       cwd: Schema.String.annotate({ description: "The command's working directory." }),
       durationMs: Schema.optionalKey(
         Schema.Union([
-          Schema.Number.annotate({
+          Schema.Finite.annotate({
             description: "The duration of the command execution in milliseconds.",
             format: "int64",
           }).check(Schema.isInt()),
@@ -25962,7 +25962,7 @@ export const V2ThreadStartedNotification__ThreadItem = Schema.Union(
       ),
       exitCode: Schema.optionalKey(
         Schema.Union([
-          Schema.Number.annotate({
+          Schema.Finite.annotate({
             description: "The command's exit code.",
             format: "int32",
           }).check(Schema.isInt()),
@@ -26004,7 +26004,7 @@ export const V2ThreadStartedNotification__ThreadItem = Schema.Union(
       arguments: Schema.Unknown,
       durationMs: Schema.optionalKey(
         Schema.Union([
-          Schema.Number.annotate({
+          Schema.Finite.annotate({
             description: "The duration of the MCP tool call in milliseconds.",
             format: "int64",
           }).check(Schema.isInt()),
@@ -26042,7 +26042,7 @@ export const V2ThreadStartedNotification__ThreadItem = Schema.Union(
       ),
       durationMs: Schema.optionalKey(
         Schema.Union([
-          Schema.Number.annotate({
+          Schema.Finite.annotate({
             description: "The duration of the dynamic tool call in milliseconds.",
             format: "int64",
           }).check(Schema.isInt()),
@@ -26140,7 +26140,7 @@ export const V2ThreadStartedNotification__ThreadItem = Schema.Union(
       type: Schema.Literal("imageView").annotate({ title: "ImageViewThreadItemType" }),
     }).annotate({ title: "ImageViewThreadItem" }),
     Schema.Struct({
-      durationMs: Schema.Number.annotate({ format: "uint64" })
+      durationMs: Schema.Finite.annotate({ format: "uint64" })
         .check(Schema.isInt())
         .check(Schema.isGreaterThanOrEqualTo(0)),
       id: Schema.String,
@@ -26389,7 +26389,7 @@ export const V2ThreadStartResponse__ThreadItem = Schema.Union(
       cwd: Schema.String.annotate({ description: "The command's working directory." }),
       durationMs: Schema.optionalKey(
         Schema.Union([
-          Schema.Number.annotate({
+          Schema.Finite.annotate({
             description: "The duration of the command execution in milliseconds.",
             format: "int64",
           }).check(Schema.isInt()),
@@ -26398,7 +26398,7 @@ export const V2ThreadStartResponse__ThreadItem = Schema.Union(
       ),
       exitCode: Schema.optionalKey(
         Schema.Union([
-          Schema.Number.annotate({
+          Schema.Finite.annotate({
             description: "The command's exit code.",
             format: "int32",
           }).check(Schema.isInt()),
@@ -26440,7 +26440,7 @@ export const V2ThreadStartResponse__ThreadItem = Schema.Union(
       arguments: Schema.Unknown,
       durationMs: Schema.optionalKey(
         Schema.Union([
-          Schema.Number.annotate({
+          Schema.Finite.annotate({
             description: "The duration of the MCP tool call in milliseconds.",
             format: "int64",
           }).check(Schema.isInt()),
@@ -26478,7 +26478,7 @@ export const V2ThreadStartResponse__ThreadItem = Schema.Union(
       ),
       durationMs: Schema.optionalKey(
         Schema.Union([
-          Schema.Number.annotate({
+          Schema.Finite.annotate({
             description: "The duration of the dynamic tool call in milliseconds.",
             format: "int64",
           }).check(Schema.isInt()),
@@ -26575,7 +26575,7 @@ export const V2ThreadStartResponse__ThreadItem = Schema.Union(
       type: Schema.Literal("imageView").annotate({ title: "ImageViewThreadItemType" }),
     }).annotate({ title: "ImageViewThreadItem" }),
     Schema.Struct({
-      durationMs: Schema.Number.annotate({ format: "uint64" })
+      durationMs: Schema.Finite.annotate({ format: "uint64" })
         .check(Schema.isInt())
         .check(Schema.isGreaterThanOrEqualTo(0)),
       id: Schema.String,
@@ -26826,7 +26826,7 @@ export const V2ThreadUnarchiveResponse__ThreadItem = Schema.Union(
       cwd: Schema.String.annotate({ description: "The command's working directory." }),
       durationMs: Schema.optionalKey(
         Schema.Union([
-          Schema.Number.annotate({
+          Schema.Finite.annotate({
             description: "The duration of the command execution in milliseconds.",
             format: "int64",
           }).check(Schema.isInt()),
@@ -26835,7 +26835,7 @@ export const V2ThreadUnarchiveResponse__ThreadItem = Schema.Union(
       ),
       exitCode: Schema.optionalKey(
         Schema.Union([
-          Schema.Number.annotate({
+          Schema.Finite.annotate({
             description: "The command's exit code.",
             format: "int32",
           }).check(Schema.isInt()),
@@ -26877,7 +26877,7 @@ export const V2ThreadUnarchiveResponse__ThreadItem = Schema.Union(
       arguments: Schema.Unknown,
       durationMs: Schema.optionalKey(
         Schema.Union([
-          Schema.Number.annotate({
+          Schema.Finite.annotate({
             description: "The duration of the MCP tool call in milliseconds.",
             format: "int64",
           }).check(Schema.isInt()),
@@ -26915,7 +26915,7 @@ export const V2ThreadUnarchiveResponse__ThreadItem = Schema.Union(
       ),
       durationMs: Schema.optionalKey(
         Schema.Union([
-          Schema.Number.annotate({
+          Schema.Finite.annotate({
             description: "The duration of the dynamic tool call in milliseconds.",
             format: "int64",
           }).check(Schema.isInt()),
@@ -27013,7 +27013,7 @@ export const V2ThreadUnarchiveResponse__ThreadItem = Schema.Union(
       type: Schema.Literal("imageView").annotate({ title: "ImageViewThreadItemType" }),
     }).annotate({ title: "ImageViewThreadItem" }),
     Schema.Struct({
-      durationMs: Schema.Number.annotate({ format: "uint64" })
+      durationMs: Schema.Finite.annotate({ format: "uint64" })
         .check(Schema.isInt())
         .check(Schema.isGreaterThanOrEqualTo(0)),
       id: Schema.String,
@@ -27266,7 +27266,7 @@ export const V2TurnCompletedNotification__ThreadItem = Schema.Union(
       cwd: Schema.String.annotate({ description: "The command's working directory." }),
       durationMs: Schema.optionalKey(
         Schema.Union([
-          Schema.Number.annotate({
+          Schema.Finite.annotate({
             description: "The duration of the command execution in milliseconds.",
             format: "int64",
           }).check(Schema.isInt()),
@@ -27275,7 +27275,7 @@ export const V2TurnCompletedNotification__ThreadItem = Schema.Union(
       ),
       exitCode: Schema.optionalKey(
         Schema.Union([
-          Schema.Number.annotate({
+          Schema.Finite.annotate({
             description: "The command's exit code.",
             format: "int32",
           }).check(Schema.isInt()),
@@ -27317,7 +27317,7 @@ export const V2TurnCompletedNotification__ThreadItem = Schema.Union(
       arguments: Schema.Unknown,
       durationMs: Schema.optionalKey(
         Schema.Union([
-          Schema.Number.annotate({
+          Schema.Finite.annotate({
             description: "The duration of the MCP tool call in milliseconds.",
             format: "int64",
           }).check(Schema.isInt()),
@@ -27355,7 +27355,7 @@ export const V2TurnCompletedNotification__ThreadItem = Schema.Union(
       ),
       durationMs: Schema.optionalKey(
         Schema.Union([
-          Schema.Number.annotate({
+          Schema.Finite.annotate({
             description: "The duration of the dynamic tool call in milliseconds.",
             format: "int64",
           }).check(Schema.isInt()),
@@ -27453,7 +27453,7 @@ export const V2TurnCompletedNotification__ThreadItem = Schema.Union(
       type: Schema.Literal("imageView").annotate({ title: "ImageViewThreadItemType" }),
     }).annotate({ title: "ImageViewThreadItem" }),
     Schema.Struct({
-      durationMs: Schema.Number.annotate({ format: "uint64" })
+      durationMs: Schema.Finite.annotate({ format: "uint64" })
         .check(Schema.isInt())
         .check(Schema.isGreaterThanOrEqualTo(0)),
       id: Schema.String,
@@ -27704,7 +27704,7 @@ export const V2TurnStartedNotification__ThreadItem = Schema.Union(
       cwd: Schema.String.annotate({ description: "The command's working directory." }),
       durationMs: Schema.optionalKey(
         Schema.Union([
-          Schema.Number.annotate({
+          Schema.Finite.annotate({
             description: "The duration of the command execution in milliseconds.",
             format: "int64",
           }).check(Schema.isInt()),
@@ -27713,7 +27713,7 @@ export const V2TurnStartedNotification__ThreadItem = Schema.Union(
       ),
       exitCode: Schema.optionalKey(
         Schema.Union([
-          Schema.Number.annotate({
+          Schema.Finite.annotate({
             description: "The command's exit code.",
             format: "int32",
           }).check(Schema.isInt()),
@@ -27755,7 +27755,7 @@ export const V2TurnStartedNotification__ThreadItem = Schema.Union(
       arguments: Schema.Unknown,
       durationMs: Schema.optionalKey(
         Schema.Union([
-          Schema.Number.annotate({
+          Schema.Finite.annotate({
             description: "The duration of the MCP tool call in milliseconds.",
             format: "int64",
           }).check(Schema.isInt()),
@@ -27793,7 +27793,7 @@ export const V2TurnStartedNotification__ThreadItem = Schema.Union(
       ),
       durationMs: Schema.optionalKey(
         Schema.Union([
-          Schema.Number.annotate({
+          Schema.Finite.annotate({
             description: "The duration of the dynamic tool call in milliseconds.",
             format: "int64",
           }).check(Schema.isInt()),
@@ -27891,7 +27891,7 @@ export const V2TurnStartedNotification__ThreadItem = Schema.Union(
       type: Schema.Literal("imageView").annotate({ title: "ImageViewThreadItemType" }),
     }).annotate({ title: "ImageViewThreadItem" }),
     Schema.Struct({
-      durationMs: Schema.Number.annotate({ format: "uint64" })
+      durationMs: Schema.Finite.annotate({ format: "uint64" })
         .check(Schema.isInt())
         .check(Schema.isGreaterThanOrEqualTo(0)),
       id: Schema.String,
@@ -28140,7 +28140,7 @@ export const V2TurnStartResponse__ThreadItem = Schema.Union(
       cwd: Schema.String.annotate({ description: "The command's working directory." }),
       durationMs: Schema.optionalKey(
         Schema.Union([
-          Schema.Number.annotate({
+          Schema.Finite.annotate({
             description: "The duration of the command execution in milliseconds.",
             format: "int64",
           }).check(Schema.isInt()),
@@ -28149,7 +28149,7 @@ export const V2TurnStartResponse__ThreadItem = Schema.Union(
       ),
       exitCode: Schema.optionalKey(
         Schema.Union([
-          Schema.Number.annotate({
+          Schema.Finite.annotate({
             description: "The command's exit code.",
             format: "int32",
           }).check(Schema.isInt()),
@@ -28191,7 +28191,7 @@ export const V2TurnStartResponse__ThreadItem = Schema.Union(
       arguments: Schema.Unknown,
       durationMs: Schema.optionalKey(
         Schema.Union([
-          Schema.Number.annotate({
+          Schema.Finite.annotate({
             description: "The duration of the MCP tool call in milliseconds.",
             format: "int64",
           }).check(Schema.isInt()),
@@ -28227,7 +28227,7 @@ export const V2TurnStartResponse__ThreadItem = Schema.Union(
       ),
       durationMs: Schema.optionalKey(
         Schema.Union([
-          Schema.Number.annotate({
+          Schema.Finite.annotate({
             description: "The duration of the dynamic tool call in milliseconds.",
             format: "int64",
           }).check(Schema.isInt()),
@@ -28322,7 +28322,7 @@ export const V2TurnStartResponse__ThreadItem = Schema.Union(
       type: Schema.Literal("imageView").annotate({ title: "ImageViewThreadItemType" }),
     }).annotate({ title: "ImageViewThreadItem" }),
     Schema.Struct({
-      durationMs: Schema.Number.annotate({ format: "uint64" })
+      durationMs: Schema.Finite.annotate({ format: "uint64" })
         .check(Schema.isInt())
         .check(Schema.isGreaterThanOrEqualTo(0)),
       id: Schema.String,
@@ -28533,7 +28533,7 @@ export type ServerNotification__ItemCompletedNotification = {
   readonly turnId: string;
 };
 export const ServerNotification__ItemCompletedNotification = Schema.Struct({
-  completedAtMs: Schema.Number.annotate({
+  completedAtMs: Schema.Finite.annotate({
     description: "Unix timestamp (in milliseconds) when this item lifecycle completed.",
     format: "int64",
   }).check(Schema.isInt()),
@@ -28550,7 +28550,7 @@ export type ServerNotification__ItemStartedNotification = {
 };
 export const ServerNotification__ItemStartedNotification = Schema.Struct({
   item: ServerNotification__ThreadItem,
-  startedAtMs: Schema.Number.annotate({
+  startedAtMs: Schema.Finite.annotate({
     description: "Unix timestamp (in milliseconds) when this item lifecycle started.",
     format: "int64",
   }).check(Schema.isInt()),
@@ -28571,7 +28571,7 @@ export type ServerNotification__Turn = {
 export const ServerNotification__Turn = Schema.Struct({
   completedAt: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({
+      Schema.Finite.annotate({
         description: "Unix timestamp (in seconds) when the turn completed.",
         format: "int64",
       }).check(Schema.isInt()),
@@ -28580,7 +28580,7 @@ export const ServerNotification__Turn = Schema.Struct({
   ),
   durationMs: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({
+      Schema.Finite.annotate({
         description: "Duration between turn start and completion in milliseconds, if known.",
         format: "int64",
       }).check(Schema.isInt()),
@@ -28606,7 +28606,7 @@ export const ServerNotification__Turn = Schema.Struct({
   ),
   startedAt: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({
+      Schema.Finite.annotate({
         description: "Unix timestamp (in seconds) when the turn started.",
         format: "int64",
       }).check(Schema.isInt()),
@@ -28688,7 +28688,7 @@ export const V2ConfigReadResponse__Config = Schema.StructWithRest(
     model: Schema.optionalKey(Schema.Union([Schema.String, Schema.Null])),
     model_auto_compact_token_limit: Schema.optionalKey(
       Schema.Union([
-        Schema.Number.annotate({ format: "int64" }).check(Schema.isInt()),
+        Schema.Finite.annotate({ format: "int64" }).check(Schema.isInt()),
         Schema.Null,
       ]),
     ),
@@ -28697,7 +28697,7 @@ export const V2ConfigReadResponse__Config = Schema.StructWithRest(
     ),
     model_context_window: Schema.optionalKey(
       Schema.Union([
-        Schema.Number.annotate({ format: "int64" }).check(Schema.isInt()),
+        Schema.Finite.annotate({ format: "int64" }).check(Schema.isInt()),
         Schema.Null,
       ]),
     ),
@@ -29444,7 +29444,7 @@ export type V2ReviewStartResponse__Turn = {
 export const V2ReviewStartResponse__Turn = Schema.Struct({
   completedAt: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({
+      Schema.Finite.annotate({
         description: "Unix timestamp (in seconds) when the turn completed.",
         format: "int64",
       }).check(Schema.isInt()),
@@ -29453,7 +29453,7 @@ export const V2ReviewStartResponse__Turn = Schema.Struct({
   ),
   durationMs: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({
+      Schema.Finite.annotate({
         description: "Duration between turn start and completion in milliseconds, if known.",
         format: "int64",
       }).check(Schema.isInt()),
@@ -29479,7 +29479,7 @@ export const V2ReviewStartResponse__Turn = Schema.Struct({
   ),
   startedAt: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({
+      Schema.Finite.annotate({
         description: "Unix timestamp (in seconds) when the turn started.",
         format: "int64",
       }).check(Schema.isInt()),
@@ -29513,7 +29513,7 @@ export type V2ThreadForkResponse__Turn = {
 export const V2ThreadForkResponse__Turn = Schema.Struct({
   completedAt: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({
+      Schema.Finite.annotate({
         description: "Unix timestamp (in seconds) when the turn completed.",
         format: "int64",
       }).check(Schema.isInt()),
@@ -29522,7 +29522,7 @@ export const V2ThreadForkResponse__Turn = Schema.Struct({
   ),
   durationMs: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({
+      Schema.Finite.annotate({
         description: "Duration between turn start and completion in milliseconds, if known.",
         format: "int64",
       }).check(Schema.isInt()),
@@ -29548,7 +29548,7 @@ export const V2ThreadForkResponse__Turn = Schema.Struct({
   ),
   startedAt: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({
+      Schema.Finite.annotate({
         description: "Unix timestamp (in seconds) when the turn started.",
         format: "int64",
       }).check(Schema.isInt()),
@@ -29571,7 +29571,7 @@ export type V2ThreadListResponse__Turn = {
 export const V2ThreadListResponse__Turn = Schema.Struct({
   completedAt: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({
+      Schema.Finite.annotate({
         description: "Unix timestamp (in seconds) when the turn completed.",
         format: "int64",
       }).check(Schema.isInt()),
@@ -29580,7 +29580,7 @@ export const V2ThreadListResponse__Turn = Schema.Struct({
   ),
   durationMs: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({
+      Schema.Finite.annotate({
         description: "Duration between turn start and completion in milliseconds, if known.",
         format: "int64",
       }).check(Schema.isInt()),
@@ -29606,7 +29606,7 @@ export const V2ThreadListResponse__Turn = Schema.Struct({
   ),
   startedAt: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({
+      Schema.Finite.annotate({
         description: "Unix timestamp (in seconds) when the turn started.",
         format: "int64",
       }).check(Schema.isInt()),
@@ -29629,7 +29629,7 @@ export type V2ThreadMetadataUpdateResponse__Turn = {
 export const V2ThreadMetadataUpdateResponse__Turn = Schema.Struct({
   completedAt: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({
+      Schema.Finite.annotate({
         description: "Unix timestamp (in seconds) when the turn completed.",
         format: "int64",
       }).check(Schema.isInt()),
@@ -29638,7 +29638,7 @@ export const V2ThreadMetadataUpdateResponse__Turn = Schema.Struct({
   ),
   durationMs: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({
+      Schema.Finite.annotate({
         description: "Duration between turn start and completion in milliseconds, if known.",
         format: "int64",
       }).check(Schema.isInt()),
@@ -29664,7 +29664,7 @@ export const V2ThreadMetadataUpdateResponse__Turn = Schema.Struct({
   ),
   startedAt: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({
+      Schema.Finite.annotate({
         description: "Unix timestamp (in seconds) when the turn started.",
         format: "int64",
       }).check(Schema.isInt()),
@@ -29687,7 +29687,7 @@ export type V2ThreadReadResponse__Turn = {
 export const V2ThreadReadResponse__Turn = Schema.Struct({
   completedAt: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({
+      Schema.Finite.annotate({
         description: "Unix timestamp (in seconds) when the turn completed.",
         format: "int64",
       }).check(Schema.isInt()),
@@ -29696,7 +29696,7 @@ export const V2ThreadReadResponse__Turn = Schema.Struct({
   ),
   durationMs: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({
+      Schema.Finite.annotate({
         description: "Duration between turn start and completion in milliseconds, if known.",
         format: "int64",
       }).check(Schema.isInt()),
@@ -29722,7 +29722,7 @@ export const V2ThreadReadResponse__Turn = Schema.Struct({
   ),
   startedAt: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({
+      Schema.Finite.annotate({
         description: "Unix timestamp (in seconds) when the turn started.",
         format: "int64",
       }).check(Schema.isInt()),
@@ -29745,7 +29745,7 @@ export type V2ThreadResumeResponse__Turn = {
 export const V2ThreadResumeResponse__Turn = Schema.Struct({
   completedAt: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({
+      Schema.Finite.annotate({
         description: "Unix timestamp (in seconds) when the turn completed.",
         format: "int64",
       }).check(Schema.isInt()),
@@ -29754,7 +29754,7 @@ export const V2ThreadResumeResponse__Turn = Schema.Struct({
   ),
   durationMs: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({
+      Schema.Finite.annotate({
         description: "Duration between turn start and completion in milliseconds, if known.",
         format: "int64",
       }).check(Schema.isInt()),
@@ -29780,7 +29780,7 @@ export const V2ThreadResumeResponse__Turn = Schema.Struct({
   ),
   startedAt: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({
+      Schema.Finite.annotate({
         description: "Unix timestamp (in seconds) when the turn started.",
         format: "int64",
       }).check(Schema.isInt()),
@@ -29803,7 +29803,7 @@ export type V2ThreadRollbackResponse__Turn = {
 export const V2ThreadRollbackResponse__Turn = Schema.Struct({
   completedAt: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({
+      Schema.Finite.annotate({
         description: "Unix timestamp (in seconds) when the turn completed.",
         format: "int64",
       }).check(Schema.isInt()),
@@ -29812,7 +29812,7 @@ export const V2ThreadRollbackResponse__Turn = Schema.Struct({
   ),
   durationMs: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({
+      Schema.Finite.annotate({
         description: "Duration between turn start and completion in milliseconds, if known.",
         format: "int64",
       }).check(Schema.isInt()),
@@ -29838,7 +29838,7 @@ export const V2ThreadRollbackResponse__Turn = Schema.Struct({
   ),
   startedAt: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({
+      Schema.Finite.annotate({
         description: "Unix timestamp (in seconds) when the turn started.",
         format: "int64",
       }).check(Schema.isInt()),
@@ -29898,7 +29898,7 @@ export type V2ThreadStartedNotification__Turn = {
 export const V2ThreadStartedNotification__Turn = Schema.Struct({
   completedAt: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({
+      Schema.Finite.annotate({
         description: "Unix timestamp (in seconds) when the turn completed.",
         format: "int64",
       }).check(Schema.isInt()),
@@ -29907,7 +29907,7 @@ export const V2ThreadStartedNotification__Turn = Schema.Struct({
   ),
   durationMs: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({
+      Schema.Finite.annotate({
         description: "Duration between turn start and completion in milliseconds, if known.",
         format: "int64",
       }).check(Schema.isInt()),
@@ -29933,7 +29933,7 @@ export const V2ThreadStartedNotification__Turn = Schema.Struct({
   ),
   startedAt: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({
+      Schema.Finite.annotate({
         description: "Unix timestamp (in seconds) when the turn started.",
         format: "int64",
       }).check(Schema.isInt()),
@@ -29956,7 +29956,7 @@ export type V2ThreadStartResponse__Turn = {
 export const V2ThreadStartResponse__Turn = Schema.Struct({
   completedAt: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({
+      Schema.Finite.annotate({
         description: "Unix timestamp (in seconds) when the turn completed.",
         format: "int64",
       }).check(Schema.isInt()),
@@ -29965,7 +29965,7 @@ export const V2ThreadStartResponse__Turn = Schema.Struct({
   ),
   durationMs: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({
+      Schema.Finite.annotate({
         description: "Duration between turn start and completion in milliseconds, if known.",
         format: "int64",
       }).check(Schema.isInt()),
@@ -29991,7 +29991,7 @@ export const V2ThreadStartResponse__Turn = Schema.Struct({
   ),
   startedAt: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({
+      Schema.Finite.annotate({
         description: "Unix timestamp (in seconds) when the turn started.",
         format: "int64",
       }).check(Schema.isInt()),
@@ -30014,7 +30014,7 @@ export type V2ThreadUnarchiveResponse__Turn = {
 export const V2ThreadUnarchiveResponse__Turn = Schema.Struct({
   completedAt: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({
+      Schema.Finite.annotate({
         description: "Unix timestamp (in seconds) when the turn completed.",
         format: "int64",
       }).check(Schema.isInt()),
@@ -30023,7 +30023,7 @@ export const V2ThreadUnarchiveResponse__Turn = Schema.Struct({
   ),
   durationMs: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({
+      Schema.Finite.annotate({
         description: "Duration between turn start and completion in milliseconds, if known.",
         format: "int64",
       }).check(Schema.isInt()),
@@ -30049,7 +30049,7 @@ export const V2ThreadUnarchiveResponse__Turn = Schema.Struct({
   ),
   startedAt: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({
+      Schema.Finite.annotate({
         description: "Unix timestamp (in seconds) when the turn started.",
         format: "int64",
       }).check(Schema.isInt()),
@@ -30072,7 +30072,7 @@ export type V2TurnCompletedNotification__Turn = {
 export const V2TurnCompletedNotification__Turn = Schema.Struct({
   completedAt: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({
+      Schema.Finite.annotate({
         description: "Unix timestamp (in seconds) when the turn completed.",
         format: "int64",
       }).check(Schema.isInt()),
@@ -30081,7 +30081,7 @@ export const V2TurnCompletedNotification__Turn = Schema.Struct({
   ),
   durationMs: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({
+      Schema.Finite.annotate({
         description: "Duration between turn start and completion in milliseconds, if known.",
         format: "int64",
       }).check(Schema.isInt()),
@@ -30107,7 +30107,7 @@ export const V2TurnCompletedNotification__Turn = Schema.Struct({
   ),
   startedAt: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({
+      Schema.Finite.annotate({
         description: "Unix timestamp (in seconds) when the turn started.",
         format: "int64",
       }).check(Schema.isInt()),
@@ -30130,7 +30130,7 @@ export type V2TurnStartedNotification__Turn = {
 export const V2TurnStartedNotification__Turn = Schema.Struct({
   completedAt: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({
+      Schema.Finite.annotate({
         description: "Unix timestamp (in seconds) when the turn completed.",
         format: "int64",
       }).check(Schema.isInt()),
@@ -30139,7 +30139,7 @@ export const V2TurnStartedNotification__Turn = Schema.Struct({
   ),
   durationMs: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({
+      Schema.Finite.annotate({
         description: "Duration between turn start and completion in milliseconds, if known.",
         format: "int64",
       }).check(Schema.isInt()),
@@ -30165,7 +30165,7 @@ export const V2TurnStartedNotification__Turn = Schema.Struct({
   ),
   startedAt: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({
+      Schema.Finite.annotate({
         description: "Unix timestamp (in seconds) when the turn started.",
         format: "int64",
       }).check(Schema.isInt()),
@@ -30188,7 +30188,7 @@ export type V2TurnStartResponse__Turn = {
 export const V2TurnStartResponse__Turn = Schema.Struct({
   completedAt: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({
+      Schema.Finite.annotate({
         description: "Unix timestamp (in seconds) when the turn completed.",
         format: "int64",
       }).check(Schema.isInt()),
@@ -30197,7 +30197,7 @@ export const V2TurnStartResponse__Turn = Schema.Struct({
   ),
   durationMs: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({
+      Schema.Finite.annotate({
         description: "Duration between turn start and completion in milliseconds, if known.",
         format: "int64",
       }).check(Schema.isInt()),
@@ -30223,7 +30223,7 @@ export const V2TurnStartResponse__Turn = Schema.Struct({
   ),
   startedAt: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({
+      Schema.Finite.annotate({
         description: "Unix timestamp (in seconds) when the turn started.",
         format: "int64",
       }).check(Schema.isInt()),
@@ -30249,7 +30249,7 @@ export const CommandExecutionRequestApprovalParams__AdditionalFileSystemPermissi
     ),
     globScanMaxDepth: Schema.optionalKey(
       Schema.Union([
-        Schema.Number.annotate({ format: "uint" })
+        Schema.Finite.annotate({ format: "uint" })
           .check(Schema.isInt())
           .check(Schema.isGreaterThanOrEqualTo(1)),
         Schema.Null,
@@ -30299,7 +30299,7 @@ export const PermissionsRequestApprovalParams__AdditionalFileSystemPermissions =
   ),
   globScanMaxDepth: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({ format: "uint" })
+      Schema.Finite.annotate({ format: "uint" })
         .check(Schema.isInt())
         .check(Schema.isGreaterThanOrEqualTo(1)),
       Schema.Null,
@@ -30338,7 +30338,7 @@ export const PermissionsRequestApprovalResponse__AdditionalFileSystemPermissions
   ),
   globScanMaxDepth: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({ format: "uint" })
+      Schema.Finite.annotate({ format: "uint" })
         .check(Schema.isInt())
         .check(Schema.isGreaterThanOrEqualTo(1)),
       Schema.Null,
@@ -30374,7 +30374,7 @@ export const ServerNotification__AdditionalFileSystemPermissions = Schema.Struct
   ),
   globScanMaxDepth: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({ format: "uint" })
+      Schema.Finite.annotate({ format: "uint" })
         .check(Schema.isInt())
         .check(Schema.isGreaterThanOrEqualTo(1)),
       Schema.Null,
@@ -30465,7 +30465,7 @@ export const ServerNotification__Thread = Schema.Struct({
   cliVersion: Schema.String.annotate({
     description: "Version of the CLI that created the thread.",
   }),
-  createdAt: Schema.Number.annotate({
+  createdAt: Schema.Finite.annotate({
     description: "Unix timestamp (in seconds) when the thread was created.",
     format: "int64",
   }).check(Schema.isInt()),
@@ -30521,7 +30521,7 @@ export const ServerNotification__Thread = Schema.Struct({
   }),
   recencyAt: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({
+      Schema.Finite.annotate({
         description: "Unix timestamp (in seconds) used for thread recency ordering.",
         format: "int64",
       }).check(Schema.isInt()),
@@ -30570,7 +30570,7 @@ export const ServerNotification__Thread = Schema.Struct({
     description:
       "Only populated on `thread/resume`, `thread/rollback`, `thread/fork`, and `thread/read` (when `includeTurns` is true) responses. For all other responses and notifications returning a Thread, the turns field will be an empty list.",
   }),
-  updatedAt: Schema.Number.annotate({
+  updatedAt: Schema.Finite.annotate({
     description: "Unix timestamp (in seconds) when the thread was last updated.",
     format: "int64",
   }).check(Schema.isInt()),
@@ -30606,7 +30606,7 @@ export const ServerRequest__AdditionalFileSystemPermissions = Schema.Struct({
   ),
   globScanMaxDepth: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({ format: "uint" })
+      Schema.Finite.annotate({ format: "uint" })
         .check(Schema.isInt())
         .check(Schema.isGreaterThanOrEqualTo(1)),
       Schema.Null,
@@ -30656,7 +30656,7 @@ export const V2ItemGuardianApprovalReviewCompletedNotification__AdditionalFileSy
     ),
     globScanMaxDepth: Schema.optionalKey(
       Schema.Union([
-        Schema.Number.annotate({ format: "uint" })
+        Schema.Finite.annotate({ format: "uint" })
           .check(Schema.isInt())
           .check(Schema.isGreaterThanOrEqualTo(1)),
         Schema.Null,
@@ -30696,7 +30696,7 @@ export const V2ItemGuardianApprovalReviewStartedNotification__AdditionalFileSyst
     ),
     globScanMaxDepth: Schema.optionalKey(
       Schema.Union([
-        Schema.Number.annotate({ format: "uint" })
+        Schema.Finite.annotate({ format: "uint" })
           .check(Schema.isInt())
           .check(Schema.isGreaterThanOrEqualTo(1)),
         Schema.Null,
@@ -30860,7 +30860,7 @@ export const V2ThreadForkResponse__Thread = Schema.Struct({
   cliVersion: Schema.String.annotate({
     description: "Version of the CLI that created the thread.",
   }),
-  createdAt: Schema.Number.annotate({
+  createdAt: Schema.Finite.annotate({
     description: "Unix timestamp (in seconds) when the thread was created.",
     format: "int64",
   }).check(Schema.isInt()),
@@ -30916,7 +30916,7 @@ export const V2ThreadForkResponse__Thread = Schema.Struct({
   }),
   recencyAt: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({
+      Schema.Finite.annotate({
         description: "Unix timestamp (in seconds) used for thread recency ordering.",
         format: "int64",
       }).check(Schema.isInt()),
@@ -30965,7 +30965,7 @@ export const V2ThreadForkResponse__Thread = Schema.Struct({
     description:
       "Only populated on `thread/resume`, `thread/rollback`, `thread/fork`, and `thread/read` (when `includeTurns` is true) responses. For all other responses and notifications returning a Thread, the turns field will be an empty list.",
   }),
-  updatedAt: Schema.Number.annotate({
+  updatedAt: Schema.Finite.annotate({
     description: "Unix timestamp (in seconds) when the thread was last updated.",
     format: "int64",
   }).check(Schema.isInt()),
@@ -31029,7 +31029,7 @@ export const V2ThreadListResponse__Thread = Schema.Struct({
   cliVersion: Schema.String.annotate({
     description: "Version of the CLI that created the thread.",
   }),
-  createdAt: Schema.Number.annotate({
+  createdAt: Schema.Finite.annotate({
     description: "Unix timestamp (in seconds) when the thread was created.",
     format: "int64",
   }).check(Schema.isInt()),
@@ -31085,7 +31085,7 @@ export const V2ThreadListResponse__Thread = Schema.Struct({
   }),
   recencyAt: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({
+      Schema.Finite.annotate({
         description: "Unix timestamp (in seconds) used for thread recency ordering.",
         format: "int64",
       }).check(Schema.isInt()),
@@ -31134,7 +31134,7 @@ export const V2ThreadListResponse__Thread = Schema.Struct({
     description:
       "Only populated on `thread/resume`, `thread/rollback`, `thread/fork`, and `thread/read` (when `includeTurns` is true) responses. For all other responses and notifications returning a Thread, the turns field will be an empty list.",
   }),
-  updatedAt: Schema.Number.annotate({
+  updatedAt: Schema.Finite.annotate({
     description: "Unix timestamp (in seconds) when the thread was last updated.",
     format: "int64",
   }).check(Schema.isInt()),
@@ -31198,7 +31198,7 @@ export const V2ThreadMetadataUpdateResponse__Thread = Schema.Struct({
   cliVersion: Schema.String.annotate({
     description: "Version of the CLI that created the thread.",
   }),
-  createdAt: Schema.Number.annotate({
+  createdAt: Schema.Finite.annotate({
     description: "Unix timestamp (in seconds) when the thread was created.",
     format: "int64",
   }).check(Schema.isInt()),
@@ -31254,7 +31254,7 @@ export const V2ThreadMetadataUpdateResponse__Thread = Schema.Struct({
   }),
   recencyAt: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({
+      Schema.Finite.annotate({
         description: "Unix timestamp (in seconds) used for thread recency ordering.",
         format: "int64",
       }).check(Schema.isInt()),
@@ -31303,7 +31303,7 @@ export const V2ThreadMetadataUpdateResponse__Thread = Schema.Struct({
     description:
       "Only populated on `thread/resume`, `thread/rollback`, `thread/fork`, and `thread/read` (when `includeTurns` is true) responses. For all other responses and notifications returning a Thread, the turns field will be an empty list.",
   }),
-  updatedAt: Schema.Number.annotate({
+  updatedAt: Schema.Finite.annotate({
     description: "Unix timestamp (in seconds) when the thread was last updated.",
     format: "int64",
   }).check(Schema.isInt()),
@@ -31367,7 +31367,7 @@ export const V2ThreadReadResponse__Thread = Schema.Struct({
   cliVersion: Schema.String.annotate({
     description: "Version of the CLI that created the thread.",
   }),
-  createdAt: Schema.Number.annotate({
+  createdAt: Schema.Finite.annotate({
     description: "Unix timestamp (in seconds) when the thread was created.",
     format: "int64",
   }).check(Schema.isInt()),
@@ -31423,7 +31423,7 @@ export const V2ThreadReadResponse__Thread = Schema.Struct({
   }),
   recencyAt: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({
+      Schema.Finite.annotate({
         description: "Unix timestamp (in seconds) used for thread recency ordering.",
         format: "int64",
       }).check(Schema.isInt()),
@@ -31472,7 +31472,7 @@ export const V2ThreadReadResponse__Thread = Schema.Struct({
     description:
       "Only populated on `thread/resume`, `thread/rollback`, `thread/fork`, and `thread/read` (when `includeTurns` is true) responses. For all other responses and notifications returning a Thread, the turns field will be an empty list.",
   }),
-  updatedAt: Schema.Number.annotate({
+  updatedAt: Schema.Finite.annotate({
     description: "Unix timestamp (in seconds) when the thread was last updated.",
     format: "int64",
   }).check(Schema.isInt()),
@@ -31536,7 +31536,7 @@ export const V2ThreadResumeResponse__Thread = Schema.Struct({
   cliVersion: Schema.String.annotate({
     description: "Version of the CLI that created the thread.",
   }),
-  createdAt: Schema.Number.annotate({
+  createdAt: Schema.Finite.annotate({
     description: "Unix timestamp (in seconds) when the thread was created.",
     format: "int64",
   }).check(Schema.isInt()),
@@ -31592,7 +31592,7 @@ export const V2ThreadResumeResponse__Thread = Schema.Struct({
   }),
   recencyAt: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({
+      Schema.Finite.annotate({
         description: "Unix timestamp (in seconds) used for thread recency ordering.",
         format: "int64",
       }).check(Schema.isInt()),
@@ -31641,7 +31641,7 @@ export const V2ThreadResumeResponse__Thread = Schema.Struct({
     description:
       "Only populated on `thread/resume`, `thread/rollback`, `thread/fork`, and `thread/read` (when `includeTurns` is true) responses. For all other responses and notifications returning a Thread, the turns field will be an empty list.",
   }),
-  updatedAt: Schema.Number.annotate({
+  updatedAt: Schema.Finite.annotate({
     description: "Unix timestamp (in seconds) when the thread was last updated.",
     format: "int64",
   }).check(Schema.isInt()),
@@ -31705,7 +31705,7 @@ export const V2ThreadStartedNotification__Thread = Schema.Struct({
   cliVersion: Schema.String.annotate({
     description: "Version of the CLI that created the thread.",
   }),
-  createdAt: Schema.Number.annotate({
+  createdAt: Schema.Finite.annotate({
     description: "Unix timestamp (in seconds) when the thread was created.",
     format: "int64",
   }).check(Schema.isInt()),
@@ -31761,7 +31761,7 @@ export const V2ThreadStartedNotification__Thread = Schema.Struct({
   }),
   recencyAt: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({
+      Schema.Finite.annotate({
         description: "Unix timestamp (in seconds) used for thread recency ordering.",
         format: "int64",
       }).check(Schema.isInt()),
@@ -31810,7 +31810,7 @@ export const V2ThreadStartedNotification__Thread = Schema.Struct({
     description:
       "Only populated on `thread/resume`, `thread/rollback`, `thread/fork`, and `thread/read` (when `includeTurns` is true) responses. For all other responses and notifications returning a Thread, the turns field will be an empty list.",
   }),
-  updatedAt: Schema.Number.annotate({
+  updatedAt: Schema.Finite.annotate({
     description: "Unix timestamp (in seconds) when the thread was last updated.",
     format: "int64",
   }).check(Schema.isInt()),
@@ -31874,7 +31874,7 @@ export const V2ThreadStartResponse__Thread = Schema.Struct({
   cliVersion: Schema.String.annotate({
     description: "Version of the CLI that created the thread.",
   }),
-  createdAt: Schema.Number.annotate({
+  createdAt: Schema.Finite.annotate({
     description: "Unix timestamp (in seconds) when the thread was created.",
     format: "int64",
   }).check(Schema.isInt()),
@@ -31930,7 +31930,7 @@ export const V2ThreadStartResponse__Thread = Schema.Struct({
   }),
   recencyAt: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({
+      Schema.Finite.annotate({
         description: "Unix timestamp (in seconds) used for thread recency ordering.",
         format: "int64",
       }).check(Schema.isInt()),
@@ -31979,7 +31979,7 @@ export const V2ThreadStartResponse__Thread = Schema.Struct({
     description:
       "Only populated on `thread/resume`, `thread/rollback`, `thread/fork`, and `thread/read` (when `includeTurns` is true) responses. For all other responses and notifications returning a Thread, the turns field will be an empty list.",
   }),
-  updatedAt: Schema.Number.annotate({
+  updatedAt: Schema.Finite.annotate({
     description: "Unix timestamp (in seconds) when the thread was last updated.",
     format: "int64",
   }).check(Schema.isInt()),
@@ -32043,7 +32043,7 @@ export const V2ThreadUnarchiveResponse__Thread = Schema.Struct({
   cliVersion: Schema.String.annotate({
     description: "Version of the CLI that created the thread.",
   }),
-  createdAt: Schema.Number.annotate({
+  createdAt: Schema.Finite.annotate({
     description: "Unix timestamp (in seconds) when the thread was created.",
     format: "int64",
   }).check(Schema.isInt()),
@@ -32099,7 +32099,7 @@ export const V2ThreadUnarchiveResponse__Thread = Schema.Struct({
   }),
   recencyAt: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({
+      Schema.Finite.annotate({
         description: "Unix timestamp (in seconds) used for thread recency ordering.",
         format: "int64",
       }).check(Schema.isInt()),
@@ -32148,7 +32148,7 @@ export const V2ThreadUnarchiveResponse__Thread = Schema.Struct({
     description:
       "Only populated on `thread/resume`, `thread/rollback`, `thread/fork`, and `thread/read` (when `includeTurns` is true) responses. For all other responses and notifications returning a Thread, the turns field will be an empty list.",
   }),
-  updatedAt: Schema.Number.annotate({
+  updatedAt: Schema.Finite.annotate({
     description: "Unix timestamp (in seconds) when the thread was last updated.",
     format: "int64",
   }).check(Schema.isInt()),
@@ -32366,7 +32366,7 @@ export const ServerNotification__GuardianApprovalReviewAction = Schema.Union(
     }).annotate({ title: "ApplyPatchGuardianApprovalReviewAction" }),
     Schema.Struct({
       host: Schema.String,
-      port: Schema.Number.annotate({ format: "uint16" })
+      port: Schema.Finite.annotate({ format: "uint16" })
         .check(Schema.isInt())
         .check(Schema.isGreaterThanOrEqualTo(0)),
       protocol: ServerNotification__NetworkApprovalProtocol,
@@ -32412,7 +32412,7 @@ export const ServerRequest__PermissionsRequestApprovalParams = Schema.Struct({
   itemId: Schema.String,
   permissions: ServerRequest__RequestPermissionProfile,
   reason: Schema.optionalKey(Schema.Union([Schema.String, Schema.Null])),
-  startedAtMs: Schema.Number.annotate({
+  startedAtMs: Schema.Finite.annotate({
     description: "Unix timestamp (in milliseconds) when this approval request started.",
     format: "int64",
   }).check(Schema.isInt()),
@@ -32504,7 +32504,7 @@ export const V2ItemGuardianApprovalReviewCompletedNotification__GuardianApproval
       }).annotate({ title: "ApplyPatchGuardianApprovalReviewAction" }),
       Schema.Struct({
         host: Schema.String,
-        port: Schema.Number.annotate({ format: "uint16" })
+        port: Schema.Finite.annotate({ format: "uint16" })
           .check(Schema.isInt())
           .check(Schema.isGreaterThanOrEqualTo(0)),
         protocol: V2ItemGuardianApprovalReviewCompletedNotification__NetworkApprovalProtocol,
@@ -32602,7 +32602,7 @@ export const V2ItemGuardianApprovalReviewStartedNotification__GuardianApprovalRe
       }).annotate({ title: "ApplyPatchGuardianApprovalReviewAction" }),
       Schema.Struct({
         host: Schema.String,
-        port: Schema.Number.annotate({ format: "uint16" })
+        port: Schema.Finite.annotate({ format: "uint16" })
           .check(Schema.isInt())
           .check(Schema.isGreaterThanOrEqualTo(0)),
         protocol: V2ItemGuardianApprovalReviewStartedNotification__NetworkApprovalProtocol,
@@ -32645,14 +32645,14 @@ export type ServerNotification__ItemGuardianApprovalReviewCompletedNotification 
 };
 export const ServerNotification__ItemGuardianApprovalReviewCompletedNotification = Schema.Struct({
   action: ServerNotification__GuardianApprovalReviewAction,
-  completedAtMs: Schema.Number.annotate({
+  completedAtMs: Schema.Finite.annotate({
     description: "Unix timestamp (in milliseconds) when this review completed.",
     format: "int64",
   }).check(Schema.isInt()),
   decisionSource: ServerNotification__AutoReviewDecisionSource,
   review: ServerNotification__GuardianApprovalReview,
   reviewId: Schema.String.annotate({ description: "Stable identifier for this review." }),
-  startedAtMs: Schema.Number.annotate({
+  startedAtMs: Schema.Finite.annotate({
     description: "Unix timestamp (in milliseconds) when this review started.",
     format: "int64",
   }).check(Schema.isInt()),
@@ -32685,7 +32685,7 @@ export const ServerNotification__ItemGuardianApprovalReviewStartedNotification =
   action: ServerNotification__GuardianApprovalReviewAction,
   review: ServerNotification__GuardianApprovalReview,
   reviewId: Schema.String.annotate({ description: "Stable identifier for this review." }),
-  startedAtMs: Schema.Number.annotate({
+  startedAtMs: Schema.Finite.annotate({
     description: "Unix timestamp (in milliseconds) when this review started.",
     format: "int64",
   }).check(Schema.isInt()),
@@ -33905,10 +33905,10 @@ export const ClientRequest__AdditionalContextEntry = Schema.Struct({
 
 export type ClientRequest__ByteRange = { readonly end: number; readonly start: number };
 export const ClientRequest__ByteRange = Schema.Struct({
-  end: Schema.Number.annotate({ format: "uint" })
+  end: Schema.Finite.annotate({ format: "uint" })
     .check(Schema.isInt())
     .check(Schema.isGreaterThanOrEqualTo(0)),
-  start: Schema.Number.annotate({ format: "uint" })
+  start: Schema.Finite.annotate({ format: "uint" })
     .check(Schema.isInt())
     .check(Schema.isGreaterThanOrEqualTo(0)),
 });
@@ -34005,13 +34005,13 @@ export const ClientRequest__NetworkAccess = Schema.Literals(["restricted", "enab
 
 export type ClientRequest__ProcessTerminalSize = { readonly cols: number; readonly rows: number };
 export const ClientRequest__ProcessTerminalSize = Schema.Struct({
-  cols: Schema.Number.annotate({
+  cols: Schema.Finite.annotate({
     description: "Terminal width in character cells.",
     format: "uint16",
   })
     .check(Schema.isInt())
     .check(Schema.isGreaterThanOrEqualTo(0)),
-  rows: Schema.Number.annotate({
+  rows: Schema.Finite.annotate({
     description: "Terminal height in character cells.",
     format: "uint16",
   })
@@ -34425,15 +34425,15 @@ export type ClientRequest__ThreadRealtimeAudioChunk = {
 export const ClientRequest__ThreadRealtimeAudioChunk = Schema.Struct({
   data: Schema.String,
   itemId: Schema.optionalKey(Schema.Union([Schema.String, Schema.Null])),
-  numChannels: Schema.Number.annotate({ format: "uint16" })
+  numChannels: Schema.Finite.annotate({ format: "uint16" })
     .check(Schema.isInt())
     .check(Schema.isGreaterThanOrEqualTo(0)),
-  sampleRate: Schema.Number.annotate({ format: "uint32" })
+  sampleRate: Schema.Finite.annotate({ format: "uint32" })
     .check(Schema.isInt())
     .check(Schema.isGreaterThanOrEqualTo(0)),
   samplesPerChannel: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({ format: "uint32" })
+      Schema.Finite.annotate({ format: "uint32" })
         .check(Schema.isInt())
         .check(Schema.isGreaterThanOrEqualTo(0)),
       Schema.Null,
@@ -34486,7 +34486,7 @@ export const ClientRequest__ThreadResumeInitialTurnsPageParams = Schema.Struct({
   ),
   limit: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({ description: "Optional turn page size.", format: "uint32" })
+      Schema.Finite.annotate({ description: "Optional turn page size.", format: "uint32" })
         .check(Schema.isInt())
         .check(Schema.isGreaterThanOrEqualTo(0)),
       Schema.Null,
@@ -34601,7 +34601,7 @@ export const CommandExecutionRequestApprovalParams = Schema.Struct({
       Schema.Null,
     ]),
   ),
-  startedAtMs: Schema.Number.annotate({
+  startedAtMs: Schema.Finite.annotate({
     description: "Unix timestamp (in milliseconds) when this approval request started.",
     format: "int64",
   }).check(Schema.isInt()),
@@ -34771,7 +34771,7 @@ export const FileChangeRequestApprovalParams = Schema.Struct({
       Schema.Null,
     ]),
   ),
-  startedAtMs: Schema.Number.annotate({
+  startedAtMs: Schema.Finite.annotate({
     description: "Unix timestamp (in milliseconds) when this approval request started.",
     format: "int64",
   }).check(Schema.isInt()),
@@ -34882,7 +34882,7 @@ export type JSONRPCErrorError = {
   readonly message: string;
 };
 export const JSONRPCErrorError = Schema.Struct({
-  code: Schema.Number.annotate({ format: "int64" }).check(Schema.isInt()),
+  code: Schema.Finite.annotate({ format: "int64" }).check(Schema.isInt()),
   data: Schema.optionalKey(Schema.Unknown),
   message: Schema.String,
 }).annotate({ title: "JSONRPCErrorError" });
@@ -35061,7 +35061,7 @@ export const PermissionsRequestApprovalParams = Schema.Struct({
   itemId: Schema.String,
   permissions: PermissionsRequestApprovalParams__RequestPermissionProfile,
   reason: Schema.optionalKey(Schema.Union([Schema.String, Schema.Null])),
-  startedAtMs: Schema.Number.annotate({
+  startedAtMs: Schema.Finite.annotate({
     description: "Unix timestamp (in milliseconds) when this approval request started.",
     format: "int64",
   }).check(Schema.isInt()),
@@ -35097,7 +35097,7 @@ export const PermissionsRequestApprovalResponse__PermissionGrantScope = Schema.L
 export type RequestId = string | number;
 export const RequestId = Schema.Union([
   Schema.String,
-  Schema.Number.annotate({ format: "int64" }).check(Schema.isInt()),
+  Schema.Finite.annotate({ format: "int64" }).check(Schema.isInt()),
 ]).annotate({ title: "RequestId" });
 
 export type ServerNotification =
@@ -35457,7 +35457,7 @@ export const ServerNotification = Schema.Union(
       method: Schema.Literal("error").annotate({ title: "ErrorNotificationMethod" }),
       params: ServerNotification__ErrorNotification,
       emittedAtMs: Schema.optionalKey(
-        Schema.Number.annotate({
+        Schema.Finite.annotate({
           description:
             "Unix timestamp (in milliseconds) when app-server emitted this notification.",
           format: "int64",
@@ -35473,7 +35473,7 @@ export const ServerNotification = Schema.Union(
       }),
       params: ServerNotification__ThreadStartedNotification,
       emittedAtMs: Schema.optionalKey(
-        Schema.Number.annotate({
+        Schema.Finite.annotate({
           description:
             "Unix timestamp (in milliseconds) when app-server emitted this notification.",
           format: "int64",
@@ -35489,7 +35489,7 @@ export const ServerNotification = Schema.Union(
       }),
       params: ServerNotification__ThreadStatusChangedNotification,
       emittedAtMs: Schema.optionalKey(
-        Schema.Number.annotate({
+        Schema.Finite.annotate({
           description:
             "Unix timestamp (in milliseconds) when app-server emitted this notification.",
           format: "int64",
@@ -35505,7 +35505,7 @@ export const ServerNotification = Schema.Union(
       }),
       params: ServerNotification__ThreadArchivedNotification,
       emittedAtMs: Schema.optionalKey(
-        Schema.Number.annotate({
+        Schema.Finite.annotate({
           description:
             "Unix timestamp (in milliseconds) when app-server emitted this notification.",
           format: "int64",
@@ -35521,7 +35521,7 @@ export const ServerNotification = Schema.Union(
       }),
       params: ServerNotification__ThreadDeletedNotification,
       emittedAtMs: Schema.optionalKey(
-        Schema.Number.annotate({
+        Schema.Finite.annotate({
           description:
             "Unix timestamp (in milliseconds) when app-server emitted this notification.",
           format: "int64",
@@ -35537,7 +35537,7 @@ export const ServerNotification = Schema.Union(
       }),
       params: ServerNotification__ThreadUnarchivedNotification,
       emittedAtMs: Schema.optionalKey(
-        Schema.Number.annotate({
+        Schema.Finite.annotate({
           description:
             "Unix timestamp (in milliseconds) when app-server emitted this notification.",
           format: "int64",
@@ -35553,7 +35553,7 @@ export const ServerNotification = Schema.Union(
       }),
       params: ServerNotification__ThreadClosedNotification,
       emittedAtMs: Schema.optionalKey(
-        Schema.Number.annotate({
+        Schema.Finite.annotate({
           description:
             "Unix timestamp (in milliseconds) when app-server emitted this notification.",
           format: "int64",
@@ -35569,7 +35569,7 @@ export const ServerNotification = Schema.Union(
       }),
       params: ServerNotification__SkillsChangedNotification,
       emittedAtMs: Schema.optionalKey(
-        Schema.Number.annotate({
+        Schema.Finite.annotate({
           description:
             "Unix timestamp (in milliseconds) when app-server emitted this notification.",
           format: "int64",
@@ -35585,7 +35585,7 @@ export const ServerNotification = Schema.Union(
       }),
       params: ServerNotification__ThreadNameUpdatedNotification,
       emittedAtMs: Schema.optionalKey(
-        Schema.Number.annotate({
+        Schema.Finite.annotate({
           description:
             "Unix timestamp (in milliseconds) when app-server emitted this notification.",
           format: "int64",
@@ -35601,7 +35601,7 @@ export const ServerNotification = Schema.Union(
       }),
       params: ServerNotification__ThreadGoalUpdatedNotification,
       emittedAtMs: Schema.optionalKey(
-        Schema.Number.annotate({
+        Schema.Finite.annotate({
           description:
             "Unix timestamp (in milliseconds) when app-server emitted this notification.",
           format: "int64",
@@ -35617,7 +35617,7 @@ export const ServerNotification = Schema.Union(
       }),
       params: ServerNotification__ThreadGoalClearedNotification,
       emittedAtMs: Schema.optionalKey(
-        Schema.Number.annotate({
+        Schema.Finite.annotate({
           description:
             "Unix timestamp (in milliseconds) when app-server emitted this notification.",
           format: "int64",
@@ -35633,7 +35633,7 @@ export const ServerNotification = Schema.Union(
       }),
       params: ServerNotification__EnvironmentConnectionNotification,
       emittedAtMs: Schema.optionalKey(
-        Schema.Number.annotate({
+        Schema.Finite.annotate({
           description:
             "Unix timestamp (in milliseconds) when app-server emitted this notification.",
           format: "int64",
@@ -35649,7 +35649,7 @@ export const ServerNotification = Schema.Union(
       }),
       params: ServerNotification__EnvironmentConnectionNotification,
       emittedAtMs: Schema.optionalKey(
-        Schema.Number.annotate({
+        Schema.Finite.annotate({
           description:
             "Unix timestamp (in milliseconds) when app-server emitted this notification.",
           format: "int64",
@@ -35665,7 +35665,7 @@ export const ServerNotification = Schema.Union(
       }),
       params: ServerNotification__ThreadSettingsUpdatedNotification,
       emittedAtMs: Schema.optionalKey(
-        Schema.Number.annotate({
+        Schema.Finite.annotate({
           description:
             "Unix timestamp (in milliseconds) when app-server emitted this notification.",
           format: "int64",
@@ -35681,7 +35681,7 @@ export const ServerNotification = Schema.Union(
       }),
       params: ServerNotification__ThreadTokenUsageUpdatedNotification,
       emittedAtMs: Schema.optionalKey(
-        Schema.Number.annotate({
+        Schema.Finite.annotate({
           description:
             "Unix timestamp (in milliseconds) when app-server emitted this notification.",
           format: "int64",
@@ -35695,7 +35695,7 @@ export const ServerNotification = Schema.Union(
       method: Schema.Literal("turn/started").annotate({ title: "Turn/startedNotificationMethod" }),
       params: ServerNotification__TurnStartedNotification,
       emittedAtMs: Schema.optionalKey(
-        Schema.Number.annotate({
+        Schema.Finite.annotate({
           description:
             "Unix timestamp (in milliseconds) when app-server emitted this notification.",
           format: "int64",
@@ -35709,7 +35709,7 @@ export const ServerNotification = Schema.Union(
       method: Schema.Literal("hook/started").annotate({ title: "Hook/startedNotificationMethod" }),
       params: ServerNotification__HookStartedNotification,
       emittedAtMs: Schema.optionalKey(
-        Schema.Number.annotate({
+        Schema.Finite.annotate({
           description:
             "Unix timestamp (in milliseconds) when app-server emitted this notification.",
           format: "int64",
@@ -35725,7 +35725,7 @@ export const ServerNotification = Schema.Union(
       }),
       params: ServerNotification__TurnCompletedNotification,
       emittedAtMs: Schema.optionalKey(
-        Schema.Number.annotate({
+        Schema.Finite.annotate({
           description:
             "Unix timestamp (in milliseconds) when app-server emitted this notification.",
           format: "int64",
@@ -35741,7 +35741,7 @@ export const ServerNotification = Schema.Union(
       }),
       params: ServerNotification__HookCompletedNotification,
       emittedAtMs: Schema.optionalKey(
-        Schema.Number.annotate({
+        Schema.Finite.annotate({
           description:
             "Unix timestamp (in milliseconds) when app-server emitted this notification.",
           format: "int64",
@@ -35757,7 +35757,7 @@ export const ServerNotification = Schema.Union(
       }),
       params: ServerNotification__TurnDiffUpdatedNotification,
       emittedAtMs: Schema.optionalKey(
-        Schema.Number.annotate({
+        Schema.Finite.annotate({
           description:
             "Unix timestamp (in milliseconds) when app-server emitted this notification.",
           format: "int64",
@@ -35773,7 +35773,7 @@ export const ServerNotification = Schema.Union(
       }),
       params: ServerNotification__TurnPlanUpdatedNotification,
       emittedAtMs: Schema.optionalKey(
-        Schema.Number.annotate({
+        Schema.Finite.annotate({
           description:
             "Unix timestamp (in milliseconds) when app-server emitted this notification.",
           format: "int64",
@@ -35787,7 +35787,7 @@ export const ServerNotification = Schema.Union(
       method: Schema.Literal("item/started").annotate({ title: "Item/startedNotificationMethod" }),
       params: ServerNotification__ItemStartedNotification,
       emittedAtMs: Schema.optionalKey(
-        Schema.Number.annotate({
+        Schema.Finite.annotate({
           description:
             "Unix timestamp (in milliseconds) when app-server emitted this notification.",
           format: "int64",
@@ -35803,7 +35803,7 @@ export const ServerNotification = Schema.Union(
       }),
       params: ServerNotification__ItemGuardianApprovalReviewStartedNotification,
       emittedAtMs: Schema.optionalKey(
-        Schema.Number.annotate({
+        Schema.Finite.annotate({
           description:
             "Unix timestamp (in milliseconds) when app-server emitted this notification.",
           format: "int64",
@@ -35819,7 +35819,7 @@ export const ServerNotification = Schema.Union(
       }),
       params: ServerNotification__ItemGuardianApprovalReviewCompletedNotification,
       emittedAtMs: Schema.optionalKey(
-        Schema.Number.annotate({
+        Schema.Finite.annotate({
           description:
             "Unix timestamp (in milliseconds) when app-server emitted this notification.",
           format: "int64",
@@ -35835,7 +35835,7 @@ export const ServerNotification = Schema.Union(
       }),
       params: ServerNotification__ItemCompletedNotification,
       emittedAtMs: Schema.optionalKey(
-        Schema.Number.annotate({
+        Schema.Finite.annotate({
           description:
             "Unix timestamp (in milliseconds) when app-server emitted this notification.",
           format: "int64",
@@ -35851,7 +35851,7 @@ export const ServerNotification = Schema.Union(
       }),
       params: ServerNotification__AgentMessageDeltaNotification,
       emittedAtMs: Schema.optionalKey(
-        Schema.Number.annotate({
+        Schema.Finite.annotate({
           description:
             "Unix timestamp (in milliseconds) when app-server emitted this notification.",
           format: "int64",
@@ -35867,7 +35867,7 @@ export const ServerNotification = Schema.Union(
       }),
       params: ServerNotification__PlanDeltaNotification,
       emittedAtMs: Schema.optionalKey(
-        Schema.Number.annotate({
+        Schema.Finite.annotate({
           description:
             "Unix timestamp (in milliseconds) when app-server emitted this notification.",
           format: "int64",
@@ -35883,7 +35883,7 @@ export const ServerNotification = Schema.Union(
       }),
       params: ServerNotification__CommandExecOutputDeltaNotification,
       emittedAtMs: Schema.optionalKey(
-        Schema.Number.annotate({
+        Schema.Finite.annotate({
           description:
             "Unix timestamp (in milliseconds) when app-server emitted this notification.",
           format: "int64",
@@ -35899,7 +35899,7 @@ export const ServerNotification = Schema.Union(
       }),
       params: ServerNotification__ProcessOutputDeltaNotification,
       emittedAtMs: Schema.optionalKey(
-        Schema.Number.annotate({
+        Schema.Finite.annotate({
           description:
             "Unix timestamp (in milliseconds) when app-server emitted this notification.",
           format: "int64",
@@ -35915,7 +35915,7 @@ export const ServerNotification = Schema.Union(
       }),
       params: ServerNotification__ProcessExitedNotification,
       emittedAtMs: Schema.optionalKey(
-        Schema.Number.annotate({
+        Schema.Finite.annotate({
           description:
             "Unix timestamp (in milliseconds) when app-server emitted this notification.",
           format: "int64",
@@ -35931,7 +35931,7 @@ export const ServerNotification = Schema.Union(
       }),
       params: ServerNotification__CommandExecutionOutputDeltaNotification,
       emittedAtMs: Schema.optionalKey(
-        Schema.Number.annotate({
+        Schema.Finite.annotate({
           description:
             "Unix timestamp (in milliseconds) when app-server emitted this notification.",
           format: "int64",
@@ -35947,7 +35947,7 @@ export const ServerNotification = Schema.Union(
       }),
       params: ServerNotification__TerminalInteractionNotification,
       emittedAtMs: Schema.optionalKey(
-        Schema.Number.annotate({
+        Schema.Finite.annotate({
           description:
             "Unix timestamp (in milliseconds) when app-server emitted this notification.",
           format: "int64",
@@ -35963,7 +35963,7 @@ export const ServerNotification = Schema.Union(
       }),
       params: ServerNotification__FileChangeOutputDeltaNotification,
       emittedAtMs: Schema.optionalKey(
-        Schema.Number.annotate({
+        Schema.Finite.annotate({
           description:
             "Unix timestamp (in milliseconds) when app-server emitted this notification.",
           format: "int64",
@@ -35979,7 +35979,7 @@ export const ServerNotification = Schema.Union(
       }),
       params: ServerNotification__FileChangePatchUpdatedNotification,
       emittedAtMs: Schema.optionalKey(
-        Schema.Number.annotate({
+        Schema.Finite.annotate({
           description:
             "Unix timestamp (in milliseconds) when app-server emitted this notification.",
           format: "int64",
@@ -35995,7 +35995,7 @@ export const ServerNotification = Schema.Union(
       }),
       params: ServerNotification__ServerRequestResolvedNotification,
       emittedAtMs: Schema.optionalKey(
-        Schema.Number.annotate({
+        Schema.Finite.annotate({
           description:
             "Unix timestamp (in milliseconds) when app-server emitted this notification.",
           format: "int64",
@@ -36011,7 +36011,7 @@ export const ServerNotification = Schema.Union(
       }),
       params: ServerNotification__McpToolCallProgressNotification,
       emittedAtMs: Schema.optionalKey(
-        Schema.Number.annotate({
+        Schema.Finite.annotate({
           description:
             "Unix timestamp (in milliseconds) when app-server emitted this notification.",
           format: "int64",
@@ -36027,7 +36027,7 @@ export const ServerNotification = Schema.Union(
       }),
       params: ServerNotification__McpServerOauthLoginCompletedNotification,
       emittedAtMs: Schema.optionalKey(
-        Schema.Number.annotate({
+        Schema.Finite.annotate({
           description:
             "Unix timestamp (in milliseconds) when app-server emitted this notification.",
           format: "int64",
@@ -36043,7 +36043,7 @@ export const ServerNotification = Schema.Union(
       }),
       params: ServerNotification__McpServerStatusUpdatedNotification,
       emittedAtMs: Schema.optionalKey(
-        Schema.Number.annotate({
+        Schema.Finite.annotate({
           description:
             "Unix timestamp (in milliseconds) when app-server emitted this notification.",
           format: "int64",
@@ -36059,7 +36059,7 @@ export const ServerNotification = Schema.Union(
       }),
       params: ServerNotification__AccountUpdatedNotification,
       emittedAtMs: Schema.optionalKey(
-        Schema.Number.annotate({
+        Schema.Finite.annotate({
           description:
             "Unix timestamp (in milliseconds) when app-server emitted this notification.",
           format: "int64",
@@ -36075,7 +36075,7 @@ export const ServerNotification = Schema.Union(
       }),
       params: ServerNotification__AccountRateLimitsUpdatedNotification,
       emittedAtMs: Schema.optionalKey(
-        Schema.Number.annotate({
+        Schema.Finite.annotate({
           description:
             "Unix timestamp (in milliseconds) when app-server emitted this notification.",
           format: "int64",
@@ -36091,7 +36091,7 @@ export const ServerNotification = Schema.Union(
       }),
       params: ServerNotification__AppListUpdatedNotification,
       emittedAtMs: Schema.optionalKey(
-        Schema.Number.annotate({
+        Schema.Finite.annotate({
           description:
             "Unix timestamp (in milliseconds) when app-server emitted this notification.",
           format: "int64",
@@ -36107,7 +36107,7 @@ export const ServerNotification = Schema.Union(
       }),
       params: ServerNotification__RemoteControlStatusChangedNotification,
       emittedAtMs: Schema.optionalKey(
-        Schema.Number.annotate({
+        Schema.Finite.annotate({
           description:
             "Unix timestamp (in milliseconds) when app-server emitted this notification.",
           format: "int64",
@@ -36123,7 +36123,7 @@ export const ServerNotification = Schema.Union(
       }),
       params: ServerNotification__ExternalAgentConfigImportProgressNotification,
       emittedAtMs: Schema.optionalKey(
-        Schema.Number.annotate({
+        Schema.Finite.annotate({
           description:
             "Unix timestamp (in milliseconds) when app-server emitted this notification.",
           format: "int64",
@@ -36139,7 +36139,7 @@ export const ServerNotification = Schema.Union(
       }),
       params: ServerNotification__ExternalAgentConfigImportCompletedNotification,
       emittedAtMs: Schema.optionalKey(
-        Schema.Number.annotate({
+        Schema.Finite.annotate({
           description:
             "Unix timestamp (in milliseconds) when app-server emitted this notification.",
           format: "int64",
@@ -36153,7 +36153,7 @@ export const ServerNotification = Schema.Union(
       method: Schema.Literal("fs/changed").annotate({ title: "Fs/changedNotificationMethod" }),
       params: ServerNotification__FsChangedNotification,
       emittedAtMs: Schema.optionalKey(
-        Schema.Number.annotate({
+        Schema.Finite.annotate({
           description:
             "Unix timestamp (in milliseconds) when app-server emitted this notification.",
           format: "int64",
@@ -36169,7 +36169,7 @@ export const ServerNotification = Schema.Union(
       }),
       params: ServerNotification__ReasoningSummaryTextDeltaNotification,
       emittedAtMs: Schema.optionalKey(
-        Schema.Number.annotate({
+        Schema.Finite.annotate({
           description:
             "Unix timestamp (in milliseconds) when app-server emitted this notification.",
           format: "int64",
@@ -36185,7 +36185,7 @@ export const ServerNotification = Schema.Union(
       }),
       params: ServerNotification__ReasoningSummaryPartAddedNotification,
       emittedAtMs: Schema.optionalKey(
-        Schema.Number.annotate({
+        Schema.Finite.annotate({
           description:
             "Unix timestamp (in milliseconds) when app-server emitted this notification.",
           format: "int64",
@@ -36201,7 +36201,7 @@ export const ServerNotification = Schema.Union(
       }),
       params: ServerNotification__ReasoningTextDeltaNotification,
       emittedAtMs: Schema.optionalKey(
-        Schema.Number.annotate({
+        Schema.Finite.annotate({
           description:
             "Unix timestamp (in milliseconds) when app-server emitted this notification.",
           format: "int64",
@@ -36217,7 +36217,7 @@ export const ServerNotification = Schema.Union(
       }),
       params: ServerNotification__ContextCompactedNotification,
       emittedAtMs: Schema.optionalKey(
-        Schema.Number.annotate({
+        Schema.Finite.annotate({
           description:
             "Unix timestamp (in milliseconds) when app-server emitted this notification.",
           format: "int64",
@@ -36233,7 +36233,7 @@ export const ServerNotification = Schema.Union(
       }),
       params: ServerNotification__ModelReroutedNotification,
       emittedAtMs: Schema.optionalKey(
-        Schema.Number.annotate({
+        Schema.Finite.annotate({
           description:
             "Unix timestamp (in milliseconds) when app-server emitted this notification.",
           format: "int64",
@@ -36249,7 +36249,7 @@ export const ServerNotification = Schema.Union(
       }),
       params: ServerNotification__ModelVerificationNotification,
       emittedAtMs: Schema.optionalKey(
-        Schema.Number.annotate({
+        Schema.Finite.annotate({
           description:
             "Unix timestamp (in milliseconds) when app-server emitted this notification.",
           format: "int64",
@@ -36265,7 +36265,7 @@ export const ServerNotification = Schema.Union(
       }),
       params: ServerNotification__TurnModerationMetadataNotification,
       emittedAtMs: Schema.optionalKey(
-        Schema.Number.annotate({
+        Schema.Finite.annotate({
           description:
             "Unix timestamp (in milliseconds) when app-server emitted this notification.",
           format: "int64",
@@ -36281,7 +36281,7 @@ export const ServerNotification = Schema.Union(
       }),
       params: ServerNotification__ModelSafetyBufferingUpdatedNotification,
       emittedAtMs: Schema.optionalKey(
-        Schema.Number.annotate({
+        Schema.Finite.annotate({
           description:
             "Unix timestamp (in milliseconds) when app-server emitted this notification.",
           format: "int64",
@@ -36295,7 +36295,7 @@ export const ServerNotification = Schema.Union(
       method: Schema.Literal("warning").annotate({ title: "WarningNotificationMethod" }),
       params: ServerNotification__WarningNotification,
       emittedAtMs: Schema.optionalKey(
-        Schema.Number.annotate({
+        Schema.Finite.annotate({
           description:
             "Unix timestamp (in milliseconds) when app-server emitted this notification.",
           format: "int64",
@@ -36311,7 +36311,7 @@ export const ServerNotification = Schema.Union(
       }),
       params: ServerNotification__GuardianWarningNotification,
       emittedAtMs: Schema.optionalKey(
-        Schema.Number.annotate({
+        Schema.Finite.annotate({
           description:
             "Unix timestamp (in milliseconds) when app-server emitted this notification.",
           format: "int64",
@@ -36327,7 +36327,7 @@ export const ServerNotification = Schema.Union(
       }),
       params: ServerNotification__DeprecationNoticeNotification,
       emittedAtMs: Schema.optionalKey(
-        Schema.Number.annotate({
+        Schema.Finite.annotate({
           description:
             "Unix timestamp (in milliseconds) when app-server emitted this notification.",
           format: "int64",
@@ -36343,7 +36343,7 @@ export const ServerNotification = Schema.Union(
       }),
       params: ServerNotification__ConfigWarningNotification,
       emittedAtMs: Schema.optionalKey(
-        Schema.Number.annotate({
+        Schema.Finite.annotate({
           description:
             "Unix timestamp (in milliseconds) when app-server emitted this notification.",
           format: "int64",
@@ -36359,7 +36359,7 @@ export const ServerNotification = Schema.Union(
       }),
       params: ServerNotification__FuzzyFileSearchSessionUpdatedNotification,
       emittedAtMs: Schema.optionalKey(
-        Schema.Number.annotate({
+        Schema.Finite.annotate({
           description:
             "Unix timestamp (in milliseconds) when app-server emitted this notification.",
           format: "int64",
@@ -36375,7 +36375,7 @@ export const ServerNotification = Schema.Union(
       }),
       params: ServerNotification__FuzzyFileSearchSessionCompletedNotification,
       emittedAtMs: Schema.optionalKey(
-        Schema.Number.annotate({
+        Schema.Finite.annotate({
           description:
             "Unix timestamp (in milliseconds) when app-server emitted this notification.",
           format: "int64",
@@ -36391,7 +36391,7 @@ export const ServerNotification = Schema.Union(
       }),
       params: ServerNotification__ThreadRealtimeStartedNotification,
       emittedAtMs: Schema.optionalKey(
-        Schema.Number.annotate({
+        Schema.Finite.annotate({
           description:
             "Unix timestamp (in milliseconds) when app-server emitted this notification.",
           format: "int64",
@@ -36407,7 +36407,7 @@ export const ServerNotification = Schema.Union(
       }),
       params: ServerNotification__ThreadRealtimeItemAddedNotification,
       emittedAtMs: Schema.optionalKey(
-        Schema.Number.annotate({
+        Schema.Finite.annotate({
           description:
             "Unix timestamp (in milliseconds) when app-server emitted this notification.",
           format: "int64",
@@ -36423,7 +36423,7 @@ export const ServerNotification = Schema.Union(
       }),
       params: ServerNotification__ThreadRealtimeTranscriptDeltaNotification,
       emittedAtMs: Schema.optionalKey(
-        Schema.Number.annotate({
+        Schema.Finite.annotate({
           description:
             "Unix timestamp (in milliseconds) when app-server emitted this notification.",
           format: "int64",
@@ -36439,7 +36439,7 @@ export const ServerNotification = Schema.Union(
       }),
       params: ServerNotification__ThreadRealtimeTranscriptDoneNotification,
       emittedAtMs: Schema.optionalKey(
-        Schema.Number.annotate({
+        Schema.Finite.annotate({
           description:
             "Unix timestamp (in milliseconds) when app-server emitted this notification.",
           format: "int64",
@@ -36455,7 +36455,7 @@ export const ServerNotification = Schema.Union(
       }),
       params: ServerNotification__ThreadRealtimeOutputAudioDeltaNotification,
       emittedAtMs: Schema.optionalKey(
-        Schema.Number.annotate({
+        Schema.Finite.annotate({
           description:
             "Unix timestamp (in milliseconds) when app-server emitted this notification.",
           format: "int64",
@@ -36471,7 +36471,7 @@ export const ServerNotification = Schema.Union(
       }),
       params: ServerNotification__ThreadRealtimeSdpNotification,
       emittedAtMs: Schema.optionalKey(
-        Schema.Number.annotate({
+        Schema.Finite.annotate({
           description:
             "Unix timestamp (in milliseconds) when app-server emitted this notification.",
           format: "int64",
@@ -36487,7 +36487,7 @@ export const ServerNotification = Schema.Union(
       }),
       params: ServerNotification__ThreadRealtimeErrorNotification,
       emittedAtMs: Schema.optionalKey(
-        Schema.Number.annotate({
+        Schema.Finite.annotate({
           description:
             "Unix timestamp (in milliseconds) when app-server emitted this notification.",
           format: "int64",
@@ -36503,7 +36503,7 @@ export const ServerNotification = Schema.Union(
       }),
       params: ServerNotification__ThreadRealtimeClosedNotification,
       emittedAtMs: Schema.optionalKey(
-        Schema.Number.annotate({
+        Schema.Finite.annotate({
           description:
             "Unix timestamp (in milliseconds) when app-server emitted this notification.",
           format: "int64",
@@ -36519,7 +36519,7 @@ export const ServerNotification = Schema.Union(
       }),
       params: ServerNotification__WindowsWorldWritableWarningNotification,
       emittedAtMs: Schema.optionalKey(
-        Schema.Number.annotate({
+        Schema.Finite.annotate({
           description:
             "Unix timestamp (in milliseconds) when app-server emitted this notification.",
           format: "int64",
@@ -36535,7 +36535,7 @@ export const ServerNotification = Schema.Union(
       }),
       params: ServerNotification__WindowsSandboxSetupCompletedNotification,
       emittedAtMs: Schema.optionalKey(
-        Schema.Number.annotate({
+        Schema.Finite.annotate({
           description:
             "Unix timestamp (in milliseconds) when app-server emitted this notification.",
           format: "int64",
@@ -36551,7 +36551,7 @@ export const ServerNotification = Schema.Union(
       }),
       params: ServerNotification__AccountLoginCompletedNotification,
       emittedAtMs: Schema.optionalKey(
-        Schema.Number.annotate({
+        Schema.Finite.annotate({
           description:
             "Unix timestamp (in milliseconds) when app-server emitted this notification.",
           format: "int64",
@@ -36567,10 +36567,10 @@ export const ServerNotification = Schema.Union(
 
 export type ServerNotification__ByteRange = { readonly end: number; readonly start: number };
 export const ServerNotification__ByteRange = Schema.Struct({
-  end: Schema.Number.annotate({ format: "uint" })
+  end: Schema.Finite.annotate({ format: "uint" })
     .check(Schema.isInt())
     .check(Schema.isGreaterThanOrEqualTo(0)),
-  start: Schema.Number.annotate({ format: "uint" })
+  start: Schema.Finite.annotate({ format: "uint" })
     .check(Schema.isInt())
     .check(Schema.isGreaterThanOrEqualTo(0)),
 });
@@ -36940,7 +36940,7 @@ export type ToolRequestUserInputParams = {
 export const ToolRequestUserInputParams = Schema.Struct({
   autoResolutionMs: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({ format: "uint64" })
+      Schema.Finite.annotate({ format: "uint64" })
         .check(Schema.isInt())
         .check(Schema.isGreaterThanOrEqualTo(0)),
       Schema.Null,
@@ -37116,7 +37116,7 @@ export const V2AppsListParams = Schema.Struct({
   ),
   limit: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({
+      Schema.Finite.annotate({
         description: "Optional page size; defaults to a reasonable server-side value.",
         format: "uint32",
       })
@@ -37278,7 +37278,7 @@ export const V2CommandExecParams = Schema.Struct({
   ),
   outputBytesCap: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({
+      Schema.Finite.annotate({
         description:
           "Optional per-stream stdout/stderr capture cap in bytes.\n\nWhen omitted, the server default applies. Cannot be combined with `disableOutputCap`.",
         format: "uint",
@@ -37322,7 +37322,7 @@ export const V2CommandExecParams = Schema.Struct({
   ),
   timeoutMs: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({
+      Schema.Finite.annotate({
         description:
           "Optional timeout in milliseconds.\n\nWhen omitted, the server default applies. Cannot be combined with `disableTimeout`.",
         format: "int64",
@@ -37354,13 +37354,13 @@ export const V2CommandExecResizeParams = Schema.Struct({
       "Client-supplied, connection-scoped `processId` from the original `command/exec` request.",
   }),
   size: Schema.Struct({
-    cols: Schema.Number.annotate({
+    cols: Schema.Finite.annotate({
       description: "Terminal width in character cells.",
       format: "uint16",
     })
       .check(Schema.isInt())
       .check(Schema.isGreaterThanOrEqualTo(0)),
-    rows: Schema.Number.annotate({
+    rows: Schema.Finite.annotate({
       description: "Terminal height in character cells.",
       format: "uint16",
     })
@@ -37377,13 +37377,13 @@ export type V2CommandExecResizeParams__CommandExecTerminalSize = {
   readonly rows: number;
 };
 export const V2CommandExecResizeParams__CommandExecTerminalSize = Schema.Struct({
-  cols: Schema.Number.annotate({
+  cols: Schema.Finite.annotate({
     description: "Terminal width in character cells.",
     format: "uint16",
   })
     .check(Schema.isInt())
     .check(Schema.isGreaterThanOrEqualTo(0)),
-  rows: Schema.Number.annotate({
+  rows: Schema.Finite.annotate({
     description: "Terminal height in character cells.",
     format: "uint16",
   })
@@ -37403,7 +37403,7 @@ export type V2CommandExecResponse = {
   readonly stdout: string;
 };
 export const V2CommandExecResponse = Schema.Struct({
-  exitCode: Schema.Number.annotate({ description: "Process exit code.", format: "int32" }).check(
+  exitCode: Schema.Finite.annotate({ description: "Process exit code.", format: "int32" }).check(
     Schema.isInt(),
   ),
   stderr: Schema.String.annotate({
@@ -37697,7 +37697,7 @@ export const V2ConfigRequirementsReadResponse__NetworkRequirements = Schema.Stru
   enabled: Schema.optionalKey(Schema.Union([Schema.Boolean, Schema.Null])),
   httpPort: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({ format: "uint16" })
+      Schema.Finite.annotate({ format: "uint16" })
         .check(Schema.isInt())
         .check(Schema.isGreaterThanOrEqualTo(0)),
       Schema.Null,
@@ -37714,7 +37714,7 @@ export const V2ConfigRequirementsReadResponse__NetworkRequirements = Schema.Stru
   ),
   socksPort: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({ format: "uint16" })
+      Schema.Finite.annotate({ format: "uint16" })
         .check(Schema.isInt())
         .check(Schema.isGreaterThanOrEqualTo(0)),
       Schema.Null,
@@ -37912,7 +37912,7 @@ export const V2ExperimentalFeatureListParams = Schema.Struct({
   ),
   limit: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({
+      Schema.Finite.annotate({
         description: "Optional page size; defaults to a reasonable server-side value.",
         format: "uint32",
       })
@@ -38241,7 +38241,7 @@ export type V2FsGetMetadataResponse = {
   readonly modifiedAtMs: number;
 };
 export const V2FsGetMetadataResponse = Schema.Struct({
-  createdAtMs: Schema.Number.annotate({
+  createdAtMs: Schema.Finite.annotate({
     description: "File creation time in Unix milliseconds when available, otherwise `0`.",
     format: "int64",
   }).check(Schema.isInt()),
@@ -38252,7 +38252,7 @@ export const V2FsGetMetadataResponse = Schema.Struct({
   isSymlink: Schema.Boolean.annotate({
     description: "Whether the path itself is a symbolic link.",
   }),
-  modifiedAtMs: Schema.Number.annotate({
+  modifiedAtMs: Schema.Finite.annotate({
     description: "File modification time in Unix milliseconds when available, otherwise `0`.",
     format: "int64",
   }).check(Schema.isInt()),
@@ -38641,7 +38641,7 @@ export type V2ItemCompletedNotification = {
   readonly turnId: string;
 };
 export const V2ItemCompletedNotification = Schema.Struct({
-  completedAtMs: Schema.Number.annotate({
+  completedAtMs: Schema.Finite.annotate({
     description: "Unix timestamp (in milliseconds) when this item lifecycle completed.",
     format: "int64",
   }).check(Schema.isInt()),
@@ -38655,10 +38655,10 @@ export type V2ItemCompletedNotification__ByteRange = {
   readonly start: number;
 };
 export const V2ItemCompletedNotification__ByteRange = Schema.Struct({
-  end: Schema.Number.annotate({ format: "uint" })
+  end: Schema.Finite.annotate({ format: "uint" })
     .check(Schema.isInt())
     .check(Schema.isGreaterThanOrEqualTo(0)),
-  start: Schema.Number.annotate({ format: "uint" })
+  start: Schema.Finite.annotate({ format: "uint" })
     .check(Schema.isInt())
     .check(Schema.isGreaterThanOrEqualTo(0)),
 });
@@ -38722,14 +38722,14 @@ export type V2ItemGuardianApprovalReviewCompletedNotification = {
 };
 export const V2ItemGuardianApprovalReviewCompletedNotification = Schema.Struct({
   action: V2ItemGuardianApprovalReviewCompletedNotification__GuardianApprovalReviewAction,
-  completedAtMs: Schema.Number.annotate({
+  completedAtMs: Schema.Finite.annotate({
     description: "Unix timestamp (in milliseconds) when this review completed.",
     format: "int64",
   }).check(Schema.isInt()),
   decisionSource: V2ItemGuardianApprovalReviewCompletedNotification__AutoReviewDecisionSource,
   review: V2ItemGuardianApprovalReviewCompletedNotification__GuardianApprovalReview,
   reviewId: Schema.String.annotate({ description: "Stable identifier for this review." }),
-  startedAtMs: Schema.Number.annotate({
+  startedAtMs: Schema.Finite.annotate({
     description: "Unix timestamp (in milliseconds) when this review started.",
     format: "int64",
   }).check(Schema.isInt()),
@@ -38763,7 +38763,7 @@ export const V2ItemGuardianApprovalReviewStartedNotification = Schema.Struct({
   action: V2ItemGuardianApprovalReviewStartedNotification__GuardianApprovalReviewAction,
   review: V2ItemGuardianApprovalReviewStartedNotification__GuardianApprovalReview,
   reviewId: Schema.String.annotate({ description: "Stable identifier for this review." }),
-  startedAtMs: Schema.Number.annotate({
+  startedAtMs: Schema.Finite.annotate({
     description: "Unix timestamp (in milliseconds) when this review started.",
     format: "int64",
   }).check(Schema.isInt()),
@@ -38792,7 +38792,7 @@ export type V2ItemStartedNotification = {
 };
 export const V2ItemStartedNotification = Schema.Struct({
   item: V2ItemStartedNotification__ThreadItem,
-  startedAtMs: Schema.Number.annotate({
+  startedAtMs: Schema.Finite.annotate({
     description: "Unix timestamp (in milliseconds) when this item lifecycle started.",
     format: "int64",
   }).check(Schema.isInt()),
@@ -38802,10 +38802,10 @@ export const V2ItemStartedNotification = Schema.Struct({
 
 export type V2ItemStartedNotification__ByteRange = { readonly end: number; readonly start: number };
 export const V2ItemStartedNotification__ByteRange = Schema.Struct({
-  end: Schema.Number.annotate({ format: "uint" })
+  end: Schema.Finite.annotate({ format: "uint" })
     .check(Schema.isInt())
     .check(Schema.isGreaterThanOrEqualTo(0)),
-  start: Schema.Number.annotate({ format: "uint" })
+  start: Schema.Finite.annotate({ format: "uint" })
     .check(Schema.isInt())
     .check(Schema.isGreaterThanOrEqualTo(0)),
 });
@@ -38879,7 +38879,7 @@ export const V2ListMcpServerStatusParams = Schema.Struct({
   ),
   limit: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({
+      Schema.Finite.annotate({
         description: "Optional page size; defaults to a server-defined value.",
         format: "uint32",
       })
@@ -39133,7 +39133,7 @@ export const V2McpServerOauthLoginParams = Schema.Struct({
   scopes: Schema.optionalKey(Schema.Union([Schema.Array(Schema.String), Schema.Null])),
   threadId: Schema.optionalKey(Schema.Union([Schema.String, Schema.Null])),
   timeoutSecs: Schema.optionalKey(
-    Schema.Union([Schema.Number.annotate({ format: "int64" }).check(Schema.isInt()), Schema.Null]),
+    Schema.Union([Schema.Finite.annotate({ format: "int64" }).check(Schema.isInt()), Schema.Null]),
   ),
 }).annotate({ title: "McpServerOauthLoginParams" });
 
@@ -39232,7 +39232,7 @@ export const V2ModelListParams = Schema.Struct({
   ),
   limit: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({
+      Schema.Finite.annotate({
         description: "Optional page size; defaults to a reasonable server-side value.",
         format: "uint32",
       })
@@ -39345,7 +39345,7 @@ export const V2PermissionProfileListParams = Schema.Struct({
   ),
   limit: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({
+      Schema.Finite.annotate({
         description: "Optional page size; defaults to the full result set.",
         format: "uint32",
       })
@@ -39654,7 +39654,7 @@ export type V2ProcessExitedNotification = {
   readonly stdoutCapReached: boolean;
 };
 export const V2ProcessExitedNotification = Schema.Struct({
-  exitCode: Schema.Number.annotate({ description: "Process exit code.", format: "int32" }).check(
+  exitCode: Schema.Finite.annotate({ description: "Process exit code.", format: "int32" }).check(
     Schema.isInt(),
   ),
   processHandle: Schema.String.annotate({
@@ -39748,7 +39748,7 @@ export type V2ReasoningSummaryPartAddedNotification = {
 };
 export const V2ReasoningSummaryPartAddedNotification = Schema.Struct({
   itemId: Schema.String,
-  summaryIndex: Schema.Number.annotate({ format: "int64" }).check(Schema.isInt()),
+  summaryIndex: Schema.Finite.annotate({ format: "int64" }).check(Schema.isInt()),
   threadId: Schema.String,
   turnId: Schema.String,
 }).annotate({ title: "ReasoningSummaryPartAddedNotification" });
@@ -39763,7 +39763,7 @@ export type V2ReasoningSummaryTextDeltaNotification = {
 export const V2ReasoningSummaryTextDeltaNotification = Schema.Struct({
   delta: Schema.String,
   itemId: Schema.String,
-  summaryIndex: Schema.Number.annotate({ format: "int64" }).check(Schema.isInt()),
+  summaryIndex: Schema.Finite.annotate({ format: "int64" }).check(Schema.isInt()),
   threadId: Schema.String,
   turnId: Schema.String,
 }).annotate({ title: "ReasoningSummaryTextDeltaNotification" });
@@ -39776,7 +39776,7 @@ export type V2ReasoningTextDeltaNotification = {
   readonly turnId: string;
 };
 export const V2ReasoningTextDeltaNotification = Schema.Struct({
-  contentIndex: Schema.Number.annotate({ format: "int64" }).check(Schema.isInt()),
+  contentIndex: Schema.Finite.annotate({ format: "int64" }).check(Schema.isInt()),
   delta: Schema.String,
   itemId: Schema.String,
   threadId: Schema.String,
@@ -39829,10 +39829,10 @@ export const V2ReviewStartResponse = Schema.Struct({
 
 export type V2ReviewStartResponse__ByteRange = { readonly end: number; readonly start: number };
 export const V2ReviewStartResponse__ByteRange = Schema.Struct({
-  end: Schema.Number.annotate({ format: "uint" })
+  end: Schema.Finite.annotate({ format: "uint" })
     .check(Schema.isInt())
     .check(Schema.isGreaterThanOrEqualTo(0)),
-  start: Schema.Number.annotate({ format: "uint" })
+  start: Schema.Finite.annotate({ format: "uint" })
     .check(Schema.isInt())
     .check(Schema.isGreaterThanOrEqualTo(0)),
 });
@@ -40237,10 +40237,10 @@ export const V2ThreadForkResponse__ApprovalsReviewer = Schema.Literals([
 
 export type V2ThreadForkResponse__ByteRange = { readonly end: number; readonly start: number };
 export const V2ThreadForkResponse__ByteRange = Schema.Struct({
-  end: Schema.Number.annotate({ format: "uint" })
+  end: Schema.Finite.annotate({ format: "uint" })
     .check(Schema.isInt())
     .check(Schema.isGreaterThanOrEqualTo(0)),
-  start: Schema.Number.annotate({ format: "uint" })
+  start: Schema.Finite.annotate({ format: "uint" })
     .check(Schema.isInt())
     .check(Schema.isGreaterThanOrEqualTo(0)),
 });
@@ -40451,7 +40451,7 @@ export const V2ThreadGoalSetParams = Schema.Struct({
   status: Schema.optionalKey(Schema.Union([V2ThreadGoalSetParams__ThreadGoalStatus, Schema.Null])),
   threadId: Schema.String,
   tokenBudget: Schema.optionalKey(
-    Schema.Union([Schema.Number.annotate({ format: "int64" }).check(Schema.isInt()), Schema.Null]),
+    Schema.Union([Schema.Finite.annotate({ format: "int64" }).check(Schema.isInt()), Schema.Null]),
   ),
 }).annotate({ title: "ThreadGoalSetParams" });
 
@@ -40525,7 +40525,7 @@ export const V2ThreadListParams = Schema.Struct({
   ),
   limit: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({
+      Schema.Finite.annotate({
         description: "Optional page size; defaults to a reasonable server-side value.",
         format: "uint32",
       })
@@ -40607,10 +40607,10 @@ export const V2ThreadListResponse = Schema.Struct({
 
 export type V2ThreadListResponse__ByteRange = { readonly end: number; readonly start: number };
 export const V2ThreadListResponse__ByteRange = Schema.Struct({
-  end: Schema.Number.annotate({ format: "uint" })
+  end: Schema.Finite.annotate({ format: "uint" })
     .check(Schema.isInt())
     .check(Schema.isGreaterThanOrEqualTo(0)),
-  start: Schema.Number.annotate({ format: "uint" })
+  start: Schema.Finite.annotate({ format: "uint" })
     .check(Schema.isInt())
     .check(Schema.isGreaterThanOrEqualTo(0)),
 });
@@ -40737,7 +40737,7 @@ export const V2ThreadLoadedListParams = Schema.Struct({
   ),
   limit: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({
+      Schema.Finite.annotate({
         description: "Optional page size; defaults to no limit.",
         format: "uint32",
       })
@@ -40796,10 +40796,10 @@ export type V2ThreadMetadataUpdateResponse__ByteRange = {
   readonly start: number;
 };
 export const V2ThreadMetadataUpdateResponse__ByteRange = Schema.Struct({
-  end: Schema.Number.annotate({ format: "uint" })
+  end: Schema.Finite.annotate({ format: "uint" })
     .check(Schema.isInt())
     .check(Schema.isGreaterThanOrEqualTo(0)),
-  start: Schema.Number.annotate({ format: "uint" })
+  start: Schema.Finite.annotate({ format: "uint" })
     .check(Schema.isInt())
     .check(Schema.isGreaterThanOrEqualTo(0)),
 });
@@ -40940,10 +40940,10 @@ export const V2ThreadReadResponse = Schema.Struct({
 
 export type V2ThreadReadResponse__ByteRange = { readonly end: number; readonly start: number };
 export const V2ThreadReadResponse__ByteRange = Schema.Struct({
-  end: Schema.Number.annotate({ format: "uint" })
+  end: Schema.Finite.annotate({ format: "uint" })
     .check(Schema.isInt())
     .check(Schema.isGreaterThanOrEqualTo(0)),
-  start: Schema.Number.annotate({ format: "uint" })
+  start: Schema.Finite.annotate({ format: "uint" })
     .check(Schema.isInt())
     .check(Schema.isGreaterThanOrEqualTo(0)),
 });
@@ -41523,7 +41523,7 @@ export const V2ThreadResumeParams__ThreadResumeInitialTurnsPageParams = Schema.S
   ),
   limit: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({ description: "Optional turn page size.", format: "uint32" })
+      Schema.Finite.annotate({ description: "Optional turn page size.", format: "uint32" })
         .check(Schema.isInt())
         .check(Schema.isGreaterThanOrEqualTo(0)),
       Schema.Null,
@@ -41652,10 +41652,10 @@ export const V2ThreadResumeResponse__ApprovalsReviewer = Schema.Literals([
 
 export type V2ThreadResumeResponse__ByteRange = { readonly end: number; readonly start: number };
 export const V2ThreadResumeResponse__ByteRange = Schema.Struct({
-  end: Schema.Number.annotate({ format: "uint" })
+  end: Schema.Finite.annotate({ format: "uint" })
     .check(Schema.isInt())
     .check(Schema.isGreaterThanOrEqualTo(0)),
-  start: Schema.Number.annotate({ format: "uint" })
+  start: Schema.Finite.annotate({ format: "uint" })
     .check(Schema.isInt())
     .check(Schema.isGreaterThanOrEqualTo(0)),
 });
@@ -41841,7 +41841,7 @@ export const V2ThreadResumeResponse__TurnsPage = Schema.Struct({
 
 export type V2ThreadRollbackParams = { readonly numTurns: number; readonly threadId: string };
 export const V2ThreadRollbackParams = Schema.Struct({
-  numTurns: Schema.Number.annotate({
+  numTurns: Schema.Finite.annotate({
     description:
       "The number of turns to drop from the end of the thread. Must be >= 1.\n\nThis only modifies the thread's history and does not revert local file changes that have been made by the agent. Clients are responsible for reverting these changes.",
     format: "uint32",
@@ -41915,7 +41915,7 @@ export const V2ThreadRollbackResponse = Schema.Struct({
     cliVersion: Schema.String.annotate({
       description: "Version of the CLI that created the thread.",
     }),
-    createdAt: Schema.Number.annotate({
+    createdAt: Schema.Finite.annotate({
       description: "Unix timestamp (in seconds) when the thread was created.",
       format: "int64",
     }).check(Schema.isInt()),
@@ -41971,7 +41971,7 @@ export const V2ThreadRollbackResponse = Schema.Struct({
     }),
     recencyAt: Schema.optionalKey(
       Schema.Union([
-        Schema.Number.annotate({
+        Schema.Finite.annotate({
           description: "Unix timestamp (in seconds) used for thread recency ordering.",
           format: "int64",
         }).check(Schema.isInt()),
@@ -42020,7 +42020,7 @@ export const V2ThreadRollbackResponse = Schema.Struct({
       description:
         "Only populated on `thread/resume`, `thread/rollback`, `thread/fork`, and `thread/read` (when `includeTurns` is true) responses. For all other responses and notifications returning a Thread, the turns field will be an empty list.",
     }),
-    updatedAt: Schema.Number.annotate({
+    updatedAt: Schema.Finite.annotate({
       description: "Unix timestamp (in seconds) when the thread was last updated.",
       format: "int64",
     }).check(Schema.isInt()),
@@ -42032,10 +42032,10 @@ export const V2ThreadRollbackResponse = Schema.Struct({
 
 export type V2ThreadRollbackResponse__ByteRange = { readonly end: number; readonly start: number };
 export const V2ThreadRollbackResponse__ByteRange = Schema.Struct({
-  end: Schema.Number.annotate({ format: "uint" })
+  end: Schema.Finite.annotate({ format: "uint" })
     .check(Schema.isInt())
     .check(Schema.isGreaterThanOrEqualTo(0)),
-  start: Schema.Number.annotate({ format: "uint" })
+  start: Schema.Finite.annotate({ format: "uint" })
     .check(Schema.isInt())
     .check(Schema.isGreaterThanOrEqualTo(0)),
 });
@@ -42163,7 +42163,7 @@ export const V2ThreadRollbackResponse__Thread = Schema.Struct({
   cliVersion: Schema.String.annotate({
     description: "Version of the CLI that created the thread.",
   }),
-  createdAt: Schema.Number.annotate({
+  createdAt: Schema.Finite.annotate({
     description: "Unix timestamp (in seconds) when the thread was created.",
     format: "int64",
   }).check(Schema.isInt()),
@@ -42219,7 +42219,7 @@ export const V2ThreadRollbackResponse__Thread = Schema.Struct({
   }),
   recencyAt: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({
+      Schema.Finite.annotate({
         description: "Unix timestamp (in seconds) used for thread recency ordering.",
         format: "int64",
       }).check(Schema.isInt()),
@@ -42268,7 +42268,7 @@ export const V2ThreadRollbackResponse__Thread = Schema.Struct({
     description:
       "Only populated on `thread/resume`, `thread/rollback`, `thread/fork`, and `thread/read` (when `includeTurns` is true) responses. For all other responses and notifications returning a Thread, the turns field will be an empty list.",
   }),
-  updatedAt: Schema.Number.annotate({
+  updatedAt: Schema.Finite.annotate({
     description: "Unix timestamp (in seconds) when the thread was last updated.",
     format: "int64",
   }).check(Schema.isInt()),
@@ -42381,10 +42381,10 @@ export type V2ThreadStartedNotification__ByteRange = {
   readonly start: number;
 };
 export const V2ThreadStartedNotification__ByteRange = Schema.Struct({
-  end: Schema.Number.annotate({ format: "uint" })
+  end: Schema.Finite.annotate({ format: "uint" })
     .check(Schema.isInt())
     .check(Schema.isGreaterThanOrEqualTo(0)),
-  start: Schema.Number.annotate({ format: "uint" })
+  start: Schema.Finite.annotate({ format: "uint" })
     .check(Schema.isInt())
     .check(Schema.isGreaterThanOrEqualTo(0)),
 });
@@ -42793,10 +42793,10 @@ export const V2ThreadStartResponse__ApprovalsReviewer = Schema.Literals([
 
 export type V2ThreadStartResponse__ByteRange = { readonly end: number; readonly start: number };
 export const V2ThreadStartResponse__ByteRange = Schema.Struct({
-  end: Schema.Number.annotate({ format: "uint" })
+  end: Schema.Finite.annotate({ format: "uint" })
     .check(Schema.isInt())
     .check(Schema.isGreaterThanOrEqualTo(0)),
-  start: Schema.Number.annotate({ format: "uint" })
+  start: Schema.Finite.annotate({ format: "uint" })
     .check(Schema.isInt())
     .check(Schema.isGreaterThanOrEqualTo(0)),
 });
@@ -43006,10 +43006,10 @@ export const V2ThreadUnarchiveResponse = Schema.Struct({
 
 export type V2ThreadUnarchiveResponse__ByteRange = { readonly end: number; readonly start: number };
 export const V2ThreadUnarchiveResponse__ByteRange = Schema.Struct({
-  end: Schema.Number.annotate({ format: "uint" })
+  end: Schema.Finite.annotate({ format: "uint" })
     .check(Schema.isInt())
     .check(Schema.isGreaterThanOrEqualTo(0)),
-  start: Schema.Number.annotate({ format: "uint" })
+  start: Schema.Finite.annotate({ format: "uint" })
     .check(Schema.isInt())
     .check(Schema.isGreaterThanOrEqualTo(0)),
 });
@@ -43150,10 +43150,10 @@ export type V2TurnCompletedNotification__ByteRange = {
   readonly start: number;
 };
 export const V2TurnCompletedNotification__ByteRange = Schema.Struct({
-  end: Schema.Number.annotate({ format: "uint" })
+  end: Schema.Finite.annotate({ format: "uint" })
     .check(Schema.isInt())
     .check(Schema.isGreaterThanOrEqualTo(0)),
-  start: Schema.Number.annotate({ format: "uint" })
+  start: Schema.Finite.annotate({ format: "uint" })
     .check(Schema.isInt())
     .check(Schema.isGreaterThanOrEqualTo(0)),
 });
@@ -43272,10 +43272,10 @@ export const V2TurnStartedNotification = Schema.Struct({
 
 export type V2TurnStartedNotification__ByteRange = { readonly end: number; readonly start: number };
 export const V2TurnStartedNotification__ByteRange = Schema.Struct({
-  end: Schema.Number.annotate({ format: "uint" })
+  end: Schema.Finite.annotate({ format: "uint" })
     .check(Schema.isInt())
     .check(Schema.isGreaterThanOrEqualTo(0)),
-  start: Schema.Number.annotate({ format: "uint" })
+  start: Schema.Finite.annotate({ format: "uint" })
     .check(Schema.isInt())
     .check(Schema.isGreaterThanOrEqualTo(0)),
 });
@@ -43426,10 +43426,10 @@ export const V2TurnStartParams__AdditionalContextEntry = Schema.Struct({
 
 export type V2TurnStartParams__ByteRange = { readonly end: number; readonly start: number };
 export const V2TurnStartParams__ByteRange = Schema.Struct({
-  end: Schema.Number.annotate({ format: "uint" })
+  end: Schema.Finite.annotate({ format: "uint" })
     .check(Schema.isInt())
     .check(Schema.isGreaterThanOrEqualTo(0)),
-  start: Schema.Number.annotate({ format: "uint" })
+  start: Schema.Finite.annotate({ format: "uint" })
     .check(Schema.isInt())
     .check(Schema.isGreaterThanOrEqualTo(0)),
 });
@@ -43486,10 +43486,10 @@ export const V2TurnStartResponse = Schema.Struct({ turn: V2TurnStartResponse__Tu
 
 export type V2TurnStartResponse__ByteRange = { readonly end: number; readonly start: number };
 export const V2TurnStartResponse__ByteRange = Schema.Struct({
-  end: Schema.Number.annotate({ format: "uint" })
+  end: Schema.Finite.annotate({ format: "uint" })
     .check(Schema.isInt())
     .check(Schema.isGreaterThanOrEqualTo(0)),
-  start: Schema.Number.annotate({ format: "uint" })
+  start: Schema.Finite.annotate({ format: "uint" })
     .check(Schema.isInt())
     .check(Schema.isGreaterThanOrEqualTo(0)),
 });
@@ -43570,10 +43570,10 @@ export const V2TurnSteerParams__AdditionalContextEntry = Schema.Struct({
 
 export type V2TurnSteerParams__ByteRange = { readonly end: number; readonly start: number };
 export const V2TurnSteerParams__ByteRange = Schema.Struct({
-  end: Schema.Number.annotate({ format: "uint" })
+  end: Schema.Finite.annotate({ format: "uint" })
     .check(Schema.isInt())
     .check(Schema.isGreaterThanOrEqualTo(0)),
-  start: Schema.Number.annotate({ format: "uint" })
+  start: Schema.Finite.annotate({ format: "uint" })
     .check(Schema.isInt())
     .check(Schema.isGreaterThanOrEqualTo(0)),
 });
@@ -43636,7 +43636,7 @@ export type V2WindowsWorldWritableWarningNotification = {
   readonly samplePaths: ReadonlyArray<string>;
 };
 export const V2WindowsWorldWritableWarningNotification = Schema.Struct({
-  extraCount: Schema.Number.annotate({ format: "uint" })
+  extraCount: Schema.Finite.annotate({ format: "uint" })
     .check(Schema.isInt())
     .check(Schema.isGreaterThanOrEqualTo(0)),
   failedScan: Schema.Boolean,

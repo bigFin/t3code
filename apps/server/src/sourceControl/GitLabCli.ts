@@ -330,7 +330,7 @@ const RawGitLabDefaultBranchSchema = Schema.Struct({
 });
 
 const RawGitLabNamespaceSchema = Schema.Struct({
-  id: Schema.Number,
+  id: Schema.Finite,
 });
 
 const decodeGitLabRepositoryCloneUrls = Schema.decodeEffect(

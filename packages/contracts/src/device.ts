@@ -218,7 +218,7 @@ export const DeviceSettings = Schema.Struct({
   colorFilter: Schema.optional(DeviceColorFilter),
   networkEnabled: Schema.optional(Schema.Boolean),
   location: Schema.optional(
-    Schema.NullOr(Schema.Struct({ latitude: Schema.Number, longitude: Schema.Number })),
+    Schema.NullOr(Schema.Struct({ latitude: Schema.Finite, longitude: Schema.Finite })),
   ),
 });
 export type DeviceSettings = typeof DeviceSettings.Type;
@@ -298,8 +298,8 @@ export const DeviceActionInput = Schema.Union([
   Schema.Struct({
     ...DeviceTarget,
     type: Schema.Literal("setLocation"),
-    latitude: Schema.Number.check(Schema.isBetween({ minimum: -90, maximum: 90 })),
-    longitude: Schema.Number.check(Schema.isBetween({ minimum: -180, maximum: 180 })),
+    latitude: Schema.Finite.check(Schema.isBetween({ minimum: -90, maximum: 90 })),
+    longitude: Schema.Finite.check(Schema.isBetween({ minimum: -180, maximum: 180 })),
   }),
   Schema.Struct({ ...DeviceTarget, type: Schema.Literal("clearLocation") }),
   Schema.Struct({
@@ -401,7 +401,7 @@ export class DeviceOperationError extends Schema.TaggedError<DeviceOperationErro
       "settings_failed",
       "hub_rejected",
     ]),
-    exitCode: Schema.optional(Schema.Number),
+    exitCode: Schema.optional(Schema.Finite),
     cause: Schema.Defect(),
   },
 ) {

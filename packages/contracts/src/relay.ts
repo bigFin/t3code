@@ -493,7 +493,7 @@ export class RelayEnvironmentLinkLimitExceededError extends Schema.TaggedError<R
   "RelayEnvironmentLinkLimitExceededError",
   {
     code: Schema.Literal("environment_link_limit_exceeded"),
-    maxTunnels: Schema.Number,
+    maxTunnels: Schema.Finite,
     traceId: TrimmedNonEmptyString,
   },
   { httpApiStatus: 403 },
@@ -874,7 +874,7 @@ export const RelayDeliveryResult = Schema.Struct({
   kind: RelayDeliveryKind,
   ok: Schema.Boolean,
   queued: Schema.optional(Schema.Boolean),
-  apnsStatus: Schema.NullOr(Schema.Number),
+  apnsStatus: Schema.NullOr(Schema.Finite),
   apnsReason: Schema.NullOr(Schema.String),
   apnsId: Schema.NullOr(Schema.String),
 });

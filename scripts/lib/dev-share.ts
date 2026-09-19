@@ -91,7 +91,7 @@ export class DevServeFailedError extends Schema.TaggedError<DevServeFailedError>
   "DevServeFailedError",
   {
     stage: Schema.Literals(["clear-existing", "serve"]),
-    webPort: Schema.Number,
+    webPort: Schema.Finite,
     explanation: Schema.optional(Schema.String),
     cause: Schema.optional(Schema.Defect()),
   },

@@ -34,7 +34,7 @@ const UpstreamJsonSchemaSchema = Schema.Struct({
 const MetaJsonSchema = Schema.Struct({
   agentMethods: Schema.Record(Schema.String, Schema.String),
   clientMethods: Schema.Record(Schema.String, Schema.String),
-  version: Schema.Union([Schema.Number, Schema.String]),
+  version: Schema.Union([Schema.Finite, Schema.String]),
 });
 const encodeAgentMethods = Schema.encodeEffect(
   Schema.fromJsonString(MetaJsonSchema.fields.agentMethods),

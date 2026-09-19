@@ -582,7 +582,7 @@ result.value.destroy();
 
 export class ExternalizedBundleError extends Schema.TaggedError<ExternalizedBundleError>()(
   "ExternalizedBundleError",
-  { sentinel: Schema.String, inlinedPackageCount: Schema.Number },
+  { sentinel: Schema.String, inlinedPackageCount: Schema.Finite },
 ) {
   override get message(): string {
     return `The server bundle did not inline "${this.sentinel}" (${this.inlinedPackageCount} packages inlined). The bundle is meant to be self-contained apart from the runtime externals; if its dependencies are external again they will be absent from the sidecar, and the backend will fail with ERR_MODULE_NOT_FOUND. Check the deps.alwaysBundle wiring in apps/server/vite.config.ts.`;
@@ -591,7 +591,7 @@ export class ExternalizedBundleError extends Schema.TaggedError<ExternalizedBund
 
 export class BundleNotSelfContainedError extends Schema.TaggedError<BundleNotSelfContainedError>()(
   "BundleNotSelfContainedError",
-  { exitCode: Schema.Number, output: Schema.String },
+  { exitCode: Schema.Finite, output: Schema.String },
 ) {
   override get message(): string {
     return `The packaged server bundle could not load from the isolated, extracted sidecar (exit ${this.exitCode}). Anything it imports that is neither a Node built-in nor in the selected runtime-external closure is unavailable to both backends. Output:
@@ -694,7 +694,7 @@ export class WindowsPrimaryNativeProbeError extends Schema.TaggedError<WindowsPr
   "WindowsPrimaryNativeProbeError",
   {
     executablePath: Schema.String,
-    exitCode: Schema.Number,
+    exitCode: Schema.Finite,
     output: Schema.String,
   },
 ) {
@@ -1559,7 +1559,7 @@ const BuildEnvConfig = Config.all({
   wslRuntime: Config.String("T3CODE_DESKTOP_WSL_RUNTIME").pipe(Config.option),
 });
 
-const MockUpdateServerPortSchema = Schema.NumberFromString.check(
+const MockUpdateServerPortSchema = Schema.FiniteFromString.check(
   Schema.isInt(),
   Schema.isBetween({ minimum: 1, maximum: 65535 }),
 );

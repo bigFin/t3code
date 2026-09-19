@@ -343,7 +343,7 @@ export class TerminalWriteError extends Schema.TaggedError<TerminalWriteError>()
   {
     threadId: Schema.String,
     terminalId: Schema.String,
-    terminalPid: Schema.Number,
+    terminalPid: Schema.Finite,
     cause: Schema.Defect(),
   },
 ) {
@@ -357,7 +357,7 @@ export class TerminalResizeError extends Schema.TaggedError<TerminalResizeError>
   {
     threadId: Schema.String,
     terminalId: Schema.String,
-    terminalPid: Schema.Number,
+    terminalPid: Schema.Finite,
     cols: TerminalColsSchema,
     rows: TerminalRowsSchema,
     cause: Schema.Defect(),

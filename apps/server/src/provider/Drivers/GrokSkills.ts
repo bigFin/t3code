@@ -31,7 +31,7 @@ class GrokSkillsProbeError extends Schema.TaggedError<GrokSkillsProbeError>()(
   {
     stage: Schema.Literals(["spawn", "timeout", "exit", "decode"]),
     cwd: Schema.optional(Schema.String),
-    exitCode: Schema.optional(Schema.Number),
+    exitCode: Schema.optional(Schema.Finite),
     cause: Schema.optional(Schema.Defect()),
   },
 ) {

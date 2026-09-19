@@ -16,7 +16,7 @@ export class RemoteDpopAccessToken extends Schema.Class<RemoteDpopAccessToken>(
   label: Schema.String,
   endpoint: RelayManagedEndpoint,
   accessToken: Schema.String,
-  expiresAtEpochMs: Schema.Number,
+  expiresAtEpochMs: Schema.Finite,
   dpopThumbprint: Schema.String,
 }) {}
 

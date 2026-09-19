@@ -492,10 +492,10 @@ export const PreviewAutomationElement = Schema.Struct({
   role: Schema.NullOr(Schema.String),
   name: Schema.String,
   selector: Schema.String,
-  x: Schema.Number,
-  y: Schema.Number,
-  width: Schema.Number,
-  height: Schema.Number,
+  x: Schema.Finite,
+  y: Schema.Finite,
+  width: Schema.Finite,
+  height: Schema.Finite,
 });
 export type PreviewAutomationElement = typeof PreviewAutomationElement.Type;
 
@@ -510,7 +510,7 @@ export type PreviewAutomationConsoleEntry = typeof PreviewAutomationConsoleEntry
 export const PreviewAutomationNetworkEntry = Schema.Struct({
   url: Schema.String,
   method: Schema.String,
-  status: Schema.NullOr(Schema.Number),
+  status: Schema.NullOr(Schema.Finite),
   failed: Schema.Boolean,
   errorText: Schema.optional(Schema.String),
   timestamp: Schema.String,

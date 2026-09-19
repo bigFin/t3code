@@ -34,7 +34,7 @@ export type HostPowerSource = typeof HostPowerSource.Type;
 export const HostPowerSnapshot = Schema.Struct({
   source: HostPowerSource,
   idle: BackgroundBooleanState,
-  idleSeconds: Schema.NullOr(Schema.Number),
+  idleSeconds: Schema.NullOr(Schema.Finite),
   locked: BackgroundBooleanState,
   suspended: Schema.Boolean,
   onBattery: BackgroundBooleanState,
@@ -76,7 +76,7 @@ export const ClientActivityReportInput = Schema.Struct({
   batteryState: Schema.optionalKey(Schema.Literals(["unknown", "unplugged", "charging", "full"])),
   networkType: Schema.optionalKey(Schema.String),
   scopes: Schema.Array(BackgroundScope),
-  ttlMs: Schema.optionalKey(Schema.Number),
+  ttlMs: Schema.optionalKey(Schema.Finite),
   observedAt: Schema.DateTimeUtc,
 });
 export type ClientActivityReportInput = typeof ClientActivityReportInput.Type;
@@ -102,7 +102,7 @@ export type ClientActivityLease = typeof ClientActivityLease.Type;
 export const BackgroundPolicySnapshot = Schema.Struct({
   hostPower: HostPowerSnapshot,
   leases: Schema.Array(ClientActivityLease),
-  activeForegroundLeaseCount: Schema.Number,
+  activeForegroundLeaseCount: Schema.Finite,
   activeScopeKeys: Schema.Array(Schema.String),
   shouldRunOpportunisticWork: Schema.Boolean,
   updatedAt: Schema.DateTimeUtc,

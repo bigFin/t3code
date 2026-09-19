@@ -21,12 +21,12 @@ import {
 
 const ProjectionThreadMessageDbRowSchema = ProjectionThreadMessage.mapFields(
   Struct.assign({
-    isStreaming: Schema.Number,
+    isStreaming: Schema.Finite,
     attachments: Schema.NullOr(Schema.fromJsonString(Schema.Array(ChatAttachment))),
     context: Schema.NullOr(Schema.fromJsonString(OrchestrationMessageContext)),
   }),
 );
-const ProjectionThreadMessageExistsDbRowSchema = Schema.Struct({ exists: Schema.Number });
+const ProjectionThreadMessageExistsDbRowSchema = Schema.Struct({ exists: Schema.Finite });
 
 function toProjectionThreadMessage(
   row: Schema.Schema.Type<typeof ProjectionThreadMessageDbRowSchema>,

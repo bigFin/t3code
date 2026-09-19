@@ -39,9 +39,9 @@ export class ProviderCommandNotFoundError extends Schema.TaggedError<ProviderCom
   "ProviderCommandNotFoundError",
   {
     binaryPath: Schema.String,
-    exitCode: Schema.Number,
-    stdoutLength: Schema.Number,
-    stderrLength: Schema.Number,
+    exitCode: Schema.Finite,
+    stdoutLength: Schema.Finite,
+    stderrLength: Schema.Finite,
   },
 ) {
   override get message(): string {

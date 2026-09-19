@@ -404,7 +404,7 @@ export const AuthClientSessionRevokeResult = Schema.Struct({
 export type AuthClientSessionRevokeResult = typeof AuthClientSessionRevokeResult.Type;
 
 export const AuthOtherClientSessionsRevokeResult = Schema.Struct({
-  revokedCount: Schema.Number,
+  revokedCount: Schema.Finite,
 });
 export type AuthOtherClientSessionsRevokeResult = typeof AuthOtherClientSessionsRevokeResult.Type;
 

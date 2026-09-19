@@ -71,7 +71,7 @@ const makeProjectionPendingApprovalRepository = Effect.gen(function* () {
 
   const countPendingApprovalRows = SqlSchema.findOne({
     Request: ListProjectionPendingApprovalsInput,
-    Result: Schema.Struct({ count: Schema.Number }),
+    Result: Schema.Struct({ count: Schema.Finite }),
     execute: ({ threadId }) => sql`
       SELECT COUNT(*) AS count
       FROM projection_pending_approvals

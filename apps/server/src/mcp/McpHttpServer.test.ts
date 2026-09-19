@@ -56,7 +56,7 @@ const PullRequestsTestLayer = McpHttpServer.PullRequestsToolkitRegistrationLive.
   Layer.provide(
     Layer.mergeAll(
       Layer.mock(ProjectionSnapshotQuery)({
-        getThreadShellById: () => Effect.succeed(Option.none()),
+        getThreadShellById: () => Effect.succeedNone,
       }),
       Layer.mock(OrchestrationEngineService)({}),
       NodeServices.layer,

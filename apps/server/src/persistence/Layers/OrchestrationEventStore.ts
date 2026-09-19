@@ -72,26 +72,26 @@ const HasEventAfterRequestSchema = Schema.Struct({
 
 const ReadFromSequenceRequestSchema = Schema.Struct({
   sequenceExclusive: NonNegativeInt,
-  limit: Schema.Number,
+  limit: Schema.Finite,
 });
 const ReadAggregateFromSequenceRequestSchema = Schema.Struct({
   aggregateKind: OrchestrationAggregateKind,
   aggregateId: Schema.Union([ProjectId, ThreadId]),
   sequenceExclusive: NonNegativeInt,
   sequenceInclusiveUpperBound: NonNegativeInt,
-  limit: Schema.Number,
+  limit: Schema.Finite,
 });
 const AggregateReplayRequestSchema = Schema.Struct({
   aggregateKind: OrchestrationAggregateKind,
   aggregateId: Schema.String,
   fromSequenceExclusive: NonNegativeInt,
   toSequenceInclusive: NonNegativeInt,
-  limit: Schema.Number,
+  limit: Schema.Finite,
 });
 const AggregateReplayStatsRowSchema = Schema.Struct({
-  eventCount: Schema.Number,
-  payloadBytes: Schema.Number,
-  hasCreateEvent: Schema.Number,
+  eventCount: Schema.Finite,
+  payloadBytes: Schema.Finite,
+  hasCreateEvent: Schema.Finite,
 });
 const DEFAULT_READ_FROM_SEQUENCE_LIMIT = 1_000;
 const READ_PAGE_SIZE = 500;
@@ -426,7 +426,7 @@ const makeEventStore = Effect.gen(function* () {
   };
   const findEventAfter = SqlSchema.findOneOption({
     Request: HasEventAfterRequestSchema,
-    Result: Schema.Struct({ sequence: Schema.Number }),
+    Result: Schema.Struct({ sequence: Schema.Finite }),
     execute: (request) => sql`
           SELECT sequence
           FROM orchestration_events

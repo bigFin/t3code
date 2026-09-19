@@ -32,7 +32,7 @@ const makeServerEnvironmentLayer = (baseDir: string) =>
 const emptySecretStoreLayer = Layer.succeed(
   ServerSecretStore.ServerSecretStore,
   ServerSecretStore.ServerSecretStore.of({
-    get: () => Effect.succeed(Option.none()),
+    get: () => Effect.succeedNone,
     set: () => Effect.void,
     create: () => Effect.void,
     getOrCreateRandom: () => Effect.succeed(new Uint8Array()),

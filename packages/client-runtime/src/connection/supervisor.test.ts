@@ -1551,7 +1551,7 @@ describe("EnvironmentSupervisor", () => {
               clerkToken: Effect.succeed("clerk-token"),
             }),
             Layer.succeed(ClientCapabilities.RelayDeviceIdentity, {
-              deviceId: Effect.succeed(Option.none()),
+              deviceId: Effect.succeedNone,
             }),
             TokenStore.layer({
               get: () => Ref.get(token),

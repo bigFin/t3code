@@ -67,7 +67,7 @@ Done.`),
   });
 
   it("formats schema failures with paths without exposing invalid values", () => {
-    const decodeCredential = decodeJsonResult(Schema.Struct({ token: Schema.Number }));
+    const decodeCredential = decodeJsonResult(Schema.Struct({ token: Schema.Finite }));
     const decoded = decodeCredential('{"token":"credential=secret-value"}');
 
     expect(Result.isFailure(decoded)).toBe(true);
@@ -116,7 +116,7 @@ Done.`),
   });
 
   it("bounds the number of formatted schema issues", () => {
-    const decode = decodeJsonResult(Schema.Struct({ token: Schema.Number }));
+    const decode = decodeJsonResult(Schema.Struct({ token: Schema.Finite }));
     const failures: Array<Cause.Cause<Schema.SchemaError>> = [];
     for (let index = 0; index < 10; index += 1) {
       const decoded = decode(`{"token":"credential=secret-value-${index}"}`);

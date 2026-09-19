@@ -39,7 +39,7 @@ export function isLoopbackHost(host: string): boolean {
 export class PreviewUrlNormalizationError extends Schema.TaggedError<PreviewUrlNormalizationError>()(
   "PreviewUrlNormalizationError",
   {
-    inputLength: Schema.Number,
+    inputLength: Schema.Finite,
     reason: Schema.Literals(["empty", "parse", "unsupported-protocol"]),
     protocol: Schema.optional(Schema.String),
     cause: Schema.optional(Schema.Defect()),

@@ -111,7 +111,7 @@ class TerminalSubprocessCheckError extends Schema.TaggedError<TerminalSubprocess
   {
     cause: Schema.optional(Schema.Defect()),
     command: Schema.Literals(["powershell", "ps", "resource-monitor"]),
-    exitCode: Schema.optional(Schema.NullOr(Schema.Number)),
+    exitCode: Schema.optional(Schema.NullOr(Schema.Finite)),
     timedOut: Schema.optional(Schema.Boolean),
     stdoutTruncated: Schema.optional(Schema.Boolean),
   },
@@ -133,7 +133,7 @@ class TerminalProcessSignalError extends Schema.TaggedError<TerminalProcessSigna
   {
     cause: Schema.optional(Schema.Defect()),
     signal: Schema.Literals(["SIGTERM", "SIGKILL"]),
-    terminalPid: Schema.Number,
+    terminalPid: Schema.Finite,
   },
 ) {
   override get message(): string {
@@ -2367,7 +2367,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
     }
 
     const inspectorOption = yield* acquireSubprocessInspector.pipe(
-      Effect.map(Option.some),
+      Effect.asSome,
       Effect.catch((reason) =>
         Effect.logWarning("failed to snapshot processes for terminal subprocess polling", {
           reason,
@@ -2393,7 +2393,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
     ) {
       const terminalPid = session.pid;
       const inspectResult = yield* subprocessInspector(terminalPid).pipe(
-        Effect.map(Option.some),
+        Effect.asSome,
         Effect.catch((reason) =>
           Effect.logWarning("failed to check terminal subprocess activity", {
             threadId: session.threadId,

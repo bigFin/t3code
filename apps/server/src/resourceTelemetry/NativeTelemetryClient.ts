@@ -67,7 +67,7 @@ export class NativeTelemetrySpawnFailed extends Schema.TaggedError<NativeTelemet
 export class NativeTelemetryHandshakeTimedOut extends Schema.TaggedError<NativeTelemetryHandshakeTimedOut>()(
   "NativeTelemetryHandshakeTimedOut",
   {
-    timeoutMs: Schema.Number,
+    timeoutMs: Schema.Finite,
   },
 ) {
   override get message(): string {
@@ -79,7 +79,7 @@ class NativeTelemetryRequestTimedOut extends Schema.TaggedError<NativeTelemetryR
   "NativeTelemetryRequestTimedOut",
   {
     operation: Schema.Literals(["processTable", "readHistory", "sampleNow"]),
-    timeoutMs: Schema.Number,
+    timeoutMs: Schema.Finite,
   },
 ) {
   override get message(): string {
@@ -90,8 +90,8 @@ class NativeTelemetryRequestTimedOut extends Schema.TaggedError<NativeTelemetryR
 export class NativeTelemetryProtocolMismatch extends Schema.TaggedError<NativeTelemetryProtocolMismatch>()(
   "NativeTelemetryProtocolMismatch",
   {
-    expectedVersion: Schema.Number,
-    receivedVersion: Schema.Number,
+    expectedVersion: Schema.Finite,
+    receivedVersion: Schema.Finite,
   },
 ) {
   override get message(): string {
@@ -125,7 +125,7 @@ export class NativeTelemetryCommandFailed extends Schema.TaggedError<NativeTelem
 export class NativeTelemetryExited extends Schema.TaggedError<NativeTelemetryExited>()(
   "NativeTelemetryExited",
   {
-    exitCode: Schema.Number,
+    exitCode: Schema.Finite,
   },
 ) {
   override get message(): string {

@@ -159,7 +159,7 @@ export const readProviderHostManifest = Effect.fn("readProviderHostManifest")(fu
   }
 
   return yield* decodeProviderHostManifest(raw.value.trim()).pipe(
-    Effect.map(Option.some),
+    Effect.asSome,
     Effect.mapError(
       (cause) =>
         new ProviderHostManifestError({

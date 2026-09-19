@@ -871,7 +871,7 @@ const makeWsRpcLayer = (
             return threadUpsertOrRemove(ThreadId.make(event.aggregateId), event.sequence);
           default:
             if (event.aggregateKind !== "thread") {
-              return Effect.succeed(Option.none());
+              return Effect.succeedNone;
             }
             return threadUpsertOrRemove(ThreadId.make(event.aggregateId), event.sequence);
         }
@@ -889,7 +889,7 @@ const makeWsRpcLayer = (
       ): Effect.Effect<Option.Option<A>, never, never> =>
         read.pipe(
           Effect.retry({ times: 1 }),
-          Effect.map(Option.some),
+          Effect.asSome,
           Effect.tapError((error) =>
             Effect.logWarning("orchestration shell projection refetch failed", {
               aggregateKind,

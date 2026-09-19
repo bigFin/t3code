@@ -13,7 +13,7 @@ const AcpRequestOperation = Schema.Literals([
 ]);
 type AcpRequestOperation = typeof AcpRequestOperation.Type;
 
-export const AcpRequestId = Schema.Union([Schema.String, Schema.Number]);
+export const AcpRequestId = Schema.Union([Schema.String, Schema.Finite]);
 export type AcpRequestId = typeof AcpRequestId.Type;
 
 const AcpSchemaIssueKind = Schema.Literals([
@@ -93,7 +93,7 @@ export class AcpSpawnError extends Schema.TaggedError<AcpSpawnError>()("AcpSpawn
 export class AcpProcessExitedError extends Schema.TaggedError<AcpProcessExitedError>()(
   "AcpProcessExitedError",
   {
-    code: Schema.optional(Schema.Number),
+    code: Schema.optional(Schema.Finite),
     pid: Schema.optionalKey(Schema.Int),
     cause: Schema.optional(Schema.Defect()),
   },
@@ -118,9 +118,9 @@ export class AcpProtocolParseError extends Schema.TaggedError<AcpProtocolParseEr
     operation: AcpProtocolParseOperation,
     method: Schema.optionalKey(Schema.String),
     requestId: Schema.optionalKey(AcpRequestId),
-    issueCount: Schema.optionalKey(Schema.Number),
+    issueCount: Schema.optionalKey(Schema.Finite),
     issueKinds: Schema.optionalKey(Schema.Array(AcpSchemaIssueKind)),
-    maximumPathDepth: Schema.optionalKey(Schema.Number),
+    maximumPathDepth: Schema.optionalKey(Schema.Finite),
     cause: Schema.Defect(),
   },
 ) {
@@ -192,9 +192,9 @@ export class AcpRequestError extends Schema.TaggedError<AcpRequestError>()("AcpR
   method: Schema.optionalKey(Schema.String),
   requestId: Schema.optionalKey(AcpRequestId),
   operation: Schema.optionalKey(AcpRequestOperation),
-  issueCount: Schema.optionalKey(Schema.Number),
+  issueCount: Schema.optionalKey(Schema.Finite),
   issueKinds: Schema.optionalKey(Schema.Array(AcpSchemaIssueKind)),
-  maximumPathDepth: Schema.optionalKey(Schema.Number),
+  maximumPathDepth: Schema.optionalKey(Schema.Finite),
   cause: Schema.optionalKey(Schema.Defect()),
 }) {
   override get message() {

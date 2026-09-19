@@ -110,20 +110,20 @@ const MESSAGE_TRIM_WHITESPACE =
 const ProjectionProjectDbRowSchema = ProjectionProject.mapFields(
   Struct.assign({
     defaultModelSelection: Schema.NullOr(Schema.fromJsonString(ModelSelection)),
-    autoPull: Schema.Number,
+    autoPull: Schema.Finite,
     projectIcon: Schema.NullOr(Schema.fromJsonString(ProjectIconOverride)),
     scripts: Schema.fromJsonString(Schema.Array(ProjectScript)),
   }),
 );
 const ProjectionThreadMessageDbRowSchema = ProjectionThreadMessage.mapFields(
   Struct.assign({
-    isStreaming: Schema.Number,
+    isStreaming: Schema.Finite,
     attachments: Schema.NullOr(Schema.fromJsonString(Schema.Array(ChatAttachment))),
     context: Schema.NullOr(Schema.fromJsonString(OrchestrationMessageContext)),
   }),
 );
 const ProjectionTurnStartMessageDbRowSchema = ProjectionThreadMessageDbRowSchema.mapFields(
-  Struct.assign({ hasOtherUserMessages: Schema.Number }),
+  Struct.assign({ hasOtherUserMessages: Schema.Finite }),
 );
 const ProjectionThreadProposedPlanDbRowSchema = ProjectionThreadProposedPlan;
 const ProjectionThreadPullRequestDbRowSchema = ProjectionThreadPullRequest.mapFields(
@@ -151,7 +151,7 @@ const ProjectionThreadActivityIdRowSchema = Schema.Struct({
 });
 const ProjectionThreadSessionDbRowSchema = Schema.Struct({
   ...ProjectionThreadSession.fields,
-  retrying: Schema.Number,
+  retrying: Schema.Finite,
   nativeSession: Schema.NullOr(Schema.fromJsonString(NativeSessionReference)),
 });
 const ProjectionThreadRuntimeContextDbRowSchema = Schema.Struct({
@@ -179,16 +179,16 @@ const ProjectionLatestTurnDbRowSchema = Schema.Struct({
 });
 const ProjectionStateDbRowSchema = ProjectionState;
 const ProjectionCountsRowSchema = Schema.Struct({
-  projectCount: Schema.Number,
-  threadCount: Schema.Number,
+  projectCount: Schema.Finite,
+  threadCount: Schema.Finite,
 });
 const EventReplayStatsInput = Schema.Struct({
   fromSequenceExclusive: NonNegativeInt,
   toSequenceInclusive: NonNegativeInt,
 });
 const EventReplayStatsRowSchema = Schema.Struct({
-  eventCount: Schema.Number,
-  payloadBytes: Schema.Number,
+  eventCount: Schema.Finite,
+  payloadBytes: Schema.Finite,
 });
 const ProjectionThreadSearchRequest = Schema.Struct({
   pattern: Schema.String,
@@ -245,8 +245,8 @@ const ThreadTurnWindowLookupInput = Schema.Struct({
   // after every ISO timestamp).
   beforeAnchorAt: Schema.String,
   beforeTurnKey: Schema.String,
-  userTurnLimit: Schema.Number,
-  maxRawTurns: Schema.Number,
+  userTurnLimit: Schema.Finite,
+  maxRawTurns: Schema.Finite,
 });
 const ProjectionTurnWindowRowSchema = Schema.Struct({
   // The turn's timeline anchor, used to bound rows that have no turn linkage
@@ -1911,8 +1911,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
   // never be reached by the client and would park the page forever. Served
   // by the event store's (aggregate_kind, stream_id, sequence) index.
   const getThreadEventWatermarkRow = SqlSchema.findOneOption({
-    Request: Schema.Struct({ threadId: ThreadId, maxSequence: Schema.Number }),
-    Result: Schema.Struct({ threadSequence: Schema.NullOr(Schema.Number) }),
+    Request: Schema.Struct({ threadId: ThreadId, maxSequence: Schema.Finite }),
+    Result: Schema.Struct({ threadSequence: Schema.NullOr(Schema.Finite) }),
     execute: ({ threadId, maxSequence }) =>
       sql`
         SELECT MAX(sequence) AS "threadSequence"

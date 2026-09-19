@@ -418,7 +418,7 @@ const RawChangeEntrySchema = Schema.Struct({
 const RawChangePageSchema = Schema.Struct({
   changeEntries: Schema.Array(Schema.Unknown),
   /** Where the page after this one starts. Azure leaves it out on the last page. */
-  nextSkip: Schema.optional(Schema.NullOr(Schema.Number)),
+  nextSkip: Schema.optional(Schema.NullOr(Schema.Finite)),
 });
 
 const RawItemContentSchema = Schema.Struct({

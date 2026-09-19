@@ -58,10 +58,10 @@ const discordReleaseErrorContext = {
   tag: Schema.String,
   releaseUrl: Schema.String,
   webhookOrigin: Schema.String,
-  webhookPathnameSegmentCount: Schema.Number,
-  contentLength: Schema.Number,
-  embedCount: Schema.Number,
-  allowedRoleMentionCount: Schema.Number,
+  webhookPathnameSegmentCount: Schema.Finite,
+  contentLength: Schema.Finite,
+  embedCount: Schema.Finite,
+  allowedRoleMentionCount: Schema.Finite,
   hasRoleMentionSyntax: Schema.Boolean,
 };
 
@@ -81,7 +81,7 @@ export class DiscordReleaseWebhookResponseError extends Schema.TaggedError<Disco
   "DiscordReleaseWebhookResponseError",
   {
     ...discordReleaseErrorContext,
-    status: Schema.Number,
+    status: Schema.Finite,
     cause: Schema.Defect(),
   },
 ) {

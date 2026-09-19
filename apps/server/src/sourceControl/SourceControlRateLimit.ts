@@ -37,7 +37,7 @@ export class SourceControlRateLimitPausedError extends Schema.TaggedError<Source
   {
     provider: SourceControlProviderKindSchema,
     host: Schema.String,
-    retryAt: Schema.Number,
+    retryAt: Schema.Finite,
   },
 ) {
   get detail(): string {

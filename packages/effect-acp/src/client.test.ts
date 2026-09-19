@@ -337,7 +337,7 @@ it.layer(NodeServices.layer)("effect-acp client", (it) => {
         );
         yield* acp.handleExtNotification(
           "x/typed_notification",
-          Schema.Struct({ count: Schema.Number }),
+          Schema.Struct({ count: Schema.Finite }),
           (payload) => Ref.update(typedNotifications, (current) => [...current, payload]),
         );
 
@@ -508,7 +508,7 @@ it.layer(NodeServices.layer)("effect-acp client", (it) => {
         );
         yield* acp.handleExtNotification(
           "x/typed_notification",
-          Schema.Struct({ count: Schema.Number }),
+          Schema.Struct({ count: Schema.Finite }),
           (payload) => Ref.update(typedNotifications, (current) => [...current, payload]),
         );
 
@@ -585,7 +585,7 @@ it.layer(NodeServices.layer)("effect-acp client", (it) => {
         );
         yield* acp.handleExtNotification(
           "x/typed_notification",
-          Schema.Struct({ count: Schema.Number }),
+          Schema.Struct({ count: Schema.Finite }),
           () => Effect.void,
         );
         yield* acp.handleSessionUpdate(() =>

@@ -41,8 +41,8 @@ const LegacyAttachmentUploadClaims = Schema.Struct({
   attachmentId: Schema.String,
   name: Schema.String,
   mimeType: Schema.String,
-  sizeBytes: Schema.Number,
-  expiresAt: Schema.Number,
+  sizeBytes: Schema.Finite,
+  expiresAt: Schema.Finite,
 });
 const encodeLegacyAttachmentUploadClaims = Schema.encodeEffect(
   Schema.fromJsonString(LegacyAttachmentUploadClaims),

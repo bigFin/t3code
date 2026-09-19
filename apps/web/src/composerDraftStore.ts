@@ -135,7 +135,7 @@ export const PersistedComposerImageAttachment = Schema.Struct({
   id: Schema.String,
   name: Schema.String,
   mimeType: Schema.String,
-  sizeBytes: Schema.Number,
+  sizeBytes: Schema.Finite,
   source: Schema.optional(SnapShotSource),
   dataUrl: Schema.String,
 });
@@ -189,7 +189,7 @@ export const PersistedComposerFileAttachment = Schema.Struct({
   id: Schema.String,
   name: Schema.String,
   mimeType: Schema.String,
-  sizeBytes: Schema.Number,
+  sizeBytes: Schema.Finite,
   attachmentId: Schema.String,
   environmentId: EnvironmentId,
   source: Schema.optional(PastedTextAttachmentSource),
@@ -206,7 +206,7 @@ export const PersistedComposerDraftFileAttachment = Schema.Struct({
   id: Schema.String,
   name: Schema.String,
   mimeType: Schema.String,
-  sizeBytes: Schema.Number,
+  sizeBytes: Schema.Finite,
   attachmentId: Schema.optionalKey(Schema.String),
   environmentId: Schema.optionalKey(EnvironmentId),
   source: Schema.optional(PastedTextAttachmentSource),
@@ -220,8 +220,8 @@ const PersistedTerminalContextDraft = Schema.Struct({
   createdAt: Schema.String,
   terminalId: Schema.String,
   terminalLabel: Schema.String,
-  lineStart: Schema.Number,
-  lineEnd: Schema.Number,
+  lineStart: Schema.Finite,
+  lineEnd: Schema.Finite,
   text: Schema.optionalKey(Schema.String),
 });
 type PersistedTerminalContextDraft = typeof PersistedTerminalContextDraft.Type;
@@ -346,7 +346,7 @@ const PersistedComposerDraftStoreState = Schema.Struct({
 type PersistedComposerDraftStoreState = typeof PersistedComposerDraftStoreState.Type;
 
 const PersistedComposerDraftStoreStorage = Schema.Struct({
-  version: Schema.Number,
+  version: Schema.Finite,
   state: PersistedComposerDraftStoreState,
 });
 

@@ -185,7 +185,7 @@ export interface SshEnvironmentManagerShape {
 }
 
 const RemoteLaunchResult = Schema.Struct({
-  remotePort: Schema.Number,
+  remotePort: Schema.Finite,
   serverKind: Schema.optional(Schema.Literals(["external", "managed"])),
 });
 

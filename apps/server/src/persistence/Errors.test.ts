@@ -9,7 +9,7 @@ import { PersistenceDecodeError, PersistenceSqlError, toPersistenceSqlError } fr
 const decodeRuntimePayload = Schema.decodeUnknownEffect(
   Schema.Struct({
     runtimePayload: Schema.Struct({
-      attempt: Schema.Number,
+      attempt: Schema.Finite,
     }),
   }),
 );

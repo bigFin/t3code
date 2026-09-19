@@ -17,12 +17,12 @@ import {
 const CursorCredentials = Schema.Struct({ accessToken: Schema.optional(Schema.String) });
 const decodeCredentials = Schema.decodeEffect(Schema.fromJsonString(CursorCredentials));
 const CursorUsageResponse = Schema.Struct({
-  billingCycleEnd: Schema.optional(Schema.Union([Schema.String, Schema.Number])),
+  billingCycleEnd: Schema.optional(Schema.Union([Schema.String, Schema.Finite])),
   planUsage: Schema.optional(
     Schema.Struct({
-      totalPercentUsed: Schema.optional(Schema.Number),
-      autoPercentUsed: Schema.optional(Schema.Number),
-      apiPercentUsed: Schema.optional(Schema.Number),
+      totalPercentUsed: Schema.optional(Schema.Finite),
+      autoPercentUsed: Schema.optional(Schema.Finite),
+      apiPercentUsed: Schema.optional(Schema.Finite),
     }),
   ),
 });

@@ -251,9 +251,9 @@ Some metadata
         } as any);
 
         const mockSnapshots = ProjectionSnapshotQuery.of({
-          getActiveProjectByWorkspaceRoot: (_cwd: string) => Effect.succeed(Option.none()),
+          getActiveProjectByWorkspaceRoot: (_cwd: string) => Effect.succeedNone,
           getThreadShellsByIds: (_ids: ReadonlyArray<ThreadId>) => Effect.succeed(new Map()),
-          getThreadTranscriptById: (_id: ThreadId) => Effect.succeed(Option.none()),
+          getThreadTranscriptById: (_id: ThreadId) => Effect.succeedNone,
           getExistingThreadActivityIds: () => Effect.succeed([]),
         } as any);
 

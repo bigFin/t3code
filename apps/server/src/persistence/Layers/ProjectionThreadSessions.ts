@@ -18,7 +18,7 @@ import {
 
 const ProjectionThreadSessionDbRowSchema = Schema.Struct({
   ...ProjectionThreadSession.fields,
-  retrying: Schema.Number,
+  retrying: Schema.Finite,
   nativeSession: Schema.NullOr(Schema.fromJsonString(NativeSessionReference)),
 });
 

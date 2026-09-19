@@ -106,7 +106,7 @@ export class MagicDnsNameMissingError extends Schema.TaggedError<MagicDnsNameMis
 
 export class ServesOtherEnvironmentError extends Schema.TaggedError<ServesOtherEnvironmentError>()(
   "ServesOtherEnvironmentError",
-  { servePort: Schema.Number },
+  { servePort: Schema.Finite },
 ) {
   override get message(): string {
     return `Tailscale Serve on HTTPS port ${String(this.servePort)} already fronts a different T3 Code server. Pass --tailscale-serve-port to publish this one on another port.`;
@@ -115,7 +115,7 @@ export class ServesOtherEnvironmentError extends Schema.TaggedError<ServesOtherE
 
 export class TailscaleServeFailedError extends Schema.TaggedError<TailscaleServeFailedError>()(
   "TailscaleServeFailedError",
-  { servePort: Schema.Number, cause: Schema.Defect() },
+  { servePort: Schema.Finite, cause: Schema.Defect() },
 ) {
   override get message(): string {
     return `tailscale serve failed for HTTPS port ${String(this.servePort)}. Run \`tailscale serve --https=${String(this.servePort)} --bg <local-url>\` by hand to see why.`;
@@ -124,7 +124,7 @@ export class TailscaleServeFailedError extends Schema.TaggedError<TailscaleServe
 
 export class ServePortOccupiedError extends Schema.TaggedError<ServePortOccupiedError>()(
   "ServePortOccupiedError",
-  { servePort: Schema.Number },
+  { servePort: Schema.Finite },
 ) {
   override get message(): string {
     return `HTTPS port ${String(this.servePort)} on the tailnet already serves something that is not a T3 Code server. Pass --tailscale-serve-port to publish this one on another port.`;

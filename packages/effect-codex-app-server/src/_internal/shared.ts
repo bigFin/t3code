@@ -3,10 +3,10 @@ import * as Schema from "effect/Schema";
 
 import * as CodexError from "../errors.ts";
 
-export const JsonRpcId = Schema.Union([Schema.Number, Schema.String]);
+export const JsonRpcId = Schema.Union([Schema.Finite, Schema.String]);
 
 const JsonRpcError = Schema.Struct({
-  code: Schema.Number,
+  code: Schema.Finite,
   message: Schema.String,
   data: Schema.optional(Schema.Unknown),
 });

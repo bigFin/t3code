@@ -31,11 +31,11 @@ const AuthFile = Schema.Struct({
   ),
 });
 const AuthFiles = Schema.Struct({ files: Schema.Array(AuthFile) });
-const ApiResponse = Schema.Struct({ status_code: Schema.Number, body: Schema.String });
+const ApiResponse = Schema.Struct({ status_code: Schema.Finite, body: Schema.String });
 const CodexWindow = Schema.Struct({
-  used_percent: Schema.Number,
-  reset_at: Schema.optional(Schema.NullOr(Schema.Number)),
-  limit_window_seconds: Schema.optional(Schema.Number),
+  used_percent: Schema.Finite,
+  reset_at: Schema.optional(Schema.NullOr(Schema.Finite)),
+  limit_window_seconds: Schema.optional(Schema.Finite),
 });
 const CodexUsage = Schema.Struct({
   plan_type: Schema.optional(Schema.String),
@@ -47,7 +47,7 @@ const CodexUsage = Schema.Struct({
   ),
 });
 const ClaudeWindow = Schema.Struct({
-  utilization: Schema.Number,
+  utilization: Schema.Finite,
   resets_at: Schema.NullOr(Schema.String),
 });
 const ClaudeUsage = Schema.Struct({
@@ -57,7 +57,7 @@ const ClaudeUsage = Schema.Struct({
     Schema.Array(
       Schema.Struct({
         kind: Schema.String,
-        percent: Schema.optional(Schema.NullOr(Schema.Number)),
+        percent: Schema.optional(Schema.NullOr(Schema.Finite)),
         resets_at: Schema.optional(Schema.NullOr(Schema.String)),
         scope: Schema.optional(
           Schema.NullOr(

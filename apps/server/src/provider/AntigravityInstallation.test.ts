@@ -325,7 +325,7 @@ it.layer(NodeServices.layer)("Antigravity installation", (it) => {
       const decodeRequest = Schema.decodeUnknownEffect(
         Schema.fromJsonString(
           Schema.Struct({
-            id: Schema.Union([Schema.String, Schema.Number]),
+            id: Schema.Union([Schema.String, Schema.Finite]),
             method: Schema.String,
           }),
         ),

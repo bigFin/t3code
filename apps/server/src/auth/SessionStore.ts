@@ -139,7 +139,7 @@ export class InvalidSessionExpirationClaimError extends Schema.TaggedError<Inval
   "InvalidSessionExpirationClaimError",
   {
     sessionId: AuthSessionId,
-    expirationClaim: Schema.Number,
+    expirationClaim: Schema.Finite,
   },
 ) {
   override get message(): string {
@@ -430,8 +430,8 @@ const SessionClaims = Schema.Struct({
   scopes: AuthEnvironmentScopes,
   method: Schema.Literals(["browser-session-cookie", "bearer-access-token", "dpop-access-token"]),
   jkt: Schema.optionalKey(Schema.String),
-  iat: Schema.Number,
-  exp: Schema.Number,
+  iat: Schema.Finite,
+  exp: Schema.Finite,
 });
 type SessionClaims = typeof SessionClaims.Type;
 
@@ -439,8 +439,8 @@ const WebSocketClaims = Schema.Struct({
   v: Schema.Literal(1),
   kind: Schema.Literal("websocket"),
   sid: AuthSessionId,
-  iat: Schema.Number,
-  exp: Schema.Number,
+  iat: Schema.Finite,
+  exp: Schema.Finite,
 });
 type WebSocketClaims = typeof WebSocketClaims.Type;
 

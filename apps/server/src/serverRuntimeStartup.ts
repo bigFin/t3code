@@ -64,7 +64,7 @@ export class ServerRuntimeStartupError extends Schema.TaggedError<ServerRuntimeS
   {
     mode: ServerConfig.RuntimeMode,
     host: Schema.NullOr(Schema.String),
-    port: Schema.Number,
+    port: Schema.Finite,
     cause: Schema.Defect(),
   },
 ) {
@@ -490,7 +490,7 @@ export const reconcileProviderSessions = Effect.gen(function* () {
   const query = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
   const settings = yield* ServerSettings.ServerSettingsService;
   const restartSettings = yield* settings.getSettings.pipe(
-    Effect.map(Option.some),
+    Effect.asSome,
     Effect.catch((cause) =>
       Effect.logWarning("could not read restart continuation preference", { cause }).pipe(
         Effect.as(Option.none()),

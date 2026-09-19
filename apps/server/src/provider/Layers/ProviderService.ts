@@ -1360,9 +1360,9 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       if (hasDetachedSessionPersistence(adapter) && adapter.reattachSession) {
         const attached =
           input.allowResumeFallback === false
-            ? yield* adapter.reattachSession(recoveryInput).pipe(Effect.map(Option.some))
+            ? yield* adapter.reattachSession(recoveryInput).pipe(Effect.asSome)
             : yield* adapter.reattachSession(recoveryInput).pipe(
-                Effect.map(Option.some),
+                Effect.asSome,
                 Effect.catchTag("ProviderAdapterSessionNotFoundError", () =>
                   Effect.succeed(Option.none<ProviderSession>()),
                 ),
@@ -2495,7 +2495,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     // Continuation is project-scopable, so decide it per session's project;
     // without orchestration the environment value is all there is.
     const stopSettings = yield* serverSettings.getSettings.pipe(
-      Effect.map(Option.some),
+      Effect.asSome,
       Effect.orElseSucceed(() => Option.none<ServerSettingsValue>()),
     );
     const continueAfterRestartFor = Effect.fn("continueAfterRestartFor")(function* (

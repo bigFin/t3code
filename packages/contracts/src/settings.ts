@@ -81,7 +81,7 @@ export type SidebarThreadPreviewCount = typeof SidebarThreadPreviewCount.Type;
 const DEFAULT_SIDEBAR_THREAD_PREVIEW_COUNT: SidebarThreadPreviewCount = 6;
 export const MIN_SIDEBAR_AUTO_SETTLE_AFTER_DAYS = 1;
 export const MAX_SIDEBAR_AUTO_SETTLE_AFTER_DAYS = 90;
-export const SidebarAutoSettleAfterDays = Schema.Number.check(
+export const SidebarAutoSettleAfterDays = Schema.Finite.check(
   Schema.isBetween({
     minimum: MIN_SIDEBAR_AUTO_SETTLE_AFTER_DAYS,
     maximum: MAX_SIDEBAR_AUTO_SETTLE_AFTER_DAYS,
@@ -511,7 +511,7 @@ export const DEFAULT_CLIENT_SETTINGS: ClientSettings = Schema.decodeSync(ClientS
 
 // ── Server Settings (server-authoritative) ────────────────────
 
-const UsageModelTokenPrice = Schema.Number.check(
+const UsageModelTokenPrice = Schema.Finite.check(
   Schema.isFinite(),
   Schema.isGreaterThanOrEqualTo(0),
 );

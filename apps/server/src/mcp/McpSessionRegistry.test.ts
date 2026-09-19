@@ -37,7 +37,7 @@ const PersistedRegistryStateForTest = Schema.Struct({
         environmentId: EnvironmentId,
         threadId: ThreadId,
       }),
-      lastAliveAt: Schema.Number,
+      lastAliveAt: Schema.Finite,
       active: Schema.optional(Schema.Boolean),
     }),
   ),

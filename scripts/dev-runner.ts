@@ -122,8 +122,8 @@ export class DevRunnerInvalidPortOffsetError extends Schema.TaggedError<DevRunne
   "DevRunnerInvalidPortOffsetError",
   {
     configKey: Schema.Literal("T3CODE_PORT_OFFSET"),
-    portOffset: Schema.Number,
-    minimum: Schema.Number,
+    portOffset: Schema.Finite,
+    minimum: Schema.Finite,
   },
 ) {
   override get message(): string {
@@ -134,12 +134,12 @@ export class DevRunnerInvalidPortOffsetError extends Schema.TaggedError<DevRunne
 export class DevRunnerPortExhaustedError extends Schema.TaggedError<DevRunnerPortExhaustedError>()(
   "DevRunnerPortExhaustedError",
   {
-    startOffset: Schema.Number,
+    startOffset: Schema.Finite,
     requireServerPort: Schema.Boolean,
     requireWebPort: Schema.Boolean,
-    baseServerPort: Schema.Number,
-    baseWebPort: Schema.Number,
-    maximumPort: Schema.Number,
+    baseServerPort: Schema.Finite,
+    baseWebPort: Schema.Finite,
+    maximumPort: Schema.Finite,
   },
 ) {
   override get message(): string {
@@ -153,7 +153,7 @@ export class DevRunnerProcessError extends Schema.TaggedError<DevRunnerProcessEr
     operation: Schema.Literals(["spawn", "wait-for-exit"]),
     mode: Schema.Literals(["dev", "dev:server", "dev:web", "dev:desktop"]),
     executable: Schema.Literal("vp"),
-    argumentCount: Schema.Number,
+    argumentCount: Schema.Finite,
     shell: Schema.Boolean,
     cause: Schema.Defect(),
   },
@@ -168,9 +168,9 @@ export class DevRunnerProcessExitError extends Schema.TaggedError<DevRunnerProce
   {
     mode: Schema.Literals(["dev", "dev:server", "dev:web", "dev:desktop"]),
     executable: Schema.Literal("vp"),
-    argumentCount: Schema.Number,
+    argumentCount: Schema.Finite,
     shell: Schema.Boolean,
-    exitCode: Schema.Number,
+    exitCode: Schema.Finite,
   },
 ) {
   override get message(): string {

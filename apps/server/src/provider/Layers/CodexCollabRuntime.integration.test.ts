@@ -32,7 +32,7 @@ const MEMORY = "memory-consolidation-thread";
 const decodeMcpElicitationResponse = Schema.decodeUnknownEffect(
   Schema.fromJsonString(
     Schema.Struct({
-      id: Schema.Number,
+      id: Schema.Finite,
       result: Schema.Unknown,
     }),
   ),

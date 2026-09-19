@@ -48,7 +48,7 @@ const TestTokenResponseJson = Schema.fromJsonString(
     access_token: Schema.String,
     refresh_token: Schema.String,
     id_token: Schema.String,
-    expires_in: Schema.Number,
+    expires_in: Schema.Finite,
     token_type: Schema.String,
   }),
 );

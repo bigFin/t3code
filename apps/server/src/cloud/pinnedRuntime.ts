@@ -74,9 +74,9 @@ export class PinnedRuntimeInstallError extends Schema.TaggedError<PinnedRuntimeI
   "PinnedRuntimeInstallError",
   {
     step: Schema.String,
-    exitCode: Schema.optional(Schema.Number),
-    stdoutLength: Schema.optional(Schema.Number),
-    stderrLength: Schema.optional(Schema.Number),
+    exitCode: Schema.optional(Schema.Finite),
+    stdoutLength: Schema.optional(Schema.Finite),
+    stderrLength: Schema.optional(Schema.Finite),
     cause: Schema.optional(Schema.Defect()),
   },
 ) {

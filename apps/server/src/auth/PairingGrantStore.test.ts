@@ -47,10 +47,10 @@ const makePairingGrantStoreTestLayer = (
         AuthPairingLinks.AuthPairingLinkRepository,
         AuthPairingLinks.AuthPairingLinkRepository.of({
           create: () => Effect.void,
-          consumeAvailable: () => Effect.succeed(Option.none()),
+          consumeAvailable: () => Effect.succeedNone,
           listActive: () => Effect.succeed([]),
           revoke: () => Effect.succeed(false),
-          getByCredential: () => Effect.succeed(Option.none()),
+          getByCredential: () => Effect.succeedNone,
           ...overrides,
         }),
       ),

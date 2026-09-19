@@ -15,7 +15,7 @@ import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 export class BootstrapFdStatError extends Schema.TaggedError<BootstrapFdStatError>()(
   "BootstrapFdStatError",
   {
-    fd: Schema.Number,
+    fd: Schema.Finite,
     cause: Schema.Defect(),
   },
 ) {
@@ -27,7 +27,7 @@ export class BootstrapFdStatError extends Schema.TaggedError<BootstrapFdStatErro
 export class BootstrapInputStreamOpenError extends Schema.TaggedError<BootstrapInputStreamOpenError>()(
   "BootstrapInputStreamOpenError",
   {
-    fd: Schema.Number,
+    fd: Schema.Finite,
     platform: Schema.String,
     fdPath: Schema.optional(Schema.String),
     cause: Schema.Defect(),
@@ -42,7 +42,7 @@ export class BootstrapInputStreamOpenError extends Schema.TaggedError<BootstrapI
 export class BootstrapEnvelopeReadError extends Schema.TaggedError<BootstrapEnvelopeReadError>()(
   "BootstrapEnvelopeReadError",
   {
-    fd: Schema.Number,
+    fd: Schema.Finite,
     cause: Schema.Defect(),
   },
 ) {
@@ -54,7 +54,7 @@ export class BootstrapEnvelopeReadError extends Schema.TaggedError<BootstrapEnve
 export class BootstrapEnvelopeDecodeError extends Schema.TaggedError<BootstrapEnvelopeDecodeError>()(
   "BootstrapEnvelopeDecodeError",
   {
-    fd: Schema.Number,
+    fd: Schema.Finite,
     cause: Schema.Defect(),
   },
 ) {

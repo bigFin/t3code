@@ -2300,7 +2300,7 @@ const RawBaseComparisonSchema = Schema.Struct({
               Schema.NullOr(
                 Schema.Struct({
                   compare: Schema.optional(
-                    Schema.NullOr(Schema.Struct({ behindBy: Schema.Number })),
+                    Schema.NullOr(Schema.Struct({ behindBy: Schema.Finite })),
                   ),
                 }),
               ),

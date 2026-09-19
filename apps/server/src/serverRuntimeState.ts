@@ -264,7 +264,7 @@ export const readPersistedServerRuntimeState = (path: string) =>
     }
 
     return yield* decodePersistedServerRuntimeState(trimmed).pipe(
-      Effect.map(Option.some),
+      Effect.asSome,
       Effect.mapError(
         (cause) =>
           new ServerRuntimeStateError({

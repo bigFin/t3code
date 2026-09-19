@@ -69,7 +69,7 @@ it.effect("sets the selected browser session cookies through the HTTP route", ()
   Effect.gen(function* () {
     const crypto = yield* Crypto.Crypto;
     const unusedSecretStore = ServerSecretStore.ServerSecretStore.of({
-      get: () => Effect.succeed(Option.none()),
+      get: () => Effect.succeedNone,
       set: () => Effect.void,
       create: () => Effect.void,
       getOrCreateRandom: () => Effect.die("Not used by these routes."),

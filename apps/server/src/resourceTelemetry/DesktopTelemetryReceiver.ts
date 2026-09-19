@@ -50,8 +50,8 @@ export class DesktopTelemetryDescriptorUnavailable extends Schema.TaggedError<De
 export class DesktopTelemetryProtocolMismatch extends Schema.TaggedError<DesktopTelemetryProtocolMismatch>()(
   "DesktopTelemetryProtocolMismatch",
   {
-    expectedVersion: Schema.Number,
-    receivedVersion: Schema.Number,
+    expectedVersion: Schema.Finite,
+    receivedVersion: Schema.Finite,
   },
 ) {
   override get message(): string {
@@ -73,7 +73,7 @@ export class DesktopTelemetryDecodeFailed extends Schema.TaggedError<DesktopTele
 export class DesktopTelemetryStreamFailed extends Schema.TaggedError<DesktopTelemetryStreamFailed>()(
   "DesktopTelemetryStreamFailed",
   {
-    fd: Schema.Number,
+    fd: Schema.Finite,
     cause: Schema.Defect(),
   },
 ) {
@@ -85,7 +85,7 @@ export class DesktopTelemetryStreamFailed extends Schema.TaggedError<DesktopTele
 export class DesktopTelemetryStreamClosed extends Schema.TaggedError<DesktopTelemetryStreamClosed>()(
   "DesktopTelemetryStreamClosed",
   {
-    fd: Schema.Number,
+    fd: Schema.Finite,
   },
 ) {
   override get message(): string {
@@ -96,8 +96,8 @@ export class DesktopTelemetryStreamClosed extends Schema.TaggedError<DesktopTele
 export class DesktopTelemetryStale extends Schema.TaggedError<DesktopTelemetryStale>()(
   "DesktopTelemetryStale",
   {
-    fd: Schema.Number,
-    staleAfterMs: Schema.Number,
+    fd: Schema.Finite,
+    staleAfterMs: Schema.Finite,
   },
 ) {
   override get message(): string {
@@ -115,7 +115,7 @@ export type DesktopTelemetryReceiverError =
 export class DesktopTelemetryControlFailed extends Schema.TaggedError<DesktopTelemetryControlFailed>()(
   "DesktopTelemetryControlFailed",
   {
-    fd: Schema.Number,
+    fd: Schema.Finite,
     operation: Schema.String,
     cause: Schema.Defect(),
   },
@@ -128,8 +128,8 @@ export class DesktopTelemetryControlFailed extends Schema.TaggedError<DesktopTel
 export class DesktopTelemetryControlStalled extends Schema.TaggedError<DesktopTelemetryControlStalled>()(
   "DesktopTelemetryControlStalled",
   {
-    fd: Schema.Number,
-    remainingBytes: Schema.Number,
+    fd: Schema.Finite,
+    remainingBytes: Schema.Finite,
   },
 ) {
   override get message(): string {

@@ -34,7 +34,7 @@ export class ServerEnvironmentLabelCommandError extends Schema.TaggedError<Serve
   {
     probe: ServerEnvironmentLabelCommandProbe,
     executable: Schema.String,
-    argumentCount: Schema.Number,
+    argumentCount: Schema.Finite,
     cause: Schema.Defect(),
   },
 ) {
@@ -128,7 +128,7 @@ const runFriendlyLabelCommand = Effect.fn("runFriendlyLabelCommand")(function* (
             cause,
           }),
       ),
-      Effect.map(Option.some),
+      Effect.asSome,
       Effect.catchTags({
         ServerEnvironmentLabelCommandError: (error) =>
           Effect.logDebug(error.message).pipe(

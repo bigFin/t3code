@@ -71,8 +71,8 @@ export class WorkspaceSearchIndexSearchFailed extends Schema.TaggedError<Workspa
   "WorkspaceSearchIndexSearchFailed",
   {
     cwd: Schema.String,
-    queryLength: Schema.Number,
-    pageSize: Schema.Number,
+    queryLength: Schema.Finite,
+    pageSize: Schema.Finite,
     reason: Schema.String,
     cause: Schema.optional(Schema.Defect()),
   },

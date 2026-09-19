@@ -94,13 +94,13 @@ export const UsageBucket = Schema.Struct({
   provider: UsageProviderKind,
   model: TrimmedNonEmptyString,
   totals: UsageTokenTotals,
-  costUsd: Schema.Number,
+  costUsd: Schema.Finite,
   /**
    * What the cached input would have cost at full input rates minus what it
    * actually cost. Requires the rate table, so it is computed alongside cost
    * rather than derived on the client.
    */
-  cacheSavingsUsd: Schema.Number,
+  cacheSavingsUsd: Schema.Finite,
   costSource: UsageCostSource,
   /** Distinct assistant responses, after de-duplication. */
   records: NonNegativeInt,
@@ -189,7 +189,7 @@ export const UsageSummaryInput = Schema.Struct({
 export type UsageSummaryInput = typeof UsageSummaryInput.Type;
 
 export const UsageSummary = Schema.Struct({
-  contractVersion: Schema.Number,
+  contractVersion: Schema.Finite,
   readAt: Schema.String,
   timeZone: TrimmedNonEmptyString,
   sinceDay: UsageDay,

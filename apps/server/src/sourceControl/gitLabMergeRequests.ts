@@ -49,8 +49,8 @@ const GitLabMergeRequestSchema = Schema.Struct({
   closed_at: Schema.optional(Schema.NullOr(Schema.String)),
   merged_at: Schema.optional(Schema.NullOr(Schema.String)),
   updated_at: Schema.optional(Schema.OptionFromNullOr(Schema.DateTimeUtcFromString)),
-  source_project_id: Schema.optional(Schema.NullOr(Schema.Number)),
-  target_project_id: Schema.optional(Schema.NullOr(Schema.Number)),
+  source_project_id: Schema.optional(Schema.NullOr(Schema.Finite)),
+  target_project_id: Schema.optional(Schema.NullOr(Schema.Finite)),
   source_project: Schema.optional(Schema.NullOr(GitLabProjectReferenceSchema)),
   target_project: Schema.optional(Schema.NullOr(GitLabProjectReferenceSchema)),
 });

@@ -943,8 +943,8 @@ export type PullRequestDiffInput = typeof PullRequestDiffInput.Type;
 /** Real line counts for a file whose hunks the host withheld from the patch. */
 export const PullRequestOmittedFileStat = Schema.Struct({
   path: TrimmedNonEmptyString,
-  additions: Schema.Number,
-  deletions: Schema.Number,
+  additions: Schema.Finite,
+  deletions: Schema.Finite,
 });
 export type PullRequestOmittedFileStat = typeof PullRequestOmittedFileStat.Type;
 

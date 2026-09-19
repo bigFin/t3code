@@ -53,8 +53,8 @@ const ActiveRelease = Schema.Struct({ releaseId: ReleaseId });
 const InstalledRelease = Schema.Struct({
   releaseId: ReleaseId,
   version: Schema.String,
-  executable: Schema.Struct({ name: Schema.String, bytes: Schema.Number }),
-  harness: Schema.Struct({ name: Schema.String, bytes: Schema.Number }),
+  executable: Schema.Struct({ name: Schema.String, bytes: Schema.Finite }),
+  harness: Schema.Struct({ name: Schema.String, bytes: Schema.Finite }),
 });
 type InstalledRelease = typeof InstalledRelease.Type;
 const encodeActiveRelease = Schema.encodeEffect(Schema.fromJsonString(ActiveRelease));

@@ -8,7 +8,7 @@ import { callRpc, runHandler } from "./_internal/shared.ts";
 import * as AcpError from "./errors.ts";
 
 const decodeNestedNumberPayload = Schema.decodeUnknownEffect(
-  Schema.Struct({ profile: Schema.Struct({ token: Schema.Number }) }),
+  Schema.Struct({ profile: Schema.Struct({ token: Schema.Finite }) }),
 );
 const encodeUnknownJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 

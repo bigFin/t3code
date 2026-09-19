@@ -338,7 +338,7 @@ export class PreviewSessionLookupError extends Schema.TaggedError<PreviewSession
 export class PreviewInvalidUrlError extends Schema.TaggedError<PreviewInvalidUrlError>()(
   "PreviewInvalidUrlError",
   {
-    inputLength: Schema.Number,
+    inputLength: Schema.Finite,
     reason: Schema.Literals(["empty", "parse", "unsupported-protocol", "unexpected"]),
     protocol: Schema.optional(Schema.String),
     cause: Schema.Defect(),

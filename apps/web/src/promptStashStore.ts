@@ -55,7 +55,7 @@ const StashEntrySchema = Schema.Struct({
    * this field lets the UI show "N images still saving" until
    * `finalizeEntryImages` lands, and flags entries orphaned by a reload.
    */
-  pendingImageCount: Schema.optionalKey(Schema.Number),
+  pendingImageCount: Schema.optionalKey(Schema.Finite),
   /**
    * Payloads behind the prompt's context links (terminal excerpts, review comments, preview
    * annotations). Images and files have their own fields above. Optional: older entries

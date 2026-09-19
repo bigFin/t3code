@@ -23,8 +23,8 @@ export type ReviewDiffPreviewSourceKind = typeof ReviewDiffPreviewSourceKind.Typ
 export const ReviewDiffFileStat = Schema.Struct({
   path: Schema.String,
   previousPath: Schema.NullOr(Schema.String),
-  additions: Schema.Number,
-  deletions: Schema.Number,
+  additions: Schema.Finite,
+  deletions: Schema.Finite,
 });
 export type ReviewDiffFileStat = typeof ReviewDiffFileStat.Type;
 

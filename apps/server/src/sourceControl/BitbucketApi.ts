@@ -100,7 +100,7 @@ export class BitbucketResponseError extends Schema.TaggedError<BitbucketResponse
     operation: BitbucketApiOperation,
     status: Schema.Int,
     responseBodyLength: NonNegativeInt,
-    retryAt: Schema.optional(Schema.Number),
+    retryAt: Schema.optional(Schema.Finite),
   },
 ) {
   get detail(): string {
@@ -117,7 +117,7 @@ export class BitbucketResponseBodyReadError extends Schema.TaggedError<Bitbucket
   {
     operation: BitbucketApiOperation,
     status: Schema.Int,
-    retryAt: Schema.optional(Schema.Number),
+    retryAt: Schema.optional(Schema.Finite),
     cause: Schema.Defect(),
   },
 ) {

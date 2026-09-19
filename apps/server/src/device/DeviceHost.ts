@@ -32,7 +32,7 @@ export class DeviceHostError extends Schema.TaggedError<DeviceHostError>()("Devi
 
 export class DeviceHostTimeoutError extends Schema.TaggedError<DeviceHostTimeoutError>()(
   "DeviceHostTimeoutError",
-  { hostId: Schema.String, timeoutMs: Schema.Number },
+  { hostId: Schema.String, timeoutMs: Schema.Finite },
 ) {
   override get message(): string {
     return `Device host ${this.hostId} did not start agent tools within ${this.timeoutMs} ms.`;

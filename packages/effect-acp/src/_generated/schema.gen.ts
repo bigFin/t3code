@@ -75,7 +75,7 @@ export const AvailableCommandInput = Schema.Union([
 
 export type Cost = { readonly amount: number; readonly currency: string };
 export const Cost = Schema.Struct({
-  amount: Schema.Number.annotate({
+  amount: Schema.Finite.annotate({
     description: "Total cumulative cost for session.",
     format: "double",
   }).check(Schema.isFinite()),
@@ -88,8 +88,8 @@ export const Cost = Schema.Struct({
 export type ElicitationContentValue = string | number | number | boolean | ReadonlyArray<string>;
 export const ElicitationContentValue = Schema.Union([
   Schema.String.annotate({ title: "String" }),
-  Schema.Number.annotate({ title: "Integer", format: "int64" }).check(Schema.isInt()),
-  Schema.Number.annotate({ title: "Number", format: "double" }).check(Schema.isFinite()),
+  Schema.Finite.annotate({ title: "Integer", format: "int64" }).check(Schema.isInt()),
+  Schema.Finite.annotate({ title: "Number", format: "double" }).check(Schema.isFinite()),
   Schema.Boolean.annotate({ title: "Boolean" }),
   Schema.Array(Schema.String).annotate({ title: "StringArray" }),
 ]);
@@ -266,7 +266,7 @@ export const Error = Schema.Struct({
         "**URL elicitation required**: **UNSTABLE**\n\nThis capability is not part of the spec yet, and may be removed or changed at any point.\n\nThe agent requires user input via a URL-based elicitation before it can proceed.",
       format: "int32",
     }),
-    Schema.Number.annotate({
+    Schema.Finite.annotate({
       title: "Other",
       description: "Other undefined error code.",
       format: "int32",
@@ -454,7 +454,7 @@ export const PlanEntry = Schema.Struct({
 export type RequestId = null | number | string;
 export const RequestId = Schema.Union([
   Schema.Null.annotate({ title: "Null" }),
-  Schema.Number.annotate({ title: "Number", format: "int64" }).check(Schema.isInt()),
+  Schema.Finite.annotate({ title: "Number", format: "int64" }).check(Schema.isInt()),
   Schema.String.annotate({ title: "Str" }),
 ]).annotate({
   description:
@@ -638,7 +638,7 @@ export const TerminalExitStatus = Schema.Struct({
   ),
   exitCode: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({
+      Schema.Finite.annotate({
         description: "The process exit code (may be null if terminated by signal).",
         format: "uint32",
       })
@@ -674,7 +674,7 @@ export const ToolCallLocation = Schema.Struct({
   ),
   line: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({
+      Schema.Finite.annotate({
         description: "Optional line number within the file.",
         format: "uint32",
       })
@@ -738,7 +738,7 @@ export type Usage = {
 export const Usage = Schema.Struct({
   cachedReadTokens: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({ description: "Total cache read tokens.", format: "uint64" })
+      Schema.Finite.annotate({ description: "Total cache read tokens.", format: "uint64" })
         .check(Schema.isInt())
         .check(Schema.isGreaterThanOrEqualTo(0)),
       Schema.Null,
@@ -746,19 +746,19 @@ export const Usage = Schema.Struct({
   ),
   cachedWriteTokens: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({ description: "Total cache write tokens.", format: "uint64" })
+      Schema.Finite.annotate({ description: "Total cache write tokens.", format: "uint64" })
         .check(Schema.isInt())
         .check(Schema.isGreaterThanOrEqualTo(0)),
       Schema.Null,
     ]),
   ),
-  inputTokens: Schema.Number.annotate({
+  inputTokens: Schema.Finite.annotate({
     description: "Total input tokens across all turns.",
     format: "uint64",
   })
     .check(Schema.isInt())
     .check(Schema.isGreaterThanOrEqualTo(0)),
-  outputTokens: Schema.Number.annotate({
+  outputTokens: Schema.Finite.annotate({
     description: "Total output tokens across all turns.",
     format: "uint64",
   })
@@ -766,13 +766,13 @@ export const Usage = Schema.Struct({
     .check(Schema.isGreaterThanOrEqualTo(0)),
   thoughtTokens: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({ description: "Total thought/reasoning tokens", format: "uint64" })
+      Schema.Finite.annotate({ description: "Total thought/reasoning tokens", format: "uint64" })
         .check(Schema.isInt())
         .check(Schema.isGreaterThanOrEqualTo(0)),
       Schema.Null,
     ]),
   ),
-  totalTokens: Schema.Number.annotate({
+  totalTokens: Schema.Finite.annotate({
     description: "Sum of all token types across session.",
     format: "uint64",
   })
@@ -1120,7 +1120,7 @@ export const Annotations = Schema.Struct({
   lastModified: Schema.optionalKey(Schema.Union([Schema.String, Schema.Null])),
   priority: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({ format: "double" }).check(Schema.isFinite()),
+      Schema.Finite.annotate({ format: "double" }).check(Schema.isFinite()),
       Schema.Null,
     ]),
   ),
@@ -1250,7 +1250,7 @@ export const ElicitationPropertySchema = Schema.Union(
       ),
       maxLength: Schema.optionalKey(
         Schema.Union([
-          Schema.Number.annotate({ description: "Maximum string length.", format: "uint32" })
+          Schema.Finite.annotate({ description: "Maximum string length.", format: "uint32" })
             .check(Schema.isInt())
             .check(Schema.isGreaterThanOrEqualTo(0)),
           Schema.Null,
@@ -1258,7 +1258,7 @@ export const ElicitationPropertySchema = Schema.Union(
       ),
       minLength: Schema.optionalKey(
         Schema.Union([
-          Schema.Number.annotate({ description: "Minimum string length.", format: "uint32" })
+          Schema.Finite.annotate({ description: "Minimum string length.", format: "uint32" })
             .check(Schema.isInt())
             .check(Schema.isGreaterThanOrEqualTo(0)),
           Schema.Null,
@@ -1292,7 +1292,7 @@ export const ElicitationPropertySchema = Schema.Union(
       type: Schema.Literal("number"),
       default: Schema.optionalKey(
         Schema.Union([
-          Schema.Number.annotate({ description: "Default value.", format: "double" }).check(
+          Schema.Finite.annotate({ description: "Default value.", format: "double" }).check(
             Schema.isFinite(),
           ),
           Schema.Null,
@@ -1306,7 +1306,7 @@ export const ElicitationPropertySchema = Schema.Union(
       ),
       maximum: Schema.optionalKey(
         Schema.Union([
-          Schema.Number.annotate({
+          Schema.Finite.annotate({
             description: "Maximum value (inclusive).",
             format: "double",
           }).check(Schema.isFinite()),
@@ -1315,7 +1315,7 @@ export const ElicitationPropertySchema = Schema.Union(
       ),
       minimum: Schema.optionalKey(
         Schema.Union([
-          Schema.Number.annotate({
+          Schema.Finite.annotate({
             description: "Minimum value (inclusive).",
             format: "double",
           }).check(Schema.isFinite()),
@@ -1335,7 +1335,7 @@ export const ElicitationPropertySchema = Schema.Union(
       type: Schema.Literal("integer"),
       default: Schema.optionalKey(
         Schema.Union([
-          Schema.Number.annotate({ description: "Default value.", format: "int64" }).check(
+          Schema.Finite.annotate({ description: "Default value.", format: "int64" }).check(
             Schema.isInt(),
           ),
           Schema.Null,
@@ -1349,7 +1349,7 @@ export const ElicitationPropertySchema = Schema.Union(
       ),
       maximum: Schema.optionalKey(
         Schema.Union([
-          Schema.Number.annotate({
+          Schema.Finite.annotate({
             description: "Maximum value (inclusive).",
             format: "int64",
           }).check(Schema.isInt()),
@@ -1358,7 +1358,7 @@ export const ElicitationPropertySchema = Schema.Union(
       ),
       minimum: Schema.optionalKey(
         Schema.Union([
-          Schema.Number.annotate({
+          Schema.Finite.annotate({
             description: "Minimum value (inclusive).",
             format: "int64",
           }).check(Schema.isInt()),
@@ -1423,7 +1423,7 @@ export const ElicitationPropertySchema = Schema.Union(
       ]).annotate({ description: "Items for a multi-select (array) property schema." }),
       maxItems: Schema.optionalKey(
         Schema.Union([
-          Schema.Number.annotate({
+          Schema.Finite.annotate({
             description: "Maximum number of items to select.",
             format: "uint64",
           })
@@ -1434,7 +1434,7 @@ export const ElicitationPropertySchema = Schema.Union(
       ),
       minItems: Schema.optionalKey(
         Schema.Union([
-          Schema.Number.annotate({
+          Schema.Finite.annotate({
             description: "Minimum number of items to select.",
             format: "uint64",
           })
@@ -1562,7 +1562,7 @@ export const ContentBlock = Schema.Union(
       name: Schema.String,
       size: Schema.optionalKey(
         Schema.Union([
-          Schema.Number.annotate({ format: "int64" }).check(Schema.isInt()),
+          Schema.Finite.annotate({ format: "int64" }).check(Schema.isInt()),
           Schema.Null,
         ]),
       ),
@@ -1728,7 +1728,7 @@ export const ToolCallContent = Schema.Union(
             name: Schema.String,
             size: Schema.optionalKey(
               Schema.Union([
-                Schema.Number.annotate({ format: "int64" }).check(Schema.isInt()),
+                Schema.Finite.annotate({ format: "int64" }).check(Schema.isInt()),
                 Schema.Null,
               ]),
             ),
@@ -2433,7 +2433,7 @@ export const AgentNotification = Schema.Struct({
                       name: Schema.String,
                       size: Schema.optionalKey(
                         Schema.Union([
-                          Schema.Number.annotate({ format: "int64" }).check(Schema.isInt()),
+                          Schema.Finite.annotate({ format: "int64" }).check(Schema.isInt()),
                           Schema.Null,
                         ]),
                       ),
@@ -2551,7 +2551,7 @@ export const AgentNotification = Schema.Struct({
                       name: Schema.String,
                       size: Schema.optionalKey(
                         Schema.Union([
-                          Schema.Number.annotate({ format: "int64" }).check(Schema.isInt()),
+                          Schema.Finite.annotate({ format: "int64" }).check(Schema.isInt()),
                           Schema.Null,
                         ]),
                       ),
@@ -2669,7 +2669,7 @@ export const AgentNotification = Schema.Struct({
                       name: Schema.String,
                       size: Schema.optionalKey(
                         Schema.Union([
-                          Schema.Number.annotate({ format: "int64" }).check(Schema.isInt()),
+                          Schema.Finite.annotate({ format: "int64" }).check(Schema.isInt()),
                           Schema.Null,
                         ]),
                       ),
@@ -2945,13 +2945,13 @@ export const AgentNotification = Schema.Struct({
                     description: "Cumulative session cost (optional).",
                   }),
                 ),
-                size: Schema.Number.annotate({
+                size: Schema.Finite.annotate({
                   description: "Total context window size in tokens.",
                   format: "uint64",
                 })
                   .check(Schema.isInt())
                   .check(Schema.isGreaterThanOrEqualTo(0)),
-                used: Schema.Number.annotate({
+                used: Schema.Finite.annotate({
                   description: "Tokens currently in context.",
                   format: "uint64",
                 })
@@ -3132,7 +3132,7 @@ export const AgentRequest = Schema.Struct({
           ),
           limit: Schema.optionalKey(
             Schema.Union([
-              Schema.Number.annotate({
+              Schema.Finite.annotate({
                 description: "Maximum number of lines to read.",
                 format: "uint32",
               })
@@ -3143,7 +3143,7 @@ export const AgentRequest = Schema.Struct({
           ),
           line: Schema.optionalKey(
             Schema.Union([
-              Schema.Number.annotate({
+              Schema.Finite.annotate({
                 description: "Line number to start reading from (1-based).",
                 format: "uint32",
               })
@@ -3268,7 +3268,7 @@ export const AgentRequest = Schema.Struct({
           ),
           outputByteLimit: Schema.optionalKey(
             Schema.Union([
-              Schema.Number.annotate({
+              Schema.Finite.annotate({
                 description:
                   "Maximum number of output bytes to retain.\n\nWhen the limit is exceeded, the Client truncates from the beginning of the output\nto stay within the limit.\n\nThe Client MUST ensure truncation happens at a character boundary to maintain valid\nstring output, even if this means the retained output is slightly less than the\nspecified limit.",
                 format: "uint64",
@@ -3749,7 +3749,7 @@ export const AgentResponse = Schema.Union([
             default: [],
           }),
         ),
-        protocolVersion: Schema.Number.annotate({
+        protocolVersion: Schema.Finite.annotate({
           description:
             "Protocol version identifier.\n\nThis version is only bumped for breaking changes.\nNon-breaking changes should be introduced via capabilities.",
           format: "uint16",
@@ -4391,7 +4391,7 @@ export const CancelRequestNotification = Schema.Struct({
   ),
   requestId: Schema.Union([
     Schema.Null.annotate({ title: "Null" }),
-    Schema.Number.annotate({ title: "Number", format: "int64" }).check(Schema.isInt()),
+    Schema.Finite.annotate({ title: "Number", format: "int64" }).check(Schema.isInt()),
     Schema.String.annotate({ title: "Str" }),
   ]).annotate({
     description:
@@ -4735,7 +4735,7 @@ export const ClientRequest = Schema.Struct({
                 "Information about the Client name and version sent to the Agent.\n\nNote: in future versions of the protocol, this will be required.",
             }),
           ),
-          protocolVersion: Schema.Number.annotate({
+          protocolVersion: Schema.Finite.annotate({
             description:
               "Protocol version identifier.\n\nThis version is only bumped for breaking changes.\nNon-breaking changes should be introduced via capabilities.",
             format: "uint16",
@@ -5247,7 +5247,7 @@ export const ClientResponse = Schema.Union([
         ),
         exitCode: Schema.optionalKey(
           Schema.Union([
-            Schema.Number.annotate({
+            Schema.Finite.annotate({
               description: "The process exit code (may be null if terminated by signal).",
               format: "uint32",
             })
@@ -5514,7 +5514,7 @@ export const Content = Schema.Struct({
         name: Schema.String,
         size: Schema.optionalKey(
           Schema.Union([
-            Schema.Number.annotate({ format: "int64" }).check(Schema.isInt()),
+            Schema.Finite.annotate({ format: "int64" }).check(Schema.isInt()),
             Schema.Null,
           ]),
         ),
@@ -5665,7 +5665,7 @@ export const ContentChunk = Schema.Struct({
         name: Schema.String,
         size: Schema.optionalKey(
           Schema.Union([
-            Schema.Number.annotate({ format: "int64" }).check(Schema.isInt()),
+            Schema.Finite.annotate({ format: "int64" }).check(Schema.isInt()),
             Schema.Null,
           ]),
         ),
@@ -5742,7 +5742,7 @@ export const CreateTerminalRequest = Schema.Struct({
   ),
   outputByteLimit: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({
+      Schema.Finite.annotate({
         description:
           "Maximum number of output bytes to retain.\n\nWhen the limit is exceeded, the Client truncates from the beginning of the output\nto stay within the limit.\n\nThe Client MUST ensure truncation happens at a character boundary to maintain valid\nstring output, even if this means the retained output is slightly less than the\nspecified limit.",
         format: "uint64",
@@ -6277,7 +6277,7 @@ export const ErrorCode = Schema.Union([
       "**URL elicitation required**: **UNSTABLE**\n\nThis capability is not part of the spec yet, and may be removed or changed at any point.\n\nThe agent requires user input via a URL-based elicitation before it can proceed.",
     format: "int32",
   }),
-  Schema.Number.annotate({
+  Schema.Finite.annotate({
     title: "Other",
     description: "Other undefined error code.",
     format: "int32",
@@ -6558,7 +6558,7 @@ export const InitializeRequest = Schema.Struct({
         "Information about the Client name and version sent to the Agent.\n\nNote: in future versions of the protocol, this will be required.",
     }),
   ),
-  protocolVersion: Schema.Number.annotate({
+  protocolVersion: Schema.Finite.annotate({
     description:
       "Protocol version identifier.\n\nThis version is only bumped for breaking changes.\nNon-breaking changes should be introduced via capabilities.",
     format: "uint16",
@@ -6781,7 +6781,7 @@ export const InitializeResponse = Schema.Struct({
       default: [],
     }),
   ),
-  protocolVersion: Schema.Number.annotate({
+  protocolVersion: Schema.Finite.annotate({
     description:
       "Protocol version identifier.\n\nThis version is only bumped for breaking changes.\nNon-breaking changes should be introduced via capabilities.",
     format: "uint16",
@@ -6804,7 +6804,7 @@ export type IntegerPropertySchema = {
 export const IntegerPropertySchema = Schema.Struct({
   default: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({ description: "Default value.", format: "int64" }).check(
+      Schema.Finite.annotate({ description: "Default value.", format: "int64" }).check(
         Schema.isInt(),
       ),
       Schema.Null,
@@ -6818,7 +6818,7 @@ export const IntegerPropertySchema = Schema.Struct({
   ),
   maximum: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({ description: "Maximum value (inclusive).", format: "int64" }).check(
+      Schema.Finite.annotate({ description: "Maximum value (inclusive).", format: "int64" }).check(
         Schema.isInt(),
       ),
       Schema.Null,
@@ -6826,7 +6826,7 @@ export const IntegerPropertySchema = Schema.Struct({
   ),
   minimum: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({ description: "Minimum value (inclusive).", format: "int64" }).check(
+      Schema.Finite.annotate({ description: "Minimum value (inclusive).", format: "int64" }).check(
         Schema.isInt(),
       ),
       Schema.Null,
@@ -7205,7 +7205,7 @@ export const MultiSelectPropertySchema = Schema.Struct({
   ]).annotate({ description: "Items for a multi-select (array) property schema." }),
   maxItems: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({
+      Schema.Finite.annotate({
         description: "Maximum number of items to select.",
         format: "uint64",
       })
@@ -7216,7 +7216,7 @@ export const MultiSelectPropertySchema = Schema.Struct({
   ),
   minItems: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({
+      Schema.Finite.annotate({
         description: "Minimum number of items to select.",
         format: "uint64",
       })
@@ -7315,7 +7315,7 @@ export type NumberPropertySchema = {
 export const NumberPropertySchema = Schema.Struct({
   default: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({ description: "Default value.", format: "double" }).check(
+      Schema.Finite.annotate({ description: "Default value.", format: "double" }).check(
         Schema.isFinite(),
       ),
       Schema.Null,
@@ -7329,7 +7329,7 @@ export const NumberPropertySchema = Schema.Struct({
   ),
   maximum: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({ description: "Maximum value (inclusive).", format: "double" }).check(
+      Schema.Finite.annotate({ description: "Maximum value (inclusive).", format: "double" }).check(
         Schema.isFinite(),
       ),
       Schema.Null,
@@ -7337,7 +7337,7 @@ export const NumberPropertySchema = Schema.Struct({
   ),
   minimum: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({ description: "Minimum value (inclusive).", format: "double" }).check(
+      Schema.Finite.annotate({ description: "Minimum value (inclusive).", format: "double" }).check(
         Schema.isFinite(),
       ),
       Schema.Null,
@@ -7529,7 +7529,7 @@ export const PromptResponse = Schema.Struct({
 });
 
 export type ProtocolVersion = number;
-export const ProtocolVersion = Schema.Number.annotate({
+export const ProtocolVersion = Schema.Finite.annotate({
   description:
     "Protocol version identifier.\n\nThis version is only bumped for breaking changes.\nNon-breaking changes should be introduced via capabilities.",
   format: "uint16",
@@ -7557,7 +7557,7 @@ export const ReadTextFileRequest = Schema.Struct({
   ),
   limit: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({ description: "Maximum number of lines to read.", format: "uint32" })
+      Schema.Finite.annotate({ description: "Maximum number of lines to read.", format: "uint32" })
         .check(Schema.isInt())
         .check(Schema.isGreaterThanOrEqualTo(0)),
       Schema.Null,
@@ -7565,7 +7565,7 @@ export const ReadTextFileRequest = Schema.Struct({
   ),
   line: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({
+      Schema.Finite.annotate({
         description: "Line number to start reading from (1-based).",
         format: "uint32",
       })
@@ -7826,7 +7826,7 @@ export const ResourceLink = Schema.Struct({
   mimeType: Schema.optionalKey(Schema.Union([Schema.String, Schema.Null])),
   name: Schema.String,
   size: Schema.optionalKey(
-    Schema.Union([Schema.Number.annotate({ format: "int64" }).check(Schema.isInt()), Schema.Null]),
+    Schema.Union([Schema.Finite.annotate({ format: "int64" }).check(Schema.isInt()), Schema.Null]),
   ),
   title: Schema.optionalKey(Schema.Union([Schema.String, Schema.Null])),
   uri: Schema.String,
@@ -8369,7 +8369,7 @@ export const SessionNotification = Schema.Struct({
               name: Schema.String,
               size: Schema.optionalKey(
                 Schema.Union([
-                  Schema.Number.annotate({ format: "int64" }).check(Schema.isInt()),
+                  Schema.Finite.annotate({ format: "int64" }).check(Schema.isInt()),
                   Schema.Null,
                 ]),
               ),
@@ -8487,7 +8487,7 @@ export const SessionNotification = Schema.Struct({
               name: Schema.String,
               size: Schema.optionalKey(
                 Schema.Union([
-                  Schema.Number.annotate({ format: "int64" }).check(Schema.isInt()),
+                  Schema.Finite.annotate({ format: "int64" }).check(Schema.isInt()),
                   Schema.Null,
                 ]),
               ),
@@ -8605,7 +8605,7 @@ export const SessionNotification = Schema.Struct({
               name: Schema.String,
               size: Schema.optionalKey(
                 Schema.Union([
-                  Schema.Number.annotate({ format: "int64" }).check(Schema.isInt()),
+                  Schema.Finite.annotate({ format: "int64" }).check(Schema.isInt()),
                   Schema.Null,
                 ]),
               ),
@@ -8877,13 +8877,13 @@ export const SessionNotification = Schema.Struct({
             description: "Cumulative session cost (optional).",
           }),
         ),
-        size: Schema.Number.annotate({
+        size: Schema.Finite.annotate({
           description: "Total context window size in tokens.",
           format: "uint64",
         })
           .check(Schema.isInt())
           .check(Schema.isGreaterThanOrEqualTo(0)),
-        used: Schema.Number.annotate({
+        used: Schema.Finite.annotate({
           description: "Tokens currently in context.",
           format: "uint64",
         })
@@ -9181,7 +9181,7 @@ export const SessionUpdate = Schema.Union(
             name: Schema.String,
             size: Schema.optionalKey(
               Schema.Union([
-                Schema.Number.annotate({ format: "int64" }).check(Schema.isInt()),
+                Schema.Finite.annotate({ format: "int64" }).check(Schema.isInt()),
                 Schema.Null,
               ]),
             ),
@@ -9298,7 +9298,7 @@ export const SessionUpdate = Schema.Union(
             name: Schema.String,
             size: Schema.optionalKey(
               Schema.Union([
-                Schema.Number.annotate({ format: "int64" }).check(Schema.isInt()),
+                Schema.Finite.annotate({ format: "int64" }).check(Schema.isInt()),
                 Schema.Null,
               ]),
             ),
@@ -9415,7 +9415,7 @@ export const SessionUpdate = Schema.Union(
             name: Schema.String,
             size: Schema.optionalKey(
               Schema.Union([
-                Schema.Number.annotate({ format: "int64" }).check(Schema.isInt()),
+                Schema.Finite.annotate({ format: "int64" }).check(Schema.isInt()),
                 Schema.Null,
               ]),
             ),
@@ -9686,13 +9686,13 @@ export const SessionUpdate = Schema.Union(
           description: "Cumulative session cost (optional).",
         }),
       ),
-      size: Schema.Number.annotate({
+      size: Schema.Finite.annotate({
         description: "Total context window size in tokens.",
         format: "uint64",
       })
         .check(Schema.isInt())
         .check(Schema.isGreaterThanOrEqualTo(0)),
-      used: Schema.Number.annotate({
+      used: Schema.Finite.annotate({
         description: "Tokens currently in context.",
         format: "uint64",
       })
@@ -9914,7 +9914,7 @@ export const StringPropertySchema = Schema.Struct({
   ),
   maxLength: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({ description: "Maximum string length.", format: "uint32" })
+      Schema.Finite.annotate({ description: "Maximum string length.", format: "uint32" })
         .check(Schema.isInt())
         .check(Schema.isGreaterThanOrEqualTo(0)),
       Schema.Null,
@@ -9922,7 +9922,7 @@ export const StringPropertySchema = Schema.Struct({
   ),
   minLength: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({ description: "Minimum string length.", format: "uint32" })
+      Schema.Finite.annotate({ description: "Minimum string length.", format: "uint32" })
         .check(Schema.isInt())
         .check(Schema.isGreaterThanOrEqualTo(0)),
       Schema.Null,
@@ -10262,13 +10262,13 @@ export const UsageUpdate = Schema.Struct({
       description: "Cumulative session cost (optional).",
     }),
   ),
-  size: Schema.Number.annotate({
+  size: Schema.Finite.annotate({
     description: "Total context window size in tokens.",
     format: "uint64",
   })
     .check(Schema.isInt())
     .check(Schema.isGreaterThanOrEqualTo(0)),
-  used: Schema.Number.annotate({ description: "Tokens currently in context.", format: "uint64" })
+  used: Schema.Finite.annotate({ description: "Tokens currently in context.", format: "uint64" })
     .check(Schema.isInt())
     .check(Schema.isGreaterThanOrEqualTo(0)),
 }).annotate({
@@ -10315,7 +10315,7 @@ export const WaitForTerminalExitResponse = Schema.Struct({
   ),
   exitCode: Schema.optionalKey(
     Schema.Union([
-      Schema.Number.annotate({
+      Schema.Finite.annotate({
         description: "The process exit code (may be null if terminated by signal).",
         format: "uint32",
       })

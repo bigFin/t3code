@@ -73,9 +73,9 @@ const PersistedCredentialRecord = Schema.Struct({
     providerSessionId: Schema.String,
     providerInstanceId: ProviderInstanceId,
     capabilities: Schema.Array(Schema.Literals(["preview", "device"])),
-    issuedAt: Schema.Number,
+    issuedAt: Schema.Finite,
   }),
-  lastAliveAt: Schema.Number,
+  lastAliveAt: Schema.Finite,
   active: Schema.optional(Schema.Boolean),
 });
 

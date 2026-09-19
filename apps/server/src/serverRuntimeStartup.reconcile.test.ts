@@ -635,7 +635,7 @@ it.effect(
       directory: {
         getBinding: (candidate) =>
           candidate === absent.id
-            ? Effect.succeed(Option.none())
+            ? Effect.succeedNone
             : candidate === corrupt.id
               ? Effect.fail(corruptFailure)
               : Effect.succeed(
@@ -686,7 +686,7 @@ it.effect("retries failed projections and continues after a persistent failure",
   return runReconciliation({
     threads: [transient, persistent, later],
     directory: {
-      getBinding: () => Effect.succeed(Option.none()),
+      getBinding: () => Effect.succeedNone,
       upsert: () => Effect.void,
       recordImportedTranscript: () => Effect.die("unused"),
       getProvider: () => Effect.die("unused"),
