@@ -2530,7 +2530,7 @@ const readCodexRolloutTail = Effect.fn("CodexCliSessionImporter.readRolloutTail"
       if (length <= 0) {
         return "";
       }
-      yield* file.seek(size - length, "start");
+      yield* file.seek(BigInt(size - length), "start");
       const bytes = yield* file.readAlloc(length);
       return Option.match(bytes, {
         onNone: () => "",
@@ -2554,7 +2554,7 @@ const findCodexRolloutResumeOffset = Effect.fn("CodexCliSessionImporter.findRoll
 
         for (;;) {
           const baseOffset = fileSize - tailBytes;
-          yield* file.seek(baseOffset, "start");
+          yield* file.seek(BigInt(baseOffset), "start");
           const bytes = yield* file.readAlloc(tailBytes);
           const resumeOffset = Option.match(bytes, {
             onNone: () => fileSize,
@@ -3143,7 +3143,7 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
                 activityChanged: resetCachedHistory && cached.activities.length > 0,
               } satisfies CodexCliRolloutMessageCursorRead;
             }
-            yield* file.seek(start, "start");
+            yield* file.seek(BigInt(start), "start");
             const existingMessages = canContinue ? cached.messages : [];
             const appendedMessages: CodexCliImportedMessage[] = [];
             const appendedActivities: OrchestrationThreadActivity[] = [];
@@ -3370,7 +3370,7 @@ const makeCodexCliSessionImporter = (options?: { readonly scanIntervalMs?: numbe
             } satisfies CodexCliRolloutTaskObservation;
           }
 
-          yield* file.seek(start, "start");
+          yield* file.seek(BigInt(start), "start");
           const bytes = yield* file.readAlloc(length);
           const decodedChunk = Option.match(bytes, {
             onNone: () => undefined,

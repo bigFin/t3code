@@ -55,6 +55,8 @@ describe("DesktopEnvironment", () => {
           T3CODE_CUSTOM_CSS: " ~/.config/t3code/custom.css ",
           T3CODE_DESKTOP_TRANSPARENT_WINDOW: "true",
           T3CODE_OTLP_TRACES_URL: " http://127.0.0.1:4318/v1/traces ",
+          T3CODE_OTLP_METRICS_URL: " http://127.0.0.1:4318/v1/metrics ",
+          T3CODE_OTLP_LOGS_URL: " http://127.0.0.1:4318/v1/logs ",
           T3CODE_OTLP_EXPORT_INTERVAL_MS: "2500",
           T3CODE_OTLP_HEADERS: "authorization=Basic%20abc%3D%3D,x-tenant=t3",
           T3CODE_OTLP_PROTOCOL: "http/protobuf",
@@ -100,6 +102,8 @@ describe("DesktopEnvironment", () => {
       assert.deepEqual(environment.configuredBackendPort, Option.some(4949));
       assert.deepEqual(environment.commitHashOverride, Option.some("0123456789abcdef"));
       assert.deepEqual(environment.otlpTracesUrl, Option.some("http://127.0.0.1:4318/v1/traces"));
+      assert.deepEqual(environment.otlpMetricsUrl, Option.some("http://127.0.0.1:4318/v1/metrics"));
+      assert.deepEqual(environment.otlpLogsUrl, Option.some("http://127.0.0.1:4318/v1/logs"));
       assert.equal(environment.otlpExportIntervalMs, 2500);
       assert.deepEqual(
         environment.otlpHeaders,

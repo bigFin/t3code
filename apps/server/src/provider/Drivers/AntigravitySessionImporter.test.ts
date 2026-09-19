@@ -1,4 +1,4 @@
-import * as NodeFS from "node:fs";
+// @effect-diagnostics nodeBuiltinImport:off - fixtures resolve paths and seed sqlite directly.
 import * as NodePath from "node:path";
 import * as NodeSqlite from "node:sqlite";
 
@@ -10,6 +10,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import * as Schema from "effect/Schema";
 
 import { ServerConfig } from "../../config.ts";
 import { OrchestrationEngineService } from "../../orchestration/Services/OrchestrationEngine.ts";
@@ -24,6 +25,8 @@ import {
 } from "./AntigravitySessionImporter.ts";
 
 const THREAD_ID = ThreadId.make("antigravity-test-conv");
+
+const encodeUnknownJson = Schema.encodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
 
 describe("AntigravitySessionImporter", () => {
   describe("extractAntigravityUserRequest", () => {
@@ -184,14 +187,14 @@ Some metadata
         // Write transcript.jsonl
         const transcriptPath = path.join(brainDir, "transcript.jsonl");
         const transcriptContent = [
-          JSON.stringify({
+          encodeUnknownJson({
             step_index: 0,
             source: "USER_EXPLICIT",
             type: "USER_INPUT",
             created_at: "2026-09-14T20:00:00Z",
             content: "<USER_REQUEST>Hello from AGY</USER_REQUEST>",
           }),
-          JSON.stringify({
+          encodeUnknownJson({
             step_index: 1,
             source: "MODEL",
             type: "PLANNER_RESPONSE",
@@ -228,7 +231,7 @@ Some metadata
           "Hello from AGY",
           2,
           "2026-09-14T20:00:02Z",
-          JSON.stringify([`file://${workspaceDir}`]),
+          encodeUnknownJson([`file://${workspaceDir}`]),
           "CASCADE_RUN_STATUS_IDLE",
           "default-cli-project",
           "",

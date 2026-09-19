@@ -41,7 +41,7 @@ class ConnectPublicConfigMissingError extends CliError.UserError {
 }
 
 const connectUnavailableCommand = Command.make("connect", {
-  command: Argument.string("command").pipe(Argument.variadic),
+  command: Argument.String("command").pipe(Argument.variadic),
 }).pipe(
   Command.withDescription("T3 Connect is unavailable in builds without public configuration."),
   Command.unlisted,
@@ -56,7 +56,7 @@ const connectUnavailableCommand = Command.make("connect", {
 );
 
 const providerHostCommand = Command.make("__provider-host", {
-  config: Flag.string("config"),
+  config: Flag.String("config"),
 }).pipe(
   Command.withDescription("Run an internal detached provider host."),
   Command.withHandler(({ config }) =>

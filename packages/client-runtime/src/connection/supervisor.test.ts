@@ -75,6 +75,7 @@ const RELAY_ENTRY: ConnectionCatalogEntry = {
 const SSH_ENTRY: ConnectionCatalogEntry = {
   target: SSH_TARGET,
   profile: Option.none(),
+  enabled: true,
 };
 
 const PREPARED_CONNECTION: PreparedConnection = {

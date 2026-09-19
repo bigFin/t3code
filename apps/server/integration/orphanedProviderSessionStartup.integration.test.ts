@@ -21,6 +21,7 @@ import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { HttpServer } from "effect/unstable/http";
+import * as NetAddress from "effect/unstable/net/NetAddress";
 
 import * as EnvironmentAuth from "../src/auth/EnvironmentAuth.ts";
 import * as ServiceLauncherClient from "../src/cloud/serviceLauncherClient.ts";
@@ -35,6 +36,7 @@ import { makeSqlitePersistenceLive } from "../src/persistence/Layers/Sqlite.ts";
 import * as ProviderSessionRuntime from "../src/persistence/ProviderSessionRuntime.ts";
 import * as ExternalLauncher from "../src/process/externalLauncher.ts";
 import { CodexCliSessionImporterLive } from "../src/provider/Drivers/CodexCliSessionImporter.ts";
+import { AntigravitySessionImporterLive } from "../src/provider/Drivers/AntigravitySessionImporter.ts";
 import { PiCompatibleSessionImporterLive } from "../src/provider/Drivers/PiCompatibleSessionImporter.ts";
 import { ProviderSessionDirectoryLive } from "../src/provider/Layers/ProviderSessionDirectory.ts";
 import * as ProviderService from "../src/provider/Services/ProviderService.ts";
@@ -75,7 +77,6 @@ const startupDependencies = Layer.mergeAll(
   Layer.mock(Keybindings.Keybindings)({
     start: Effect.void,
   }),
-  ServerSettings.layerTest(),
   Layer.succeed(OrchestrationReactor.OrchestrationReactor, {
     start: () => Effect.void,
   }),
@@ -107,7 +108,7 @@ const startupDependencies = Layer.mergeAll(
   Layer.succeed(
     HttpServer.HttpServer,
     HttpServer.HttpServer.of({
-      address: { _tag: "TcpAddress", hostname: "127.0.0.1", port: 3773 },
+      address: NetAddress.inetAddressFromIpStringUnsafe("127.0.0.1", 3773),
       serve: (() => Effect.void) as HttpServer.HttpServer["Service"]["serve"],
     }),
   ),
@@ -115,6 +116,7 @@ const startupDependencies = Layer.mergeAll(
   Layer.mock(GitVcsDriver.GitVcsDriver)({}),
   CodexCliSessionImporterLive,
   PiCompatibleSessionImporterLive,
+  AntigravitySessionImporterLive,
   Layer.succeed(ProviderService.ProviderService, {
     startSession: () => Effect.die("unused"),
     sendTurn: () => Effect.die("unused"),
@@ -132,7 +134,7 @@ const startupDependencies = Layer.mergeAll(
     uploadFeedback: () => Effect.die("unused"),
     streamEvents: Stream.empty,
   }),
-);
+).pipe(Layer.provideMerge(ServerSettings.layerTest()));
 
 it.effect(
   "recovers a persisted starting session before opening the command gate after restart",
@@ -364,27 +366,27 @@ it.effect(
       });
     }).pipe(
       Effect.provide(
-        ServerConfig.layerTest(process.cwd(), {
-          prefix: "t3-orphaned-provider-session-startup-",
-        }).pipe(Layer.provideMerge(NodeServices.layer)),
+        Layer.mergeAll(
+          ServerConfig.layerTest(process.cwd(), {
+            prefix: "t3-orphaned-provider-session-startup-",
+          }).pipe(Layer.provideMerge(NodeServices.layer)),
+          // Shadow-provides for layer bookkeeping only: the phases above already
+          // bind the real runtime instances these mocks stand in for.
+          Layer.mock(OrchestrationEngine.OrchestrationEngineService)({
+            readEvents: () => Stream.empty,
+            dispatch: () => Effect.die("unused"),
+            streamDomainEvents: Stream.empty,
+            latestSequence: Effect.succeed(0),
+            readThreadEvents: () => Stream.empty,
+            readAggregateEvents: () => Stream.empty,
+            getThreadReplayStats: () => Effect.die("unused"),
+            subscribeDomainEvents: Effect.succeed(Stream.empty),
+          }),
+          Layer.mock(ProjectionSnapshotQuery.ProjectionSnapshotQuery)({}),
+          Layer.mock(ProviderSessionDirectory.ProviderSessionDirectory)({}),
+          Layer.mock(ServerSettings.ServerSettingsService)({}),
+        ),
       ),
-      // Shadow-provides for layer bookkeeping only: the phases above already
-      // bind the real runtime instances these mocks stand in for.
-      Effect.provide(
-        Layer.mock(OrchestrationEngine.OrchestrationEngineService)({
-          readEvents: () => Stream.empty,
-          dispatch: () => Effect.die("unused"),
-          streamDomainEvents: Stream.empty,
-          latestSequence: Effect.succeed(0),
-          readThreadEvents: () => Stream.empty,
-          readAggregateEvents: () => Stream.empty,
-          getThreadReplayStats: () => Effect.die("unused"),
-          subscribeDomainEvents: Effect.succeed(Stream.empty),
-        }),
-      ),
-      Effect.provide(Layer.mock(ProjectionSnapshotQuery.ProjectionSnapshotQuery)({})),
-      Effect.provide(Layer.mock(ProviderSessionDirectory.ProviderSessionDirectory)({})),
-      Effect.provide(Layer.mock(ServerSettings.ServerSettingsService)({})),
     ),
 );
 

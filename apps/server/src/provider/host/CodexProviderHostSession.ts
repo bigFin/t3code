@@ -29,8 +29,8 @@ export const CodexProviderHostSendTurnPayload = Schema.Struct({
   attachments: Schema.optionalKey(
     Schema.Array(
       Schema.Struct({
-        type: Schema.Literal("image"),
-        url: Schema.String,
+        type: Schema.Literal("localImage"),
+        path: Schema.String,
       }),
     ),
   ),

@@ -46,6 +46,8 @@ function connectionTitleForRouteLoading(
       return `Reconnecting to ${label}...`;
     case "connected":
       return "Connected";
+    case "unsupported":
+      return "Client not supported";
     case "error":
       return "Connection failed";
   }

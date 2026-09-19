@@ -139,6 +139,7 @@ function makeShell(input: {
     interactionMode: "default",
     branch: null,
     worktreePath: null,
+    pullRequests: [],
     latestTurn:
       input.activityAt === null
         ? null

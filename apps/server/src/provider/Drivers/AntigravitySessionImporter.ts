@@ -1,4 +1,3 @@
-import * as NodeFS from "node:fs";
 import * as NodeSqlite from "node:sqlite";
 import { fileURLToPath } from "node:url";
 
@@ -25,6 +24,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import * as Schema from "effect/Schema";
 import * as Schedule from "effect/Schedule";
 import * as Scope from "effect/Scope";
 
@@ -62,6 +62,8 @@ interface AntigravitySummaryRow {
   readonly project_id: string | null;
   readonly parent_conversation_id: string | null;
 }
+
+const encodeUnknownJson = Schema.encodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
 
 function stableTextHash(value: string): string {
   let hash = 0x811c9dc5;
@@ -380,7 +382,7 @@ export const makeAntigravitySessionImporter = (options?: { readonly customDataDi
             "activities",
             threadId,
             String(index),
-            stableTextHash(JSON.stringify(batch.map((activity) => activity.id))),
+            stableTextHash(encodeUnknownJson(batch.map((activity) => activity.id))),
           ),
           threadId,
           activities: batch,
@@ -408,9 +410,10 @@ export const makeAntigravitySessionImporter = (options?: { readonly customDataDi
 
       const threadId = stableThreadId(row.conversation_id);
       const title = row.title?.trim() || row.preview?.trim() || "Antigravity Session";
+      const nowMillis = yield* Clock.currentTimeMillis;
       const createdAt = isoTimestamp(
         row.last_modified_time,
-        DateTime.formatIso(DateTime.makeUnsafe(Date.now())),
+        DateTime.formatIso(DateTime.makeUnsafe(nowMillis)),
       );
 
       // Find or create Project
@@ -510,7 +513,7 @@ export const makeAntigravitySessionImporter = (options?: { readonly customDataDi
               "messages",
               threadId,
               String(index),
-              stableTextHash(JSON.stringify(batch.map((msg) => msg.messageId))),
+              stableTextHash(encodeUnknownJson(batch.map((msg) => msg.messageId))),
             ),
             threadId,
             messages: batch,

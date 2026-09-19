@@ -430,6 +430,7 @@ describe("OrchestrationEngine", () => {
           getThreadShellsByIds: () => Effect.succeed(new Map()),
           getThreadTranscriptById: () => Effect.die("unused"),
           getExistingThreadActivityIds: () => Effect.die("unused"),
+          listActivitiesByKind: () => Effect.die("unused"),
           getCommandReadModel: () => Effect.succeed(commandReadModel),
           getSnapshot: () =>
             Effect.sync(() => {
@@ -443,6 +444,7 @@ describe("OrchestrationEngine", () => {
               threads: [],
               updatedAt: projectionSnapshot.updatedAt,
             }),
+          getDeletedWorktreeThreads: () => Effect.die("unused"),
           getArchivedShellSnapshot: () =>
             Effect.succeed({
               snapshotSequence: projectionSnapshot.snapshotSequence,

@@ -9,6 +9,7 @@ import * as Path from "effect/Path";
 import * as PlatformError from "effect/PlatformError";
 import * as Schema from "effect/Schema";
 import { HttpServer } from "effect/unstable/http";
+import * as NetAddress from "effect/unstable/net/NetAddress";
 
 import * as ServerConfig from "../config.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
@@ -22,7 +23,7 @@ const makeFakeEnvironment = (id: EnvironmentId) =>
   });
 const makeFakeHttpServer = (hostname: string, port = 43123) =>
   HttpServer.HttpServer.of({
-    address: { _tag: "TcpAddress", hostname, port },
+    address: NetAddress.inetAddressFromIpStringUnsafe(hostname, port),
     serve: (() => Effect.void) as HttpServer.HttpServer["Service"]["serve"],
   });
 const fakeHttpServer = makeFakeHttpServer("127.0.0.1");
@@ -162,7 +163,8 @@ it.effect("builds MCP endpoints from the bound server host", () =>
     const cases = [
       ["100.64.0.40", "http://100.64.0.40:43123/mcp"],
       ["0.0.0.0", "http://127.0.0.1:43123/mcp"],
-      ["localhost", "http://localhost:43123/mcp"],
+      ["::", "http://127.0.0.1:43123/mcp"],
+      ["::1", "http://[::1]:43123/mcp"],
       ["127.0.0.1", "http://127.0.0.1:43123/mcp"],
     ] as const;
 
@@ -260,7 +262,7 @@ it.effect("resolves a credential after registry teardown and recreation", () =>
     const issued = yield* firstRegistry.issue({
       threadId,
       providerInstanceId: ProviderInstanceId.make("codex"),
-      preview: false,
+      capabilities: new Set(),
     });
     const token = issued.config.authorizationHeader.replace(/^Bearer\s+/, "");
 
@@ -283,7 +285,7 @@ it.effect("retires superseded credentials after the replacement session shows li
         const first = yield* McpSessionRegistry.issueActiveMcpCredential({
           threadId,
           providerInstanceId: ProviderInstanceId.make("codex"),
-          preview: false,
+          capabilities: new Set(),
         });
         const afterFirst = yield* fileSystem.readFileString(
           `${baseDir}/userdata/${McpSessionRegistry.__testing.persistedRegistryFileName}`,
@@ -291,7 +293,7 @@ it.effect("retires superseded credentials after the replacement session shows li
         const second = yield* McpSessionRegistry.issueActiveMcpCredential({
           threadId,
           providerInstanceId: ProviderInstanceId.make("codex"),
-          preview: false,
+          capabilities: new Set(),
         });
         const afterSecond = yield* fileSystem.readFileString(
           `${baseDir}/userdata/${McpSessionRegistry.__testing.persistedRegistryFileName}`,
@@ -363,7 +365,7 @@ it.effect("does not let a stale registry generation retire a newer credential", 
     const staleIssued = yield* staleRegistry.issue({
       threadId,
       providerInstanceId: ProviderInstanceId.make("codex"),
-      preview: false,
+      capabilities: new Set(),
     });
     const replacementRegistry = yield* makeRegistry(
       () => timestamp,
@@ -376,7 +378,7 @@ it.effect("does not let a stale registry generation retire a newer credential", 
     const replacementIssued = yield* replacementRegistry.issue({
       threadId,
       providerInstanceId: ProviderInstanceId.make("codex"),
-      preview: false,
+      capabilities: new Set(),
     });
     const staleToken = staleIssued.config.authorizationHeader.replace(/^Bearer\s+/, "");
     const replacementToken = replacementIssued.config.authorizationHeader.replace(/^Bearer\s+/, "");
@@ -411,13 +413,13 @@ it.effect("keeps the installed credential when a replacement was issued but neve
     const installed = yield* registry.issue({
       threadId,
       providerInstanceId: ProviderInstanceId.make("codex"),
-      preview: false,
+      capabilities: new Set(),
     });
     yield* registry.activateProviderSession(installed.config.providerSessionId);
     const interruptedReplacement = yield* registry.issue({
       threadId,
       providerInstanceId: ProviderInstanceId.make("codex"),
-      preview: false,
+      capabilities: new Set(),
     });
     const installedToken = installed.config.authorizationHeader.replace(/^Bearer\s+/, "");
     const replacementToken = interruptedReplacement.config.authorizationHeader.replace(
@@ -501,13 +503,13 @@ it.effect("skips persistent I/O for an inactive replacement before the heartbeat
     const installed = yield* registry.issue({
       threadId,
       providerInstanceId: ProviderInstanceId.make("codex"),
-      preview: false,
+      capabilities: new Set(),
     });
     yield* registry.activateProviderSession(installed.config.providerSessionId);
     yield* registry.issue({
       threadId,
       providerInstanceId: ProviderInstanceId.make("codex"),
-      preview: false,
+      capabilities: new Set(),
     });
 
     timestamp = 1_050;
@@ -533,7 +535,7 @@ it.effect("filters persisted credentials to the current environment", () =>
     const issued = yield* foreignRegistry.issue({
       threadId: ThreadId.make("thread-foreign-environment"),
       providerInstanceId: ProviderInstanceId.make("codex"),
-      preview: false,
+      capabilities: new Set(),
     });
     const token = issued.config.authorizationHeader.replace(/^Bearer\s+/, "");
 
@@ -632,7 +634,7 @@ it.effect("serializes concurrent credential persistence updates", () =>
         registry.issue({
           threadId: ThreadId.make(`thread-concurrent-${index}`),
           providerInstanceId: ProviderInstanceId.make("codex"),
-          preview: false,
+          capabilities: new Set(),
         }),
       { concurrency: "unbounded" },
     );
@@ -663,12 +665,12 @@ it.effect("merges concurrent credential issuance from independent registries", (
         firstRegistry.issue({
           threadId: ThreadId.make("thread-process-concurrent-1"),
           providerInstanceId: ProviderInstanceId.make("codex"),
-          preview: false,
+          capabilities: new Set(),
         }),
         secondRegistry.issue({
           threadId: ThreadId.make("thread-process-concurrent-2"),
           providerInstanceId: ProviderInstanceId.make("codex"),
-          preview: false,
+          capabilities: new Set(),
         }),
       ],
       { concurrency: "unbounded" },
@@ -705,7 +707,7 @@ it.effect("coalesces durable liveness heartbeats instead of writing on every res
     const issued = yield* registry.issue({
       threadId: ThreadId.make("thread-heartbeat"),
       providerInstanceId: ProviderInstanceId.make("codex"),
-      preview: false,
+      capabilities: new Set(),
     });
     yield* registry.activateProviderSession(issued.config.providerSessionId);
     const token = issued.config.authorizationHeader.replace(/^Bearer\s+/, "");
@@ -741,12 +743,12 @@ it.effect("persists thread and provider-session revocations across recreation", 
     const threadCredential = yield* registry.issue({
       threadId: ThreadId.make("thread-revoked"),
       providerInstanceId: ProviderInstanceId.make("codex"),
-      preview: false,
+      capabilities: new Set(),
     });
     const providerCredential = yield* registry.issue({
       threadId: ThreadId.make("provider-session-revoked"),
       providerInstanceId: ProviderInstanceId.make("claude"),
-      preview: false,
+      capabilities: new Set(),
     });
     const threadToken = threadCredential.config.authorizationHeader.replace(/^Bearer\s+/, "");
     const providerToken = providerCredential.config.authorizationHeader.replace(/^Bearer\s+/, "");
@@ -772,7 +774,7 @@ it.effect("prunes expired credentials from persistent state during recreation", 
     const issued = yield* registry.issue({
       threadId: ThreadId.make("thread-expired-on-restart"),
       providerInstanceId: ProviderInstanceId.make("codex"),
-      preview: false,
+      capabilities: new Set(),
     });
     const token = issued.config.authorizationHeader.replace(/^Bearer\s+/, "");
 
