@@ -1,16 +1,16 @@
-{
-  lib,
-  symlinkJoin,
-  makeBinaryWrapper,
-  enableCodex ? false,
-  codex,
-  enableGitHub ? true,
-  gh,
-  enableGit ? true,
-  git,
-  customCssPath ? null,
-  transparentWindow ? false,
-  t3code-unwrapped,
+{ lib
+, symlinkJoin
+, makeBinaryWrapper
+, enableCodex ? false
+, codex
+, enableGitHub ? true
+, gh
+, enableGit ? true
+, git
+, customCssPath ? null
+, transparentWindow ? false
+, t3code-unwrapped
+,
 }:
 
 let
