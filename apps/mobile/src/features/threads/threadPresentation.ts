@@ -17,10 +17,6 @@ export type ThreadStatusKind =
 
 export interface ThreadStatusPresentation extends StatusTone {
   readonly kind: ThreadStatusKind;
-  /** Foreground color for the leading status icon. */
-  readonly iconColor: string;
-  /** Background color for the leading status icon circle. */
-  readonly iconBackground: string;
   /** Whether the indicator represents in-flight activity. */
   readonly pulse: boolean;
 }
@@ -49,8 +45,6 @@ export function resolveThreadStatus(
       label: "Needs Approval",
       pillClassName: "bg-warning",
       textClassName: "text-warning-foreground",
-      iconColor: "#ff9f0a",
-      iconBackground: "rgba(255,159,10,0.22)",
       pulse: false,
     };
   }
@@ -59,10 +53,8 @@ export function resolveThreadStatus(
     return {
       kind: "awaiting-input",
       label: "Awaiting Input",
-      pillClassName: "bg-primary/10",
-      textClassName: "text-foreground-secondary",
-      iconColor: "#5e5ce6",
-      iconBackground: "rgba(94,92,230,0.22)",
+      pillClassName: "bg-adaptive-indigo-500-a12-a16",
+      textClassName: "text-adaptive-indigo-600-300",
       pulse: false,
     };
   }
@@ -83,10 +75,8 @@ export function resolveThreadStatus(
     return {
       kind: "working",
       label: "Working",
-      pillClassName: "bg-primary/10",
+      pillClassName: "bg-adaptive-sky-500-a12-a16",
       textClassName: "text-adaptive-sky-600-400",
-      iconColor: "#0a84ff",
-      iconBackground: "rgba(10,132,255,0.22)",
       pulse: true,
     };
   }
@@ -95,10 +85,8 @@ export function resolveThreadStatus(
     return {
       kind: "connecting",
       label: "Connecting",
-      pillClassName: "bg-primary/10",
-      textClassName: "text-foreground-secondary",
-      iconColor: "#0a84ff",
-      iconBackground: "rgba(10,132,255,0.22)",
+      pillClassName: "bg-adaptive-sky-500-a12-a16",
+      textClassName: "text-adaptive-sky-600-400",
       pulse: true,
     };
   }
@@ -109,8 +97,6 @@ export function resolveThreadStatus(
       label: "Interrupted",
       pillClassName: "bg-orange-500/12 dark:bg-orange-500/16",
       textClassName: "text-orange-700 dark:text-orange-300",
-      iconColor: "#ff9f0a",
-      iconBackground: "rgba(255,159,10,0.22)",
       pulse: false,
     };
   }
@@ -124,8 +110,6 @@ export function resolveThreadStatus(
       textClassName: capacityLimited
         ? "text-rose-700 dark:text-rose-300"
         : "text-danger-foreground",
-      iconColor: "#ff453a",
-      iconBackground: "rgba(255,69,58,0.22)",
       pulse: false,
     };
   }
@@ -138,10 +122,8 @@ export function resolveThreadStatus(
     return {
       kind: "plan-ready",
       label: "Plan Ready",
-      pillClassName: "bg-primary/10",
-      textClassName: "text-foreground-secondary",
-      iconColor: "#bf5af2",
-      iconBackground: "rgba(191,90,242,0.22)",
+      pillClassName: "bg-adaptive-violet-500-a12-a16",
+      textClassName: "text-adaptive-violet-600-400",
       pulse: false,
     };
   }
