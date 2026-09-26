@@ -47,12 +47,8 @@ describe("buildHomeListFilterMenu", () => {
       projects: [],
       selectedEnvironmentIds: new Set(["environment-1" as never, "environment-2" as never]),
       selectedProjectKey: null,
-      projectSortOrder: "updated_at",
-      threadSortOrder: "updated_at",
       onEnvironmentChange: vi.fn(),
       onProjectChange: vi.fn(),
-      onProjectSortOrderChange: vi.fn(),
-      onThreadSortOrderChange: vi.fn(),
     });
 
     expect(menu.items[0]).toMatchObject({

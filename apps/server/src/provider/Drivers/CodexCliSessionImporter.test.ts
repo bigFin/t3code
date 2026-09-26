@@ -82,6 +82,7 @@ function makeThread(): CodexSchema.V2ThreadReadResponse["thread"] {
     id: "019codex-thread",
     modelProvider: "openai",
     preview: "Original prompt",
+    projectId: null,
     sessionId: "session-1",
     source: "cli",
     status: { type: "idle" },

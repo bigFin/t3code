@@ -25,7 +25,6 @@ import {
   resolveProjectStatusIndicator,
   resolveSidebarStageBadgeLabel,
   resolveSidebarHostDisplayLabels,
-  resolveThreadRowClassName,
   resolveSidebarThreadStatus,
   resolveThreadStatusPill,
   resolveWorkingStartedAt,

@@ -199,7 +199,7 @@ function formatCodexUserInput(input: CodexUserInput): string {
     case "text":
       return input.text;
     case "image":
-      return `[image: ${input.url}]`;
+      return "url" in input ? `[image: ${input.url}]` : `[image: ${input.fileId}]`;
     case "localImage":
       return `[image: ${input.path}]`;
     case "audio":

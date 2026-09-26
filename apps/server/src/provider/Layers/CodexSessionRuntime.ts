@@ -725,7 +725,13 @@ function buildThreadStartParams(input: {
     approvalsReviewer: config.approvalsReviewer,
     ...(input.model ? { model: input.model } : {}),
     ...(input.serviceTier ? { serviceTier: input.serviceTier } : {}),
-    ...(input.threadConfig ? { config: input.threadConfig } : {}),
+    ...(input.threadConfig
+      ? {
+          config: input.threadConfig as NonNullable<
+            EffectCodexSchema.V2ThreadStartParams["config"]
+          >,
+        }
+      : {}),
   };
 }
 
