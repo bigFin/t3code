@@ -263,8 +263,9 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
       }
     });
 
-    const cleanup = Effect.all(
-      [schemaPath, outputPath, ...cleanupPaths].map((filePath) => safeUnlink(filePath)),
+    const cleanup = Effect.forEach(
+      [schemaPath, outputPath, ...cleanupPaths],
+      (filePath) => safeUnlink(filePath),
       {
         concurrency: "unbounded",
       },

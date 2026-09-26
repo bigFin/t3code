@@ -284,7 +284,7 @@ describe("environment shell synchronization", () => {
         retryNow: Effect.void,
       } satisfies EnvironmentSupervisor.EnvironmentSupervisor["Service"]);
       const cache = Persistence.EnvironmentCacheStore.of({
-        loadShell: () => Effect.succeed(Option.some(cachedSnapshot)),
+        loadShell: () => Effect.succeedSome(cachedSnapshot),
         saveShell: () => Effect.void,
         loadThread: () => Effect.succeedNone,
         saveThread: () => Effect.void,
@@ -364,7 +364,7 @@ describe("environment shell synchronization", () => {
         retryNow: Effect.void,
       } satisfies EnvironmentSupervisor.EnvironmentSupervisor["Service"]);
       const cache = Persistence.EnvironmentCacheStore.of({
-        loadShell: () => Effect.succeed(Option.some(LIVE_SHELL_SNAPSHOT)),
+        loadShell: () => Effect.succeedSome(LIVE_SHELL_SNAPSHOT),
         saveShell: () => Effect.void,
         loadThread: () => Effect.succeedNone,
         saveThread: () => Effect.void,

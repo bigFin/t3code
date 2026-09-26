@@ -578,7 +578,7 @@ export const make = Effect.gen(function* () {
                   { threadId: input.threadId },
                 ),
               ),
-              Effect.map((runtime) => Option.some(runtime)),
+              Effect.asSome,
             ),
         }),
       ),

@@ -174,24 +174,22 @@ it.effect("resolveAutoBootstrapWelcomeTargets returns existing project and threa
         getCounts: () => Effect.die("unused"),
         getEventReplayStats: () => Effect.die("unused"),
         getActiveProjectByWorkspaceRoot: () =>
-          Effect.succeed(
-            Option.some({
-              id: bootstrapProjectId,
-              title: "Startup Project",
-              workspaceRoot: "/tmp/startup-project",
-              defaultModelSelection: {
-                instanceId: ProviderInstanceId.make("codex"),
-                model: DEFAULT_MODEL,
-              },
-              scripts: [],
-              createdAt: "2026-01-01T00:00:00.000Z",
-              updatedAt: "2026-01-01T00:00:00.000Z",
-              deletedAt: null,
-            }),
-          ),
+          Effect.succeedSome({
+            id: bootstrapProjectId,
+            title: "Startup Project",
+            workspaceRoot: "/tmp/startup-project",
+            defaultModelSelection: {
+              instanceId: ProviderInstanceId.make("codex"),
+              model: DEFAULT_MODEL,
+            },
+            scripts: [],
+            createdAt: "2026-01-01T00:00:00.000Z",
+            updatedAt: "2026-01-01T00:00:00.000Z",
+            deletedAt: null,
+          }),
         getProjectShells: () => Effect.die("unused"),
         getProjectShellById: () => Effect.die("unused"),
-        getFirstActiveThreadIdByProjectId: () => Effect.succeed(Option.some(bootstrapThreadId)),
+        getFirstActiveThreadIdByProjectId: () => Effect.succeedSome(bootstrapThreadId),
         getImportedAgentSessionSources: () => Effect.die("unused"),
         getThreadCheckpointContext: () => Effect.succeedNone,
         getFullThreadDiffContext: () => Effect.succeedNone,

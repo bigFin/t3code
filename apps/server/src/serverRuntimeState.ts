@@ -251,7 +251,7 @@ export const readPersistedServerRuntimeState = (path: string) =>
                   cause,
                 }),
               ),
-        onSuccess: (contents) => Effect.succeed(Option.some(contents)),
+        onSuccess: (contents) => Effect.succeedSome(contents),
       }),
     );
     if (Option.isNone(raw)) {

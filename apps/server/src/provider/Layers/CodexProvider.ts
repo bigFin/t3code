@@ -543,7 +543,7 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
       requestAllCodexModels(client),
       // Usage is an enrichment: a failure or a slow answer degrades to "no
       // usage this probe" rather than costing the account and models.
-      client.request("account/rateLimits/read", undefined).pipe(
+      client.request("account/rateLimits/read", null).pipe(
         Effect.map((response) => ({
           rateLimits: {
             snapshot: response.rateLimits,

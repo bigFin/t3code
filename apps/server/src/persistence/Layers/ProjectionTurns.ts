@@ -318,8 +318,7 @@ const makeProjectionTurnRepository = Effect.gen(function* () {
       Effect.flatMap((rowOption) =>
         Option.match(rowOption, {
           onNone: () => Effect.succeedNone,
-          onSome: (row) =>
-            Effect.succeed(Option.some(row as Schema.Schema.Type<typeof ProjectionTurnById>)),
+          onSome: (row) => Effect.succeedSome(row as Schema.Schema.Type<typeof ProjectionTurnById>),
         }),
       ),
     );

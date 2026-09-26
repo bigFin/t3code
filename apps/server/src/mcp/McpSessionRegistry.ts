@@ -522,9 +522,7 @@ export const issueActiveMcpCredential = (
   // A detached provider process may still use an older credential minted by a
   // previous T3 generation. The replacement is retired only after its provider
   // session shows life, or all credentials are revoked by explicit stop.
-  activeMcpSessionRegistry
-    ? activeMcpSessionRegistry.issue(request)
-    : Effect.sync((): McpIssuedCredential | undefined => undefined);
+  activeMcpSessionRegistry ? activeMcpSessionRegistry.issue(request) : Effect.undefined;
 
 /**
  * Refreshes the liveness of a thread's MCP credential. Called on every provider

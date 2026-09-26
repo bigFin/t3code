@@ -43,6 +43,7 @@ import {
   ThreadSettledPayload,
   ThreadPinnedPayload,
   ThreadPinReorderedPayload,
+  ThreadAutoSettleSetPayload,
   ThreadPullRequestLinkedPayload,
   ThreadPullRequestSyncedPayload,
   ThreadPullRequestUnlinkedPayload,
@@ -118,12 +119,26 @@ function settledTurnStateForSessionStatus(
   }
 }
 
+// Runs for every thread event (including streaming deltas) against every
+// thread the server has ever seen, so copy the array rather than map it.
 function updateThread(
   threads: ReadonlyArray<OrchestrationThread>,
   threadId: ThreadId,
   patch: ThreadPatch,
-): OrchestrationThread[] {
-  return threads.map((thread) => (thread.id === threadId ? { ...thread, ...patch } : thread));
+): ReadonlyArray<OrchestrationThread> {
+  const index = threads.findIndex((thread) => thread.id === threadId);
+  return index === -1 ? threads : patchThreadAt(threads, index, patch);
+}
+
+/** For callers that already located the thread and must not scan again. */
+function patchThreadAt(
+  threads: ReadonlyArray<OrchestrationThread>,
+  index: number,
+  patch: ThreadPatch,
+): ReadonlyArray<OrchestrationThread> {
+  const next = threads.slice();
+  next[index] = { ...threads[index]!, ...patch };
+  return next;
 }
 
 /** Patch that swaps a thread's links and re-derives the legacy single-PR field from them. */
@@ -442,6 +457,7 @@ export function projectEvent(
             settledAt: null,
             unsettledAt: null,
             activeOrderKey: null,
+            autoSettleDisabledAt: null,
             snoozedUntil: null,
             snoozedAt: null,
             deletedAt: null,
@@ -577,6 +593,17 @@ export function projectEvent(
             // Unpin clears the slot: re-pinning is "pin again", not "restore
             // an ancient position".
             pinOrderKey: null,
+            updatedAt: payload.updatedAt,
+          }),
+        })),
+      );
+
+    case "thread.auto-settle-set":
+      return decodeForEvent(ThreadAutoSettleSetPayload, event.payload, event.type, "payload").pipe(
+        Effect.map((payload) => ({
+          ...nextBase,
+          threads: updateThread(nextBase.threads, payload.threadId, {
+            autoSettleDisabledAt: payload.autoSettleDisabledAt,
             updatedAt: payload.updatedAt,
           }),
         })),
@@ -756,7 +783,8 @@ export function projectEvent(
           event.type,
           "payload",
         );
-        const thread = nextBase.threads.find((entry) => entry.id === payload.threadId);
+        const threadIndex = nextBase.threads.findIndex((entry) => entry.id === payload.threadId);
+        const thread = nextBase.threads[threadIndex];
         if (!thread) {
           return nextBase;
         }
@@ -846,7 +874,7 @@ export function projectEvent(
 
         return {
           ...nextBase,
-          threads: updateThread(nextBase.threads, payload.threadId, {
+          threads: patchThreadAt(nextBase.threads, threadIndex, {
             messages: cappedMessages,
             checkpoints,
             latestTurn,
@@ -1121,7 +1149,8 @@ export function projectEvent(
         "payload",
       ).pipe(
         Effect.map((payload) => {
-          const thread = nextBase.threads.find((entry) => entry.id === payload.threadId);
+          const threadIndex = nextBase.threads.findIndex((entry) => entry.id === payload.threadId);
+          const thread = nextBase.threads[threadIndex];
           if (!thread) {
             return nextBase;
           }
@@ -1135,7 +1164,7 @@ export function projectEvent(
 
           return {
             ...nextBase,
-            threads: updateThread(nextBase.threads, payload.threadId, {
+            threads: patchThreadAt(nextBase.threads, threadIndex, {
               activities,
               updatedAt: event.occurredAt,
             }),
