@@ -196,7 +196,10 @@ const desktopInstanceLockLayer = DesktopInstanceLock.layer.pipe(
   Layer.provideMerge(ElectronApp.layer),
 );
 
-const desktopClerkLayer = DesktopClerk.layer.pipe(Layer.provideMerge(desktopInstanceLockLayer));
+const desktopClerkLayer = DesktopClerk.layer.pipe(
+  Layer.provideMerge(ElectronShell.layer),
+  Layer.provideMerge(desktopInstanceLockLayer),
+);
 
 const desktopApplicationRuntimeLayer = desktopApplicationLayer.pipe(
   Layer.provideMerge(NodeServices.layer),

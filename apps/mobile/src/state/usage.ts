@@ -10,14 +10,17 @@
  * @module state/usage
  */
 import { useAtomValue } from "@effect/atom-react";
-import { readEnvironmentUsageQueryState } from "@t3tools/client-runtime/state/usage";
+import {
+  needsCursorKeychainAccess,
+  readEnvironmentUsageQueryState,
+  refreshUsage,
+} from "@t3tools/client-runtime/state/usage";
 import {
   USAGE_CONTRACT_VERSION,
   type EnvironmentId,
   type UsageSummary,
   type UsageSummaryInput,
 } from "@t3tools/contracts";
-import { refreshUsage } from "@t3tools/client-runtime/state/usage";
 import { mergeUsage, type EnvironmentUsage, type MergedUsage } from "@t3tools/shared/usageMerge";
 import { Atom } from "effect/unstable/reactivity";
 import { useCallback, useMemo } from "react";
@@ -33,6 +36,7 @@ export interface EnvironmentUsageStatus {
   readonly isConnected: boolean;
   readonly error: string | null;
   readonly summary: UsageSummary | null;
+  readonly needsCursorKeychainAccess: boolean;
 }
 
 /**
@@ -57,6 +61,10 @@ const usageByWindowAtom = Atom.family((windowKey: string) =>
         label: presentation.entry.target.label,
         ...query,
         isConnected: presentation.connection.phase === "connected",
+        needsCursorKeychainAccess: needsCursorKeychainAccess(
+          query.summary,
+          get(serverEnvironment.providersValueAtom(environmentId)),
+        ),
       });
     }
     return statuses;

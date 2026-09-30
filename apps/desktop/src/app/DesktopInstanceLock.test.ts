@@ -43,7 +43,6 @@ const makeInstanceLockLayer = (options: {
         return options.lockAcquired ?? true;
       }),
     getAppMetrics: Effect.succeed([]),
-    isDefaultProtocolClient: () => Effect.succeed(false),
     setAsDefaultProtocolClient: () => Effect.succeed(true),
     setDesktopName: () => Effect.void,
     setDockIcon: () => Effect.void,

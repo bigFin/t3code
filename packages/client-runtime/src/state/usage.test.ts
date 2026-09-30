@@ -1,7 +1,10 @@
 import {
   EnvironmentId,
+  ProviderDriverKind,
+  ProviderInstanceId,
   UsageDay,
   USAGE_CONTRACT_VERSION,
+  type ServerProvider,
   type UsageSummary,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
@@ -14,7 +17,13 @@ import type {
   EnvironmentConnectionPresentation,
 } from "../connection/presentation.ts";
 import { EnvironmentRpcUnavailableError } from "../rpc/client.ts";
-import { refreshUsage, refreshUsageLimits, readEnvironmentUsageQueryState } from "./usage.ts";
+import {
+  cursorKeychainAccessEnvironments,
+  needsCursorKeychainAccess,
+  readEnvironmentUsageQueryState,
+  refreshUsage,
+  refreshUsageLimits,
+} from "./usage.ts";
 
 const input = {
   sinceDay: UsageDay.make("2026-09-05"),
@@ -286,5 +295,80 @@ describe("limits refresh cooldown", () => {
     } finally {
       clock.mockRestore();
     }
+  });
+});
+
+describe("needsCursorKeychainAccess", () => {
+  const cursorPrompt: UsageSummary = {
+    ...summary,
+    sources: [
+      {
+        fingerprint: {
+          hostId: "host",
+          provider: "cursor",
+          resolvedHomePath: "/Users/me/.cursor/auth.json",
+          volumeId: "volume",
+        },
+        status: "ok",
+        scannedFiles: 0,
+        skippedFiles: 0,
+        malformedRecords: 0,
+        distinctSessions: 0,
+        message: "Cursor account usage is off on this environment.",
+        action: "enableCursorKeychain",
+      },
+    ],
+  };
+  const cursor = (status: ServerProvider["status"]): ServerProvider => ({
+    instanceId: ProviderInstanceId.make("cursor"),
+    driver: ProviderDriverKind.make("cursor"),
+    enabled: status !== "disabled",
+    installed: status === "ready",
+    version: null,
+    status,
+    auth: { status: "unknown" },
+    checkedAt: "2026-09-05T12:00:00.000Z",
+    models: [],
+    slashCommands: [],
+    skills: [],
+  });
+
+  it("offers access only when Cursor is ready on that environment", () => {
+    expect(needsCursorKeychainAccess(cursorPrompt, [cursor("ready")])).toBe(true);
+    expect(needsCursorKeychainAccess(cursorPrompt, [cursor("error")])).toBe(false);
+    expect(needsCursorKeychainAccess(cursorPrompt, [cursor("disabled")])).toBe(false);
+    expect(needsCursorKeychainAccess(cursorPrompt, [])).toBe(false);
+    expect(needsCursorKeychainAccess(cursorPrompt, null)).toBe(false);
+    expect(needsCursorKeychainAccess(summary, [cursor("ready")])).toBe(false);
+  });
+
+  it("stops offering access once any environment reads the Cursor account", () => {
+    const off = { summary: cursorPrompt, needsCursorKeychainAccess: true };
+    const account: UsageSummary = {
+      ...summary,
+      sources: [
+        {
+          fingerprint: {
+            hostId: "cursor.com",
+            provider: "cursor",
+            resolvedHomePath: "cursor-account:abc",
+            volumeId: "abc",
+          },
+          status: "ok",
+          scannedFiles: 1,
+          skippedFiles: 0,
+          malformedRecords: 0,
+          distinctSessions: 1,
+          message: null,
+        },
+      ],
+    };
+    expect(cursorKeychainAccessEnvironments([off, off])).toEqual([off, off]);
+    expect(
+      cursorKeychainAccessEnvironments([
+        off,
+        { summary: account, needsCursorKeychainAccess: false },
+      ]),
+    ).toEqual([]);
   });
 });

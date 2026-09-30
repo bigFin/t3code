@@ -263,7 +263,7 @@ const startup = Effect.gen(function* () {
   const electronApp = yield* ElectronApp.ElectronApp;
   const lifecycle = yield* DesktopLifecycle.DesktopLifecycle;
   const linuxUrlHandler = yield* DesktopLinuxUrlHandler.DesktopLinuxUrlHandler;
-  yield* DesktopClerk.DesktopClerk;
+  const clerk = yield* DesktopClerk.DesktopClerk;
   const shellEnvironment = yield* DesktopShellEnvironment.DesktopShellEnvironment;
   const desktopSettings = yield* DesktopAppSettings.DesktopAppSettings;
   const preReadyElectronOptions = yield* DesktopPreReadyPlatform.DesktopPreReadyElectronOptions;
@@ -306,6 +306,7 @@ const startup = Effect.gen(function* () {
   }
 
   yield* appIdentity.configure;
+  yield* clerk.configure;
   yield* lifecycle.register;
 
   yield* electronApp.whenReady.pipe(

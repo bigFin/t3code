@@ -544,6 +544,9 @@ export const revokeActiveMcpProviderSession = (providerSessionId: string): Effec
     ? activeMcpSessionRegistry.revokeProviderSession(providerSessionId)
     : Effect.void;
 
+export const revokeAllActiveMcpCredentials = (): Effect.Effect<void> =>
+  activeMcpSessionRegistry ? activeMcpSessionRegistry.revokeAll : Effect.void;
+
 /** Exposed for tests. */
 export const __testing = {
   make: makeWithOptions,

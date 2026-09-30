@@ -3,8 +3,17 @@ import { storage } from "@clerk/electron/storage";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import * as Scope from "effect/Scope";
 
+import { codexAuthDeliveryUrl, readCodexAuthHandoff } from "@t3tools/shared/codexAuthHandoff";
+import { receiveCodexAuthCallback, CodexAuthCallbackError } from "./CodexAuthCallback.ts";
+import * as ElectronApp from "../electron/ElectronApp.ts";
+import * as ElectronShell from "../electron/ElectronShell.ts";
+import * as ElectronWindow from "../electron/ElectronWindow.ts";
+import { providerAuthReturnUrl } from "@t3tools/shared/providerAuthReturnUrl";
+import { HostProcessArguments } from "@t3tools/shared/hostProcess";
 import { clerkFrontendApiHostnameFromPublishableKey } from "@t3tools/shared/relayAuth";
 import * as ElectronProtocol from "../electron/ElectronProtocol.ts";
 import * as DesktopEnvironment from "./DesktopEnvironment.ts";
@@ -38,9 +47,16 @@ export class DesktopClerkBridgeCleanupError extends Schema.TaggedError<DesktopCl
   }
 }
 
-export class DesktopClerk extends Context.Service<DesktopClerk, Record<string, never>>()(
-  "@t3tools/desktop/app/DesktopClerk",
-) {}
+export class DesktopClerk extends Context.Service<
+  DesktopClerk,
+  {
+    readonly configure: Effect.Effect<
+      void,
+      never,
+      ElectronApp.ElectronApp | ElectronWindow.ElectronWindow | Scope.Scope
+    >;
+  }
+>()("@t3tools/desktop/app/DesktopClerk") {}
 
 function resolveDesktopClerkFrontendApiHostname(
   publishableKey: string | undefined,
@@ -77,8 +93,10 @@ function createDesktopClerkBridge(stateDir: string, isDevelopment: boolean) {
 export const make = Effect.gen(function* () {
   yield* DesktopInstanceLock.DesktopInstanceLock;
   const environment = yield* DesktopEnvironment.DesktopEnvironment;
+  const electronApp = yield* ElectronApp.ElectronApp;
+  const shell = yield* ElectronShell.ElectronShell;
 
-  yield* Effect.acquireRelease(
+  const bridge = yield* Effect.acquireRelease(
     Effect.try({
       try: () => createDesktopClerkBridge(environment.stateDir, environment.isDevelopment),
       catch: (cause) =>
@@ -100,7 +118,84 @@ export const make = Effect.gen(function* () {
       }).pipe(Effect.orDie),
   );
 
-  return DesktopClerk.of({});
+  return DesktopClerk.of({
+    configure: Effect.gen(function* () {
+      const electronApp = yield* ElectronApp.ElectronApp;
+      const electronWindow = yield* ElectronWindow.ElectronWindow;
+      const context = yield* Effect.context<ElectronWindow.ElectronWindow>();
+      const runPromise = Effect.runPromiseWith(context);
+
+      // The SDK bridge holds Electron's single-instance lock (acquired at
+      // bridge creation) so OAuth deep-link callbacks on Windows/Linux are
+      // forwarded to the running app. In a secondary instance the bridge has
+      // already begun quitting the app; app.quit() is asynchronous, so stop
+      // bootstrap here before whenReady can fire.
+      if (!bridge.isPrimaryInstance) {
+        yield* electronApp.quit;
+        return yield* Effect.interrupt;
+      }
+
+      const startProviderAuthHandoff = (value: string | undefined) => {
+        if (!value) return false;
+        const request = readCodexAuthHandoff(value, environment.isDevelopment);
+        if (!request) return false;
+        void runPromise(
+          Effect.gen(function* () {
+            yield* electronApp.whenReady;
+            yield* Effect.tryPromise({
+              try: () =>
+                receiveCodexAuthCallback(
+                  request.authorizationUrl,
+                  (url) => runPromise(shell.openExternal(url)),
+                  (callbackUrl) => codexAuthDeliveryUrl(request, callbackUrl),
+                ),
+              catch: () =>
+                new CodexAuthCallbackError({
+                  detail:
+                    "Could not receive hosted web ChatGPT sign-in. Retry or use the redirect URL in the web app.",
+                }),
+            });
+          }).pipe(
+            Effect.catch(() => Effect.logWarning("Could not complete ChatGPT desktop handoff.")),
+          ),
+        );
+        return true;
+      };
+      const resumeProviderAuth = (value: string | undefined) => {
+        const destination = providerAuthReturnUrl(value);
+        const expectedOrigin = `${ElectronProtocol.getDesktopScheme(environment.isDevelopment)}://app`;
+        if (!destination?.startsWith(`${expectedOrigin}/`)) return false;
+        void runPromise(
+          Effect.gen(function* () {
+            const mainWindow = yield* electronWindow.currentMainOrFirst;
+            if (Option.isNone(mainWindow)) return;
+            yield* Effect.promise(() => mainWindow.value.loadURL(destination));
+            yield* electronWindow.reveal(mainWindow.value);
+          }).pipe(
+            Effect.catchCause((cause) =>
+              Effect.logWarning("Could not return to provider setup", cause),
+            ),
+          ),
+        );
+        return true;
+      };
+      const args = yield* HostProcessArguments;
+      args.some((value) => startProviderAuthHandoff(value));
+      yield* electronApp.on("open-url", (event: { preventDefault: () => void }, url: string) => {
+        if (startProviderAuthHandoff(url) || resumeProviderAuth(url)) event.preventDefault();
+      });
+      yield* electronApp.on("second-instance", (_event: unknown, argv: readonly string[]) => {
+        if (argv?.some((value) => startProviderAuthHandoff(value) || resumeProviderAuth(value)))
+          return;
+        void runPromise(
+          Effect.gen(function* () {
+            const mainWindow = yield* electronWindow.currentMainOrFirst;
+            if (Option.isSome(mainWindow)) yield* electronWindow.reveal(mainWindow.value);
+          }),
+        );
+      });
+    }).pipe(Effect.withSpan("desktop.clerk.configure")),
+  });
 });
 
 export const layer = Layer.effect(DesktopClerk, make);
